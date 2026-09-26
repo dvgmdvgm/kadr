@@ -519,6 +519,8 @@ interface EditorState {
       Optional `start` moves the clip too (a speed drag from the LEFT edge
       keeps the right edge anchored). */
   setClipSpeed(clipId: string, speed: number, duration: number, start?: number): void
+  /** setClipSpeed for several clips in one update (group speed change). */
+  setClipSpeeds(entries: { id: string; speed: number; duration: number; start?: number }[]): void
   /** Change duration (loop-extend); linked partners follow. */
   setClipDuration(clipId: string, duration: number): void
   /** Pick the transition for a clip's incoming overlap ('none' = hard cut). */
@@ -1131,18 +1133,23 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setClipSpeed: (clipId, speed, duration, start) =>
+    get().setClipSpeeds([{ id: clipId, speed, duration, start }]),
+
+  setClipSpeeds: (entries) =>
     set((s) => {
       const p = cloneProject(s.project)
-      // linked partners change tempo together
-      for (const f of withLinked(p, [clipId])
-        .map((id) => findClip(p, id))
-        .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
-        const c = f.clip
-        const oldSpeed = c.speed || 1
-        rescaleClipAnims(c, oldSpeed / speed)
-        c.speed = speed
-        c.duration = duration
-        if (start !== undefined) c.start = Math.max(0, start)
+      for (const { id, speed, duration, start } of entries) {
+        // linked partners change tempo together
+        for (const f of withLinked(p, [id])
+          .map((cid) => findClip(p, cid))
+          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
+          const c = f.clip
+          const oldSpeed = c.speed || 1
+          rescaleClipAnims(c, oldSpeed / speed)
+          c.speed = speed
+          c.duration = duration
+          if (start !== undefined) c.start = Math.max(0, start)
+        }
       }
       return { project: p }
     }),

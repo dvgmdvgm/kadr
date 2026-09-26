@@ -19,6 +19,7 @@ import { useTtsUi } from './TtsDialog'
 import { evalAnim } from '@/engine/anim'
 import { spanToProject, projectToSrc, type VisibleSpan } from '@/engine/voiceDefects'
 import { clipsInSpan, clipsBetween, unlocked } from '@/engine/timelineSelect'
+import { layoutSpeeds, SPEED_MIN, SPEED_MAX, type SpeedItem } from '@/engine/speedLayout'
 import { useVoiceUi, setVerdict, clearVerdict, addUserDefect, setDefectsHidden } from '@/engine/voiceCheck'
 import { confirmDefect } from '@/engine/voiceRegen'
 import { useDefectsUi, targetRun } from './DefectsDialog'
@@ -603,6 +604,7 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {t('animTab')}…
           </button>
+          {speedGroup(menu.clipId!).length > 0 && <SpeedDial clipId={menu.clipId!} />}
           {(() => {
             const p = useEditor.getState().project
             const f = findClip(p, menu.clipId!)
@@ -805,15 +807,153 @@ interface ViewWindow {
 // groups a burst of wheel notches over one gain slider into a single undo entry
 const gainWheelMark = { id: '', ts: 0 }
 
-// Ctrl-drag speed range and the round multipliers the drag snaps to.
-// Preview playback is clamped to Chromium's 0.0625–16× element range and
-// relies on resync seeks beyond it; export is exact at any speed.
-const SPEED_MIN = 0.02
-const SPEED_MAX = 100
+// Round multipliers the speed drag and the speed dial snap to (range in
+// speedLayout.ts). Preview playback is clamped to Chromium's 0.0625–16×
+// element range and relies on resync seeks beyond it; export is exact at
+// any speed.
 const SPEED_SNAPS = [
   0.05, 0.1, 0.2, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10,
   12, 16, 20, 25, 32, 50, 64, 100
 ]
+const SPEED_PRESETS = [0.25, 0.5, 1, 2, 4]
+
+/** What a speed change applies to: the whole selection when the clip is part
+    of it, else the clip alone — timed media only, locked tracks left out. */
+function speedGroup(clipId: string): SpeedItem[] {
+  const { project: p, selection } = useEditor.getState()
+  const ids = selection.includes(clipId) ? selection : [clipId]
+  const out: SpeedItem[] = []
+  for (const id of ids) {
+    const f = findClip(p, id)
+    const a = f?.clip.assetId ? p.assets.find((x) => x.id === f.clip.assetId) : null
+    if (!f || f.track.locked || !a || a.kind === 'image') continue
+    out.push({
+      id, trackId: f.track.id, start: f.clip.start, duration: f.clip.duration, speed: f.clip.speed || 1
+    })
+  }
+  return out
+}
+
+/** The speed bezel in a clip's context menu. Turning it scales the group's
+    speeds together (one lap = ×4, clockwise = faster); the presets and the
+    typed number set every clip to that value. The group keeps its start. */
+function SpeedDial({ clipId }: { clipId: string }) {
+  const t = useT()
+  const speed = useEditor((s) => findClip(s.project, clipId)?.clip.speed || 1)
+  const [text, setText] = useState<string | null>(null)
+
+  const setAll = (v: number) => {
+    if (!(v > 0)) return
+    const s = useEditor.getState()
+    s.pushHistory('hSpeed')
+    s.setClipSpeeds(layoutSpeeds(speedGroup(clipId), () => v, 'start'))
+  }
+
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const el = e.currentTarget
+    el.setPointerCapture(e.pointerId)
+    const box = el.getBoundingClientRect()
+    const angle = (ev: { clientX: number; clientY: number }) =>
+      Math.atan2(ev.clientY - (box.top + box.height / 2), ev.clientX - (box.left + box.width / 2))
+    useEditor.getState().pushHistory('hSpeed')
+    const items = speedGroup(clipId)
+    const base = items.find((i) => i.id === clipId)?.speed ?? speed
+    let last = angle(e)
+    let turns = 0
+    const move = (ev: PointerEvent) => {
+      const a = angle(ev)
+      let d = a - last
+      if (d > Math.PI) d -= 2 * Math.PI
+      if (d < -Math.PI) d += 2 * Math.PI
+      last = a
+      turns += d / (2 * Math.PI)
+      let v = base * 4 ** turns
+      const snap = SPEED_SNAPS.find((c) => Math.abs(Math.log2(v / c)) < 0.04)
+      if (snap) v = snap
+      v = Math.min(SPEED_MAX, Math.max(SPEED_MIN, v))
+      useEditor.getState().setClipSpeeds(layoutSpeeds(items, (it) => (it.speed * v) / base, 'start'))
+    }
+    const up = () => {
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('lostpointercapture', up)
+    }
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('lostpointercapture', up)
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const up = e.key === 'ArrowUp' || e.key === 'ArrowRight'
+    if (!up && e.key !== 'ArrowDown' && e.key !== 'ArrowLeft') return
+    e.preventDefault()
+    const next = up
+      ? SPEED_SNAPS.find((c) => c > speed + 1e-6)
+      : [...SPEED_SNAPS].reverse().find((c) => c < speed - 1e-6)
+    if (next) setAll(next)
+  }
+
+  const deg = (Math.log(speed) / Math.log(4)) * 360
+  return (
+    <div className="speed-dial">
+      <div className="ctx-title">{t('speed')}</div>
+      <div className="speed-ring-box">
+        <svg
+          className="speed-ring"
+          viewBox="0 0 100 100"
+          role="slider"
+          tabIndex={0}
+          aria-label={t('speed')}
+          aria-valuemin={SPEED_MIN}
+          aria-valuemax={SPEED_MAX}
+          aria-valuenow={speed}
+          aria-valuetext={`×${+speed.toFixed(2)}`}
+          onPointerDown={onPointerDown}
+          onKeyDown={onKeyDown}
+        >
+          <title>{t('speedDialHint')}</title>
+          <circle className="speed-ring-track" cx="50" cy="50" r="42" />
+          {Array.from({ length: 24 }, (_, i) => (
+            <line
+              key={i}
+              className={i % 6 ? 'speed-ring-tick' : 'speed-ring-tick major'}
+              x1="50" y1="3" x2="50" y2={i % 6 ? 8 : 11}
+              transform={`rotate(${i * 15 + deg} 50 50)`}
+            />
+          ))}
+          <circle className="speed-ring-knob" cx="50" cy="8" r="4.5" transform={`rotate(${deg} 50 50)`} />
+        </svg>
+        <input
+          className="speed-dial-value"
+          aria-label={t('speed')}
+          value={text ?? `×${+speed.toFixed(2)}`}
+          onFocus={(e) => {
+            setText(`${+speed.toFixed(2)}`)
+            requestAnimationFrame(() => e.target.select())
+          }}
+          onChange={(e) => setText(e.target.value)}
+          onBlur={() => setText(null)}
+          onKeyDown={(e) => {
+            e.stopPropagation()
+            if (e.key === 'Enter') {
+              setAll(parseFloat((text ?? '').replace(',', '.').replace(/^[×x]/i, '')))
+              e.currentTarget.blur()
+            } else if (e.key === 'Escape') e.currentTarget.blur()
+          }}
+        />
+      </div>
+      <div className="ctx-dur-row">
+        {SPEED_PRESETS.map((v) => (
+          <button key={v} className={Math.abs(speed - v) < 1e-6 ? 'dur-on' : ''} onClick={() => setAll(v)}>
+            ×{v}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function TrackRow({
   track, trackH, contentW, view, onMenu
@@ -1454,22 +1594,22 @@ function ClipView({
       )
       return
     }
-    if (e.ctrlKey) {
-      // Ctrl+drag near EITHER edge = speed (Vegas-style time stretch) —
+    if ((e.ctrlKey || e.altKey) && w > 24 && asset && asset.kind !== 'image') {
+      // Ctrl/Alt+drag near EITHER edge = speed (Vegas-style time stretch) —
       // the same gesture as the extend handles, but forgiving about where
       // exactly the clip is grabbed
       const rect = e.currentTarget.getBoundingClientRect()
       const lx = e.clientX - rect.left
-      if (w > 24 && asset && asset.kind !== 'image') {
-        if (lx > rect.width - 14) {
-          startExtendDrag('right')(e)
-          return
-        }
-        if (lx < 14) {
-          startExtendDrag('left')(e)
-          return
-        }
+      if (lx > rect.width - 14) {
+        startExtendDrag('right')(e)
+        return
       }
+      if (lx < 14) {
+        startExtendDrag('left')(e)
+        return
+      }
+    }
+    if (e.ctrlKey) {
       const toggleSelection = () => {
         const s = useEditor.getState()
         const sel = new Set(s.selection)
@@ -1674,15 +1814,19 @@ function ClipView({
     e.preventDefault()
     const st = useEditor.getState()
     if (!selected) st.select([clip.id])
-    const speedMode = e.ctrlKey && !!asset && asset.kind !== 'image'
+    const speedMode = (e.ctrlKey || e.altKey) && !!asset && asset.kind !== 'image'
     const leftTrim = edge === 'left' && !speedMode
     st.pushHistory(speedMode ? 'hSpeed' : leftTrim ? 'hTrim' : 'hResize')
     const origStart = clip.start
     const origEnd = clip.start + clip.duration
     const origDur = clip.duration
     const origSpeed = speed
-    // exclude the linked twin from snap targets — it follows the drag
-    const points = snapPoints(st.project, withLinked(st.project, [clip.id]), st.playhead)
+    // a speed drag carries the whole selection along, scaled by the grabbed
+    // clip's ratio; the group's edge opposite the grabbed one stays put
+    const group = speedMode ? speedGroup(clip.id) : []
+    // exclude the linked twin (and the speed group) from snap targets — they follow the drag
+    const points = snapPoints(
+      st.project, withLinked(st.project, [clip.id, ...group.map((g) => g.id)]), st.playhead)
     windowDrag(e, (dx, ev) => {
       const s = useEditor.getState()
       const dt = dx / s.zoom
@@ -1712,8 +1856,8 @@ function ClipView({
         if (snapped) nd = snapNd
         const nspeed = Math.min(SPEED_MAX, Math.max(SPEED_MIN, srcSpan / nd))
         setSpeedBadge({ x: ev.clientX, y: ev.clientY, speed: nspeed, snapped })
-        s.setClipSpeed(clip.id, nspeed, srcSpan / nspeed,
-          edge === 'left' ? origEnd - srcSpan / nspeed : undefined)
+        s.setClipSpeeds(layoutSpeeds(group, (it) => (it.speed * nspeed) / origSpeed,
+          edge === 'left' ? 'end' : 'start'))
       } else if (leftTrim) {
         // same semantics as dragging the clip's left trim edge: content
         // stays in place, inPoint compensates, source start clamps
@@ -1891,12 +2035,12 @@ function ClipView({
           />
           <div
             className="extend-handle"
-            title="Drag: resize/loop · Ctrl: speed"
+            title="Drag: resize/loop · Ctrl/Alt: speed"
             onPointerDown={startExtendDrag('right')}
           />
           <div
             className="extend-handle left"
-            title="Drag: resize · Ctrl: speed"
+            title="Drag: resize · Ctrl/Alt: speed"
             onPointerDown={startExtendDrag('left')}
           />
         </>
