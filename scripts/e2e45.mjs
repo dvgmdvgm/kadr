@@ -1,5 +1,5 @@
 // Test: group speed change — Alt+drag on a clip edge (the same gesture as
-// Ctrl) stretches the whole selection, and the speed bezel in the clip's
+// Ctrl) stretches the whole selection, and the speed jog strip in the clip's
 // context menu turns it / sets it from a preset. The pure layout maths has
 // its own check: scripts/check-speedlayout.mjs.
 //
@@ -171,7 +171,7 @@ check('Alt+drag on an unselected clip touches only it',
   near(v[0].speed, 2, 1e-3) && near(v[1].speed, 1), JSON.stringify(v))
 await evalJs(`(() => { window.__st().undo(); return true })()`)
 
-// 3. the context-menu bezel -------------------------------------------------
+// 3. the context-menu jog strip ---------------------------------------------
 await evalJs(`(() => { const s = window.__st(); s.select(s.project.tracks.flatMap(t => t.clips.map(c => c.id))); return true })()`)
 g = await evalJs('window.__px(window.__vid()[0])')
 await mouse('mousePressed', g.l + 40, g.y, 0, 'right')
