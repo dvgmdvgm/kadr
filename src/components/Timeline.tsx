@@ -834,9 +834,12 @@ function speedGroup(clipId: string): SpeedItem[] {
   return out
 }
 
-/** The speed bezel in a clip's context menu. Turning it scales the group's
-    speeds together (one lap = ×4, clockwise = faster); the presets and the
-    typed number set every clip to that value. The group keeps its start. */
+/** Pixels of jog-strip drag per ×4 of speed. */
+const JOG_PX = 160
+
+/** The speed jog strip in a clip's context menu. Dragging it sideways scales
+    the group's speeds together (JOG_PX to the right = ×4 faster); the presets
+    and the typed number set every clip to that value. The group keeps its start. */
 function SpeedDial({ clipId }: { clipId: string }) {
   const t = useT()
   const speed = useEditor((s) => findClip(s.project, clipId)?.clip.speed || 1)
@@ -849,27 +852,17 @@ function SpeedDial({ clipId }: { clipId: string }) {
     s.setClipSpeeds(layoutSpeeds(speedGroup(clipId), () => v, 'start'))
   }
 
-  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     e.preventDefault()
     const el = e.currentTarget
     el.setPointerCapture(e.pointerId)
-    const box = el.getBoundingClientRect()
-    const angle = (ev: { clientX: number; clientY: number }) =>
-      Math.atan2(ev.clientY - (box.top + box.height / 2), ev.clientX - (box.left + box.width / 2))
     useEditor.getState().pushHistory('hSpeed')
     const items = speedGroup(clipId)
     const base = items.find((i) => i.id === clipId)?.speed ?? speed
-    let last = angle(e)
-    let turns = 0
+    const x0 = e.clientX
     const move = (ev: PointerEvent) => {
-      const a = angle(ev)
-      let d = a - last
-      if (d > Math.PI) d -= 2 * Math.PI
-      if (d < -Math.PI) d += 2 * Math.PI
-      last = a
-      turns += d / (2 * Math.PI)
-      let v = base * 4 ** turns
+      let v = base * 4 ** ((ev.clientX - x0) / JOG_PX)
       const snap = SPEED_SNAPS.find((c) => Math.abs(Math.log2(v / c)) < 0.04)
       if (snap) v = snap
       v = Math.min(SPEED_MAX, Math.max(SPEED_MIN, v))
@@ -895,55 +888,43 @@ function SpeedDial({ clipId }: { clipId: string }) {
     if (next) setAll(next)
   }
 
-  const deg = (Math.log(speed) / Math.log(4)) * 360
+  // the ticks ride along with the value, like a physical jog wheel's rim
+  const pos = `${(Math.log(speed) / Math.log(4)) * JOG_PX}px 0`
   return (
     <div className="speed-dial">
       <div className="ctx-title">{t('speed')}</div>
-      <div className="speed-ring-box">
-        <svg
-          className="speed-ring"
-          viewBox="0 0 100 100"
-          role="slider"
-          tabIndex={0}
-          aria-label={t('speed')}
-          aria-valuemin={SPEED_MIN}
-          aria-valuemax={SPEED_MAX}
-          aria-valuenow={speed}
-          aria-valuetext={`×${+speed.toFixed(2)}`}
-          onPointerDown={onPointerDown}
-          onKeyDown={onKeyDown}
-        >
-          <title>{t('speedDialHint')}</title>
-          <circle className="speed-ring-track" cx="50" cy="50" r="42" />
-          {Array.from({ length: 24 }, (_, i) => (
-            <line
-              key={i}
-              className={i % 6 ? 'speed-ring-tick' : 'speed-ring-tick major'}
-              x1="50" y1="3" x2="50" y2={i % 6 ? 8 : 11}
-              transform={`rotate(${i * 15 + deg} 50 50)`}
-            />
-          ))}
-          <circle className="speed-ring-knob" cx="50" cy="8" r="4.5" transform={`rotate(${deg} 50 50)`} />
-        </svg>
-        <input
-          className="speed-dial-value"
-          aria-label={t('speed')}
-          value={text ?? `×${+speed.toFixed(2)}`}
-          onFocus={(e) => {
-            setText(`${+speed.toFixed(2)}`)
-            requestAnimationFrame(() => e.target.select())
-          }}
-          onChange={(e) => setText(e.target.value)}
-          onBlur={() => setText(null)}
-          onKeyDown={(e) => {
-            e.stopPropagation()
-            if (e.key === 'Enter') {
-              setAll(parseFloat((text ?? '').replace(',', '.').replace(/^[×x]/i, '')))
-              e.currentTarget.blur()
-            } else if (e.key === 'Escape') e.currentTarget.blur()
-          }}
-        />
-      </div>
+      <input
+        className="speed-dial-value"
+        aria-label={t('speed')}
+        value={text ?? `×${+speed.toFixed(2)}`}
+        onFocus={(e) => {
+          setText(`${+speed.toFixed(2)}`)
+          requestAnimationFrame(() => e.target.select())
+        }}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => setText(null)}
+        onKeyDown={(e) => {
+          e.stopPropagation()
+          if (e.key === 'Enter') {
+            setAll(parseFloat((text ?? '').replace(',', '.').replace(/^[×x]/i, '')))
+            e.currentTarget.blur()
+          } else if (e.key === 'Escape') e.currentTarget.blur()
+        }}
+      />
+      <div
+        className="speed-jog"
+        role="slider"
+        tabIndex={0}
+        title={t('speedDialHint')}
+        aria-label={t('speed')}
+        aria-valuemin={SPEED_MIN}
+        aria-valuemax={SPEED_MAX}
+        aria-valuenow={speed}
+        aria-valuetext={`×${+speed.toFixed(2)}`}
+        style={{ backgroundPosition: `${pos}, ${pos}` }}
+        onPointerDown={onPointerDown}
+        onKeyDown={onKeyDown}
+      />
       <div className="ctx-dur-row">
         {SPEED_PRESETS.map((v) => (
           <button key={v} className={Math.abs(speed - v) < 1e-6 ? 'dur-on' : ''} onClick={() => setAll(v)}>

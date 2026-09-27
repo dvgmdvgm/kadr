@@ -178,12 +178,12 @@ await mouse('mousePressed', g.l + 40, g.y, 0, 'right')
 await mouse('mouseReleased', g.l + 40, g.y, 0, 'right')
 await new Promise((r) => setTimeout(r, 200))
 const ring = await evalJs(`(() => {
-  const el = document.querySelector('.ctx-menu .speed-ring')
+  const el = document.querySelector('.ctx-menu .speed-jog')
   if (!el) return null
   const r = el.getBoundingClientRect()
-  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, rad: r.width * 0.42 }
+  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 }
 })()`)
-check('the clip menu carries the speed bezel', !!ring)
+check('the clip menu carries the speed jog strip', !!ring)
 if (ring) {
   await evalJs(`(() => { [...document.querySelectorAll('.ctx-menu .speed-dial button')]
     .find(b => b.textContent === '×2').click(); return true })()`)
@@ -192,21 +192,17 @@ if (ring) {
   check('a preset sets every selected clip', v.every((c) => near(c.speed, 2)) &&
     near(v[1].start, 2), JSON.stringify(v))
 
-  // a quarter turn clockwise: ×4^(1/4) ≈ 1.41 on top of ×2
+  // 40 px to the right = a quarter of JOG_PX: ×4^(1/4) ≈ 1.41 on top of ×2
   const h1 = await evalJs('window.__st().past.length')
-  const arc = Array.from({ length: 13 }, (_, i) => {
-    const t = -Math.PI / 2 + (Math.PI / 2) * (i / 12)
-    return { x: ring.cx + ring.rad * Math.cos(t), y: ring.cy + ring.rad * Math.sin(t) }
-  })
-  await path(arc)
+  await path(line({ x: ring.cx - 20, y: ring.cy }, { x: ring.cx + 20, y: ring.cy }))
   v = await vid()
-  check('turning the bezel clockwise speeds the group up',
+  check('dragging the strip right speeds the group up',
     v.every((c) => c.speed > 2.6 && c.speed < 3.1) && near(v[0].speed, v[1].speed), JSON.stringify(v))
-  check('…the menu stays open while turning', await evalJs('!!document.querySelector(".ctx-menu .speed-ring")'))
-  check('…one undo step per turn', (await evalJs('window.__st().past.length')) === h1 + 1)
+  check('…the menu stays open while dragging', await evalJs('!!document.querySelector(".ctx-menu .speed-jog")'))
+  check('…one undo step per drag', (await evalJs('window.__st().past.length')) === h1 + 1)
   await evalJs(`(() => { window.__st().undo(); return true })()`)
   v = await vid()
-  check('undo of the turn goes back to ×2', v.every((c) => near(c.speed, 2)), JSON.stringify(v))
+  check('undo of the drag goes back to ×2', v.every((c) => near(c.speed, 2)), JSON.stringify(v))
 }
 await mouse('mousePressed', 5, 5)
 await mouse('mouseReleased', 5, 5)
