@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Anim, Clip, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
-import { useEditor, useFxPresets, findClip, uid } from '@/state/store'
+import { useEditor, useFxPresets, findClip, uid, type ProjectSettingsPatch } from '@/state/store'
 import { GLOW_DEFAULTS } from '@/gl/glow'
 import { useT } from '@/i18n'
 import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
@@ -10,7 +10,8 @@ import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
 
 function Num({
-  label, value, step = 1, min, max, onChange
+  label, value, step = 1, min, max, onChange,
+  onFocus = () => useEditor.getState().pushHistory('hEdit')
 }: {
   label: string
   value: number
@@ -18,6 +19,7 @@ function Num({
   min?: number
   max?: number
   onChange: (v: number) => void
+  onFocus?: () => void
 }) {
   return (
     <label className="insp-field">
@@ -28,7 +30,7 @@ function Num({
         step={step}
         min={min}
         max={max}
-        onFocus={() => useEditor.getState().pushHistory('hEdit')}
+        onFocus={onFocus}
         onChange={(e) => {
           const v = Number(e.target.value)
           if (!Number.isNaN(v)) onChange(v)
@@ -55,25 +57,30 @@ export function Inspector() {
   )
 }
 
+let settingsSession = 0
+
 function ProjectProps() {
   const t = useT()
   const project = useEditor((s) => s.project)
-  const patch = (p: Partial<typeof project>) =>
-    useEditor.setState((s) => ({ project: { ...s.project, ...p } }))
+  // one undo step per focus of a field, taken on its first real change
+  const session = useRef(0)
+  const focus = () => { session.current = ++settingsSession }
+  const patch = (p: ProjectSettingsPatch) =>
+    useEditor.getState().updateProjectSettings(p, session.current)
 
   return (
     <>
       <div className="insp-section">{t('projectSettings')}</div>
       <label className="insp-field">
         <span>{t('label')}</span>
-        <input value={project.name} onChange={(e) => patch({ name: e.target.value })} />
+        <input value={project.name} onFocus={focus} onChange={(e) => patch({ name: e.target.value })} />
       </label>
       <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
-        onChange={(v) => patch({ width: Math.round(v / 2) * 2 })} />
+        onFocus={focus} onChange={(v) => patch({ width: Math.round(v / 2) * 2 })} />
       <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
-        onChange={(v) => patch({ height: Math.round(v / 2) * 2 })} />
+        onFocus={focus} onChange={(v) => patch({ height: Math.round(v / 2) * 2 })} />
       <Num label={t('framerate')} value={project.fps} step={1} min={1} max={120}
-        onChange={(v) => patch({ fps: v })} />
+        onFocus={focus} onChange={(v) => patch({ fps: v })} />
     </>
   )
 }

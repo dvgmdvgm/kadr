@@ -579,6 +579,11 @@ interface EditorState {
    */
   placeAudio(asset: Omit<MediaAsset, 'id'>, at: number,
     opts?: { gain?: number; label?: string; history?: string }): { clipId: string; trackId: string; assetId: string }
+  /** Change the project's name, size or fps. One undo step per `session`
+   *  (the Inspector passes one per focus of a field, so typing "1080" is one
+   *  step); a call without a session is a step of its own. A patch that
+   *  changes nothing pushes nothing. */
+  updateProjectSettings(patch: ProjectSettingsPatch, session?: number): void
   updateClip(clipId: string, patch: Partial<Clip>): void
   /** Change speed/duration, rescaling keyframes and fades to stay on content.
       Optional `start` moves the clip too (a speed drag from the LEFT edge
@@ -678,6 +683,11 @@ const cloneProject = (p: Project): Project => {
   }
   return out as unknown as Project
 }
+
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps'>>
+/** the undo step the last settings session pushed: merge only while it is
+ *  still the top of the stack (any other edit or an undo splits the session) */
+const settingsMark: { session?: number; entry?: unknown } = {}
 
 export const useEditor = create<EditorState>((set, get) => ({
   project: newProject(),
@@ -1404,6 +1414,19 @@ export const useEditor = create<EditorState>((set, get) => ({
       track.clips.push(clip)
       return { project: p, selection: [clip.id] }
     })
+  },
+
+  updateProjectSettings: (patch, session) => {
+    const s = get()
+    const keys = Object.keys(patch) as (keyof ProjectSettingsPatch)[]
+    if (keys.every((k) => s.project[k] === patch[k])) return
+    const top = s.past[s.past.length - 1]
+    if (session === undefined || session !== settingsMark.session || top !== settingsMark.entry) {
+      s.pushHistory('projectSettings')
+      settingsMark.session = session
+      settingsMark.entry = get().past[get().past.length - 1]
+    }
+    set((st) => ({ project: { ...st.project, ...patch } }))
   },
 
   updateClip: (clipId, patch) =>
