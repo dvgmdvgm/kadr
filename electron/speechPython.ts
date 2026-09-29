@@ -63,16 +63,14 @@ export async function resolveSpeechPython(where: Where): Promise<SpeechPython> {
 }
 
 // The voice-over detector needs more than faster_whisper: python >= 3.11
-// (tomllib) and torch. Its old default `python3.11` keeps going first; the
-// speech interpreter is taken only if it passes the detector's own probe.
+// (tomllib) and torch. The speech interpreter (it imports faster_whisper) is
+// taken only if it passes that probe; otherwise the old default `python3.11`.
 const DETECTOR_PROBE = 'import sys, torch; assert sys.version_info >= (3, 11); print(0)'
 
 export async function detectorPython(
   env: NodeJS.ProcessEnv, speech: () => Promise<SpeechPython>, dflt = 'python3.11'
 ): Promise<PyCmd> {
-  const first = { command: dflt, args: [] }
-  if ('cuda' in await probe(first, env, DETECTOR_PROBE)) return first
   const r = await speech()
   if (!('error' in r) && 'cuda' in await probe(r, env, DETECTOR_PROBE)) return { command: r.command, args: r.args }
-  return first
+  return { command: dflt, args: [] }
 }

@@ -116,7 +116,7 @@ process.stderr.write("ModuleNotFoundError: No module named 'faster_whisper'\\n")
     const g = await det([dStub, dPy], { FAKE_GOOD: 'python', FAKE_TORCH: 'python' })
     check('detector: a speech python with torch and 3.11 is taken', g.command === 'python', JSON.stringify(g))
     const h = await det([dStub, dPy, d311], { FAKE_GOOD: 'python', FAKE_TORCH: 'python,python3.11' })
-    check('detector: a working python3.11 goes before the speech python', h.command === 'python3.11', JSON.stringify(h))
+    check('detector: a qualifying speech python goes before python3.11', h.command === 'python', JSON.stringify(h))
   } else check('detectorPython is exported', false)
 
   rmSync(box, { recursive: true, force: true })

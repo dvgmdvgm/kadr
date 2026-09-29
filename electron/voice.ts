@@ -28,8 +28,8 @@ import { promisify } from 'util'
 /** python 3.11+ with torch and faster-whisper. Distributions still ship 3.9
     as `python3`, which cannot even import the package (tomllib), and the wheels
     are usually in a venv — hence the setting (voice-over settings → «Python»)
-    and KADR_TTSQC_PYTHON. Without either, this default, then the interpreter
-    speech-to-text resolved — only if it is >= 3.11 and imports torch. */
+    and KADR_TTSQC_PYTHON. Without either, the interpreter speech-to-text
+    resolved if it is >= 3.11 and imports torch, else this default. */
 const DEFAULT_PYTHON = 'python3.11'
 const CACHE_DAYS = 14
 
