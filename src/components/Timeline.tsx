@@ -10,6 +10,8 @@ import { useT, type TKey } from '@/i18n'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
 import { CtxMenu } from './CtxMenu'
+import { Modal } from './Modal'
+import { trackDeleteAsks } from '@/engine/discardGuard'
 import { reverseClip, useReverseUi } from '@/engine/reverse'
 import { useOffline } from '@/engine/offline'
 import { normalizeClip, useNormalizeUi } from '@/engine/normalize'
@@ -549,8 +551,107 @@ export function Timeline({ height }: { height: number }) {
         </div>
       </div>
       {menu && <TrackMenu menu={menu} onClose={() => setMenu(null)} />}
+      <TimelineAsks />
     </div>
   )
+}
+
+// Destructive timeline actions that no longer happen on one click: the marker
+// menu (right-click), its rename box, and the question before a track with
+// clips is deleted. Each ends in one store action = one undo step.
+const useTlAsk = create<{
+  track: { id: string; n: number } | null
+  marker: { id: string; x: number; y: number } | null
+  rename: { id: string; label: string } | null
+}>(() => ({ track: null, marker: null, rename: null }))
+
+function TimelineAsks() {
+  const t = useT()
+  const { track, marker, rename } = useTlAsk()
+  const close = () => useTlAsk.setState({ track: null, marker: null, rename: null })
+  useEffect(() => {
+    if (!marker) return
+    const off = () => useTlAsk.setState({ marker: null })
+    window.addEventListener('pointerdown', off)
+    return () => window.removeEventListener('pointerdown', off)
+  }, [marker])
+  if (marker) {
+    return (
+      <CtxMenu x={marker.x} y={marker.y}>
+        <button
+          data-act="marker-rename"
+          onClick={() => {
+            const m = useEditor.getState().project.markers?.find((x) => x.id === marker.id)
+            useTlAsk.setState({ marker: null, rename: m ? { id: m.id, label: m.label } : null })
+          }}
+        >
+          {t('markerRename')}
+        </button>
+        <button
+          className="danger"
+          data-act="marker-delete"
+          onClick={() => {
+            useEditor.getState().removeMarker(marker.id)
+            close()
+          }}
+        >
+          {t('markerDelete')}
+        </button>
+      </CtxMenu>
+    )
+  }
+  if (rename) {
+    const apply = () => {
+      useEditor.getState().renameMarker(rename.id, rename.label)
+      close()
+    }
+    return (
+      <Modal
+        title={t('markerName')}
+        onClose={close}
+        actions={
+          <>
+            <button onClick={close}>{t('cancel')}</button>
+            <button className="primary" onClick={apply} data-act="marker-rename-ok">{t('markerRename')}</button>
+          </>
+        }
+      >
+        <input
+          autoFocus
+          aria-label={t('markerName')}
+          value={rename.label}
+          onChange={(e) => useTlAsk.setState({ rename: { ...rename, label: e.target.value } })}
+          onKeyDown={(e) => { if (e.key === 'Enter') apply() }}
+        />
+      </Modal>
+    )
+  }
+  if (track) {
+    return (
+      <Modal
+        title={t('deleteTrackAsk').replace('{n}', String(track.n))}
+        onClose={close}
+        actions={
+          <>
+            <button onClick={close} data-act="track-delete-cancel">{t('cancel')}</button>
+            <button
+              className="danger"
+              data-act="track-delete-ok"
+              onClick={() => {
+                useEditor.getState().removeTrack(track.id)
+                close()
+              }}
+            >
+              {t('deleteTrack')}
+            </button>
+          </>
+        }
+      >
+        <p>{t('deleteTrackBody')}</p>
+      </Modal>
+    )
+  }
+  return null
 }
 
 function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
@@ -665,7 +766,11 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           <button
             className="danger"
             onClick={() => {
-              useEditor.getState().removeTrack(menu.trackId!)
+              const st = useEditor.getState()
+              const tr = st.project.tracks.find((x) => x.id === menu.trackId)
+              const n = tr ? trackDeleteAsks(tr, useSettings.getState().confirmDelete) : 0
+              if (n) useTlAsk.setState({ track: { id: tr!.id, n } })
+              else st.removeTrack(menu.trackId!)
               onClose()
             }}
           >
@@ -810,7 +915,7 @@ function Playhead() {
 }
 
 /** Track-independent user markers: M adds one at the playhead, the flag
-    drags along the timeline (snapping), right-click removes. */
+    drags along the timeline (snapping), right-click opens Rename / Delete. */
 function Markers() {
   const all = useEditor((s) => s.project.markers)
   const zoom = useEditor((s) => s.zoom)
@@ -843,7 +948,7 @@ function Markers() {
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            useEditor.getState().removeMarker(m.id)
+            useTlAsk.setState({ marker: { id: m.id, x: e.clientX, y: e.clientY } })
           }}
         >
           <span className="tl-marker-flag" title={t('markerTip')}>{m.label}</span>

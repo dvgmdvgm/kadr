@@ -291,15 +291,23 @@ interface SettingsState {
   trackH: number
   /** clips, the range and markers snap to detected beats (default on) */
   snapBeats: boolean
+  /** «Подтверждать удаление»: deleting a track with clips asks first (default on; D5 row) */
+  confirmDelete: boolean
   setLang(l: 'ru' | 'en'): void
   setTrackH(h: number): void
   setSnapBeats(v: boolean): void
+  setConfirmDelete(v: boolean): void
 }
 
 export const useSettings = create<SettingsState>((set) => ({
   lang: (localStorage.getItem('kadr.lang') as 'ru' | 'en') || 'ru',
   trackH: Math.min(140, Math.max(32, Number(localStorage.getItem('kadr.trackh')) || 56)),
   snapBeats: localStorage.getItem('kadr.snapBeats') !== '0',
+  confirmDelete: localStorage.getItem('kadr.confirmDelete') !== '0',
+  setConfirmDelete: (confirmDelete) => {
+    localStorage.setItem('kadr.confirmDelete', confirmDelete ? '1' : '0')
+    set({ confirmDelete })
+  },
   setLang: (lang) => {
     localStorage.setItem('kadr.lang', lang)
     set({ lang })
@@ -576,6 +584,8 @@ interface EditorState {
   addMarker(time: number): string
   moveMarker(id: string, time: number): void
   removeMarker(id: string): void
+  /** one undo step; an unchanged or blank label changes nothing */
+  renameMarker(id: string, label: string): void
   /**
    * Replace the music markers (beats, sections, pauses) inside
    * [range.start, range.end] with `beats` and `extra` (project seconds) — one
@@ -1163,6 +1173,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     set((s) => {
       const p = cloneProject(s.project)
       p.markers = (p.markers ?? []).filter((x) => x.id !== id)
+      return { project: p }
+    })
+  },
+
+  renameMarker: (id, label) => {
+    const next = label.trim()
+    const m0 = get().project.markers?.find((x) => x.id === id)
+    if (!m0 || !next || m0.label === next) return
+    get().pushHistory('hMarkerRename')
+    set((s) => {
+      const p = cloneProject(s.project)
+      p.markers!.find((x) => x.id === id)!.label = next
       return { project: p }
     })
   },

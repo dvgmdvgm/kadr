@@ -689,9 +689,14 @@ mixes audio and muxes/transcodes per preset.
 - `src/engine/chime.ts` — short WebAudio two-note signal when a render
   finishes (wired to export progress in `src/main.tsx`).
 - Timeline markers live in `project.markers` (`addMarker`/`moveMarker`/
-  `removeMarker` in the store, flags drawn by `Timeline.tsx`, M key in
-  `App.tsx`): project-wide time labels, not bound to a track, and part of
-  `kadr_state` so the embedded Claude can read and place them.
+  `removeMarker`/`renameMarker` in the store, flags drawn by `Timeline.tsx`,
+  M key in `App.tsx`): project-wide time labels, not bound to a track, and
+  part of `kadr_state` so the embedded Claude can read and place them.
+  NEITHER A MARKER NOR A TRACK OF CLIPS GOES ON ONE CLICK: a marker's right-click
+  opens Rename / Delete, and «Удалить дорожку» on a track with clips asks
+  first (`trackDeleteAsks` in `discardGuard.ts`; `useSettings.confirmDelete`,
+  default on, turns the question off). Each stays one undo step. Test:
+  `node scripts/check-destructive-confirm.mjs`.
 - `electron/tts.ts` + `src/engine/tts.ts` + `shared/ttsText.ts` — ElevenLabs
   voice-over. THE KEY NEVER REACHES THE RENDERER: the page is scriptable
   (`kadr_eval`), so the key lives in `<userData>/elevenlabs-key.json`,

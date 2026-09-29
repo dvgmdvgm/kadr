@@ -1,4 +1,4 @@
-import type { Project } from '@shared/types'
+import type { Project, Track } from '@shared/types'
 
 /**
  * Whether replacing the open project (New, Open, closing the window) must ask
@@ -9,4 +9,13 @@ import type { Project } from '@shared/types'
  */
 export function needsConfirm(project: Project, saved: Project | null): boolean {
   return saved !== null && project !== saved
+}
+
+/**
+ * «Удалить дорожку»: how many clips the question must name before the track
+ * goes, or 0 to delete at once — an empty track, or «Подтверждать удаление»
+ * switched off. Test: `node scripts/check-destructive-confirm.mjs`.
+ */
+export function trackDeleteAsks(track: Pick<Track, 'clips'>, confirmOn: boolean): number {
+  return confirmOn ? track.clips.length : 0
 }
