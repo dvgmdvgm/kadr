@@ -1,8 +1,10 @@
 // ffmpeg/ffprobe helpers running in the main process.
+import { masterLimiterChain } from '@shared/audioMaster'
 import { execFile, spawn, ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import { promises as fsp } from 'fs'
 import { join, basename } from 'path'
+import { tmpdir } from 'os'
 import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment } from '@shared/types'
 import { rawEncodeArgs } from '@shared/rawEncode'
 
@@ -48,6 +50,13 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
   }
   if (kind === 'video' && video?.codec_name) asset.codec = video.codec_name
   if (kind === 'video') {
+    const b = videoBasics(video)
+    if (b.rotation) asset.rotation = b.rotation
+    if (b.rotation === 90 || b.rotation === 270) [asset.width, asset.height] = [asset.height, asset.width]
+    if (b.hdr) asset.hdr = b.hdr
+    asset.probeV = 2
+  }
+  if (kind === 'video') {
     // alpha travels two ways: an alpha pixel format (yuva…, rgba, prores
     // 4444) or WebM's container-level alpha_mode tag (vp8/vp9 alpha planes —
     // their pix_fmt still reads plain yuv420p)
@@ -73,6 +82,39 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
     } catch { /* waveform is optional */ }
   }
   return { asset }
+}
+
+/**
+ * Rotation and HDR of a video stream. Rotation: the container tag (degrees
+ * clockwise) or the display matrix (ffprobe's `rotation` is counter-clockwise);
+ * a phone's portrait clip is stored landscape with 90 on it. The asset reports
+ * the size as SHOWN — the preview element and every intermediate ffmpeg makes
+ * are upright.
+ */
+function videoBasics(video: any): { rotation?: number; hdr?: 'hlg' | 'pq' } {
+  const tag = Number(video?.tags?.rotate)
+  const sd = (video?.side_data_list ?? []).find((d: any) => d.rotation !== undefined)
+  const rot = Number.isFinite(tag) ? tag : sd ? -Number(sd.rotation) : 0
+  const r = (((Math.round(rot / 90) * 90) % 360) + 360) % 360
+  const trc = String(video?.color_transfer ?? '')
+  return {
+    ...(r ? { rotation: r } : {}),
+    ...(trc === 'arib-std-b67' ? { hdr: 'hlg' as const } : trc === 'smpte2084' ? { hdr: 'pq' as const } : {})
+  }
+}
+
+/** codec, alpha, rotation, HDR — ffprobe only (the exporter asks this of old assets) */
+export async function probeBasic(path: string): Promise<{ codec?: string; hasAlpha?: boolean; rotation?: number; hdr?: 'hlg' | 'pq' }> {
+  const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-print_format', 'json', '-show_streams', path], { maxBuffer: 16 * 1024 * 1024 })
+  const video = (JSON.parse(stdout).streams ?? []).find((s: any) => s.codec_type === 'video' && !s.disposition?.attached_pic)
+  if (!video) return {}
+  const pf = String(video.pix_fmt ?? '')
+  const tagAlpha = String(video.tags?.alpha_mode ?? video.tags?.ALPHA_MODE ?? '') === '1'
+  return {
+    codec: video.codec_name,
+    ...(tagAlpha || /^(yuva|rgba|argb|abgr|bgra|gbrap|ya8|ya16)/.test(pf) ? { hasAlpha: true } : {}),
+    ...videoBasics(video)
+  }
 }
 
 async function makeThumbnail(path: string, at: number): Promise<string> {
@@ -144,8 +186,10 @@ export function makeProxy(
   out: string,
   duration: number,
   onProgress?: (p: number) => void,
-  opts?: { alpha?: boolean; codec?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
 ): Promise<void> {
+  // vfPre: a conversion before the scale (an HDR source's tone mapping — electron/hdr.ts)
+  const pre = opts?.vfPre ? `${opts.vfPre},` : ''
   const args = opts?.alpha ? [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     ...alphaInputArgs(opts.codec),
@@ -158,7 +202,7 @@ export function makeProxy(
   ] : [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     '-i', src,
-    '-vf', "scale=-2:'min(540,ih)'",
+    '-vf', `${pre}scale=-2:'min(540,ih)'`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '96k',
     '-movflags', '+faststart',
@@ -302,7 +346,7 @@ export async function makeDecoded(
   out: string,
   duration: number,
   onProgress?: (p: number) => void,
-  opts?: { alpha?: boolean; codec?: string; packed?: boolean; matrix?: string }
+  opts?: { alpha?: boolean; codec?: string; packed?: boolean; matrix?: string; vfPre?: string }
 ): Promise<void> {
   const args = opts?.packed ? [
     // ALPHA FAST PATH. Chromium's WebCodecs cannot decode alpha at all
@@ -358,6 +402,8 @@ export async function makeDecoded(
     '-y', '-v', 'error', '-progress', 'pipe:1',
     '-i', src,
     '-map', '0:v:0', '-an',
+    // an HDR source is tone-mapped to SDR BT.709 on the way (electron/hdr.ts)
+    ...(opts?.vfPre ? ['-vf', opts.vfPre] : []),
     '-c:v', 'libx264', '-preset', 'fast', '-crf', '14', '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     out
@@ -612,6 +658,102 @@ export class RawVideoEncoder {
   }
 }
 
+/** per-segment filter chain shared by the single-graph mix and the premix */
+function segmentChain(s: AudioSegment): string[] {
+  const speed = s.speed || 1
+  const outDur = s.duration / speed // timeline-domain length after atempo
+  return [
+    'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo',
+    `volume=${s.gain.toFixed(4)}`,
+    ...(Math.abs(speed - 1) > 1e-4 ? atempoChain(speed) : []),
+    ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}`] : []),
+    ...(s.fadeOut > 0.001
+      ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}`]
+      : [])
+  ]
+}
+
+/** above this many segments the mix leaves the ffmpeg filter graph (see premixSegments) */
+export const PREMIX_THRESHOLD = 64
+const MIX_RATE = 48000
+const MIX_CH = 2
+
+/**
+ * Sum many AudioSegments into one float WAV. One ffmpeg filter graph with N
+ * padded inputs + amix is fine for a few dozen clips, but its scheduler cost
+ * grows ~quadratically with the input count: a timeline with ~1000 SFX clips
+ * mixed at a quarter of realtime (80 min for a 19-min video) — and its argv
+ * did not even fit (E2BIG). Here every segment is decoded on its own (same
+ * per-segment chain: volume, atempo, fades) to f32 PCM and added into a
+ * buffer at its timeline offset, which is linear in the total clip length.
+ * amix scaled each input by 1/N and `volume=N` undid it, so plain summing
+ * gives the same levels.
+ */
+export async function premixSegments(
+  segs: AudioSegment[],
+  duration: number,
+  outPath: string,
+  onProgress?: (done: number, total: number) => void,
+  isCancelled?: () => boolean
+): Promise<void> {
+  const totalFrames = Math.ceil(duration * MIX_RATE)
+  const mix = new Float32Array(totalFrames * MIX_CH)
+  const PAR = 4
+  let next = 0
+  let done = 0
+  const worker = async () => {
+    while (next < segs.length) {
+      if (isCancelled?.()) throw new Error('cancelled')
+      const s = segs[next++]
+      const offset = Math.round(s.start * MIX_RATE) * MIX_CH
+      const room = mix.length - offset
+      if (room <= 0) { done++; continue }
+      const args = [
+        '-v', 'error', '-nostdin', '-ss', String(s.inPoint), '-t', String(s.duration), '-i', s.path,
+        '-af', segmentChain(s).join(','), '-f', 'f32le', '-ac', String(MIX_CH), '-ar', String(MIX_RATE), 'pipe:1'
+      ]
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+        let err = ''
+        let pos = offset
+        let carry: Buffer | null = null // f32le sample split across chunks
+        child.stdout!.on('data', (c: Buffer) => {
+          if (carry) { c = Buffer.concat([carry, c]); carry = null }
+          const usable = c.length - (c.length % 4)
+          if (usable < c.length) carry = c.subarray(usable)
+          const n = Math.min(usable / 4, mix.length - pos)
+          for (let i = 0; i < n; i++) mix[pos + i] += c.readFloatLE(i * 4)
+          pos += n
+        })
+        child.stderr!.on('data', (c) => { err += c })
+        child.on('error', reject)
+        child.on('close', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`premix ${basename(s.path)} @${s.start.toFixed(2)}s: ffmpeg exited ${code}: ${err.slice(0, 300)}`))
+        })
+      })
+      onProgress?.(++done, segs.length)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(PAR, segs.length) }, worker))
+
+  // WAVE_FORMAT_IEEE_FLOAT (3) — ffmpeg reads it back as pcm_f32le
+  const dataBytes = mix.length * 4
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0); header.writeUInt32LE(36 + dataBytes, 4); header.write('WAVE', 8)
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(3, 20)
+  header.writeUInt16LE(MIX_CH, 22); header.writeUInt32LE(MIX_RATE, 24)
+  header.writeUInt32LE(MIX_RATE * MIX_CH * 4, 28); header.writeUInt16LE(MIX_CH * 4, 32); header.writeUInt16LE(32, 34)
+  header.write('data', 36); header.writeUInt32LE(dataBytes, 40)
+  const fh = await fsp.open(outPath, 'w')
+  try {
+    await fh.write(header)
+    await fh.write(Buffer.from(mix.buffer, mix.byteOffset, dataBytes))
+  } finally {
+    await fh.close()
+  }
+}
+
 export class ExportMuxer {
   private child: ChildProcess | null = null
   private cancelled = false
@@ -624,10 +766,34 @@ export class ExportMuxer {
   /**
    * @param videoTemp path to the renderer-produced video-only mp4 ('' for audio-only)
    */
-  run(job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void): Promise<void> {
+  async run(job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void): Promise<void> {
     const args: string[] = ['-y', '-v', 'error', '-progress', 'pipe:1']
-    const segs = job.audioSegments
+    // Linux caps a single argv string at 128 KB (MAX_ARG_STRLEN): a timeline
+    // with ~1000 SFX clips builds a filter graph past that and spawn() fails
+    // with E2BIG. The graph goes through a script file instead of argv.
+    let filterScript: string | null = null
+    let segs = job.audioSegments
     const hasVideo = !job.preset.audioOnly
+
+    // big timelines: sum the clips ourselves, then mux that one stream
+    let premix: string | null = null
+    if (segs.length > PREMIX_THRESHOLD) {
+      premix = join(tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
+      try {
+        await premixSegments(segs, job.duration, premix,
+          (done, total) => onProgress({ phase: 'mux', progress: 0.5 * (done / total) }),
+          () => this.cancelled)
+      } catch (err) {
+        await fsp.unlink(premix).catch(() => { /* never written */ })
+        throw err
+      }
+      segs = [{ path: premix, inPoint: 0, duration: job.duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0 }]
+    }
+    const muxBase = premix ? 0.5 : 0 // mux progress after a premix continues from its half
+    const cleanupTemps = () => {
+      if (filterScript) fsp.unlink(filterScript).catch(() => { /* already gone */ })
+      if (premix) fsp.unlink(premix).catch(() => { /* already gone */ })
+    }
 
     if (hasVideo) args.push('-i', videoTemp)
     for (const s of segs) {
@@ -640,16 +806,8 @@ export class ExportMuxer {
       segs.forEach((s, i) => {
         const idx = i + (hasVideo ? 1 : 0)
         const ms = Math.round(s.start * 1000)
-        const speed = s.speed || 1
-        const outDur = s.duration / speed // timeline-domain length after atempo
         const chain = [
-          'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo',
-          `volume=${s.gain.toFixed(4)}`,
-          ...(Math.abs(speed - 1) > 1e-4 ? atempoChain(speed) : []),
-          ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}`] : []),
-          ...(s.fadeOut > 0.001
-            ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}`]
-            : []),
+          ...segmentChain(s),
           `adelay=${ms}|${ms}`,
           // some builds (gyan.dev git 2025-01) stamp adelay's padding with
           // NOPTS when the input is a seeked A/V file; atrim then drops the
@@ -661,16 +819,24 @@ export class ExportMuxer {
         filters.push(`[${idx}:a]${chain.join(',')}[a${i}]`)
         labels.push(`[a${i}]`)
       })
+      // the master stage: a transparent-below-the-limit peak limiter on real
+      // exports (shared/audioMaster.ts) — a plain sum of a loud master and a
+      // few hits used to reach the encoder at +10 dBFS and be hard-clipped.
+      // Analysis mixdowns (job.master === false) stay untouched.
+      const master = job.master === false ? [] : masterLimiterChain()
+      const tail = master.length ? ',' + master.join(',') : ''
       if (segs.length === 1) {
-        filters.push(`${labels[0]}anull[aout]`)
+        filters.push(`${labels[0]}anull${tail}[aout]`)
       } else {
         // every padded stream is active for the whole duration, so amix scales
         // each by 1/N; volume=N restores the original levels
         filters.push(
-          `${labels.join('')}amix=inputs=${segs.length}:dropout_transition=0,volume=${segs.length}[aout]`
+          `${labels.join('')}amix=inputs=${segs.length}:dropout_transition=0,volume=${segs.length}${tail}[aout]`
         )
       }
-      args.push('-filter_complex', filters.join(';'))
+      filterScript = join(tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
+      await fsp.writeFile(filterScript, filters.join(';\n'))
+      args.push('-filter_complex_script', filterScript)
     }
 
     if (hasVideo) {
@@ -702,14 +868,18 @@ export class ExportMuxer {
           const m = line.match(/^out_time_us=(\d+)/)
           if (m) {
             const t = Number(m[1]) / 1e6
-            onProgress({ phase: 'mux', progress: Math.min(1, t / job.duration) })
+            onProgress({ phase: 'mux', progress: muxBase + (1 - muxBase) * Math.min(1, t / job.duration) })
           }
         }
       })
       child.stderr!.on('data', (c) => { err += c })
-      child.on('error', reject)
+      child.on('error', (e) => {
+        cleanupTemps()
+        reject(e)
+      })
       child.on('close', (code) => {
         this.child = null
+        cleanupTemps()
         if (this.cancelled) reject(new Error('cancelled'))
         else if (code === 0) resolve()
         else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
@@ -742,7 +912,9 @@ export async function mixdownWav(
       outputPath: outPath,
       width: 0, height: 0, fps: 0,
       duration,
-      audioSegments: segments
+      audioSegments: segments,
+      // analysis (beats, transcription, the wave) wants the mix as it is
+      master: false
     },
     '',
     () => { /* mixing is fast; callers report their own progress */ }

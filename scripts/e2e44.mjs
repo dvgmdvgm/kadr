@@ -1,261 +1,455 @@
-// Test: multi-selection on the timeline — the rubber band on empty lane
-// space, the ruler keeping the playhead, Ctrl/Shift click habits from the
-// file manager, and group operations on what comes out of them.
+// Test: music beats as snap-able markers, the sound under a fragment baked into
+// it, and the bundled sound library — the three things taken over from /brag.
 //
-// Uses TEXT clips only, so the suite needs no media and no ffmpeg.
-// Run: node scripts/e2e44.mjs   (app started with --remote-debugging-port=9777)
+//   1. the library: 260 effects (228 with /brag's analysis), 5 music beds, and
+//      the search orders gentlest first and «без резких» drops the sharp ones
+//   2. a library track lands on the timeline WITH its beats, and those beats are
+//      librosa's: compared with resources/music/cues (librosa 0.11 at 44.1 kHz)
+//      — here through the whole WYSIWYG path, mixdown included
+//   3. beats are snap targets (and stop being when the magnet is off); a new
+//      grid replaces the old beats and never the user's own markers
+//   4. a sound effect goes on a FREE audio track — never over the music — and
+//      one undo takes exactly it back
+//   5. a fragment hears the music: audio.json has one value per composition
+//      frame and the beats in composition seconds; moving the clip makes the
+//      bake stale and refreshStaleBakes() makes it fresh again; a composition
+//      that imports ./audio really renders through Remotion
+//   6. the two dialogs open from their toolbar buttons and show what they should
+//
+// Launch the app with `npx electron-vite dev -- --remote-debugging-port=9777`.
+// Needs no media: it uses the bundled library. It REFUSES to run over an open
+// project that has clips (it replaces the project), restores the snap setting,
+// deletes the fragment it creates and the render it makes.
 import WebSocket from 'ws'
+import { readFileSync, existsSync, unlinkSync, mkdirSync, copyFileSync, rmSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
 
 const PORT = process.env.KADR_CDP_PORT || 9777
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const TRACK = 'happy-beats-business-moves-vol-10-by-ende-dot-app.mp3'
+const CUES = join(root, 'resources', 'music', 'cues', TRACK.replace(/\.mp3$/, '.music-cues.json'))
 
-async function getPageWs() {
+async function targets() {
   for (let i = 0; i < 30; i++) {
     try {
-      const list = await fetch(`http://127.0.0.1:${PORT}/json/list`).then((r) => r.json())
-      const page = list.find((t) => t.type === 'page' && t.url.includes('localhost'))
-      if (page) return page.webSocketDebuggerUrl
-    } catch { /* starting */ }
-    await new Promise((r) => setTimeout(r, 1000))
+      return await fetch(`http://127.0.0.1:${PORT}/json/list`).then((r) => r.json())
+    } catch { await new Promise((r) => setTimeout(r, 1000)) }
   }
-  throw new Error('CDP target not found')
+  throw new Error('CDP not answering')
 }
 
-let id = 0
-let ws
-function send(method, params = {}) {
-  return new Promise((resolve, reject) => {
+function connect(url) {
+  const sock = new WebSocket(url)
+  let id = 0
+  const ready = new Promise((res, rej) => { sock.on('open', res); sock.on('error', rej) })
+  const send = (method, params = {}) => new Promise((resolve, reject) => {
     const msgId = ++id
     const onMsg = (raw) => {
       const msg = JSON.parse(raw)
       if (msg.id !== msgId) return
-      ws.off('message', onMsg)
+      sock.off('message', onMsg)
       msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result)
     }
-    ws.on('message', onMsg)
-    ws.send(JSON.stringify({ id: msgId, method, params }))
+    sock.on('message', onMsg)
+    sock.send(JSON.stringify({ id: msgId, method, params }))
   })
-}
-async function rawEval(expression) {
-  const r = await send('Runtime.evaluate', { expression, returnByValue: true })
-  if (r.exceptionDetails) {
-    throw new Error('JS exception: ' +
-      (r.exceptionDetails.exception?.description || r.exceptionDetails.text))
-  }
-  return r.result.value
-}
-async function evalJs(expression, { timeout = 60000 } = {}) {
-  const key = `r${++id}`
-  await rawEval(
-    `window.__e2e = window.__e2e || {};` +
-    `(async () => { try { window.__e2e.${key} = JSON.stringify({ ok: await (${expression}) }) }` +
-    ` catch (e) { window.__e2e.${key} = JSON.stringify({ err: String((e && e.message) || e) }) } })(); 0`
-  )
-  const t0 = Date.now()
-  for (;;) {
-    const raw = await rawEval(`window.__e2e.${key} ?? null`)
-    if (raw !== null) {
-      const r = JSON.parse(raw)
-      if ('err' in r) throw new Error('JS exception: ' + r.err)
-      return r.ok
+  const rawEval = async (expression) => {
+    const r = await send('Runtime.evaluate', { expression, returnByValue: true, userGesture: true })
+    if (r.exceptionDetails) {
+      throw new Error('JS exception: ' + (r.exceptionDetails.exception?.description || r.exceptionDetails.text))
     }
-    if (Date.now() - t0 > timeout) throw new Error('eval timeout')
-    await new Promise((r) => setTimeout(r, 200))
+    return r.result.value
   }
+  // async evals park their result in a global and are polled (awaitPromise is flaky under GC)
+  const evalJs = async (expression, { timeout = 90000 } = {}) => {
+    const key = `k${Date.now()}_${++id}`
+    await rawEval(
+      `window.__e2e = window.__e2e || {};` +
+      `(async () => { try { window.__e2e.${key} = JSON.stringify({ ok: await (${expression}) }) }` +
+      ` catch (e) { window.__e2e.${key} = JSON.stringify({ err: String((e && e.message) || e) }) } })(); 0`
+    )
+    const t0 = Date.now()
+    for (;;) {
+      const raw = await rawEval(`window.__e2e.${key} ?? null`)
+      if (raw !== null) {
+        const r = JSON.parse(raw)
+        if ('err' in r) throw new Error('JS exception: ' + r.err)
+        return r.ok
+      }
+      if (Date.now() - t0 > timeout) throw new Error('eval timeout')
+      await new Promise((r) => setTimeout(r, 200))
+    }
+  }
+  return { sock, ready, rawEval, evalJs }
 }
+
 function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  (' + extra + ')' : ''}`)
   if (!cond) process.exitCode = 1
 }
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const CTRL = 2
-const SHIFT = 8
-async function mouse(type, x, y, modifiers = 0) {
-  await send('Input.dispatchMouseEvent', {
-    type, x: Math.round(x), y: Math.round(y),
-    button: 'left', clickCount: 1,
-    buttons: type === 'mouseReleased' ? 0 : 1,
-    modifiers
-  })
-}
-async function drag(p0, p1, modifiers = 0) {
-  await mouse('mousePressed', p0.x, p0.y, modifiers)
-  for (let i = 1; i <= 8; i++) {
-    await mouse('mouseMoved', p0.x + ((p1.x - p0.x) * i) / 8, p0.y + ((p1.y - p0.y) * i) / 8, modifiers)
-    await new Promise((r) => setTimeout(r, 25))
-  }
-  await mouse('mouseReleased', p1.x, p1.y, modifiers)
-  await new Promise((r) => setTimeout(r, 120))
-}
-async function click(p, modifiers = 0) {
-  await mouse('mousePressed', p.x, p.y, modifiers)
-  await mouse('mouseReleased', p.x, p.y, modifiers)
-  await new Promise((r) => setTimeout(r, 120))
+const page = (await targets()).find((x) => x.type === 'page' && x.url.includes('localhost'))
+if (!page) throw new Error('editor page not found')
+const { ready, rawEval, evalJs, sock } = connect(page.webSocketDebuggerUrl)
+await ready
+
+const clipsOpen = await rawEval(`window.kadrEditor.useEditor.getState().project.tracks.reduce((n, t) => n + t.clips.length, 0)`)
+if (clipsOpen > 0 && !process.env.KADR_E2E_FORCE) {
+  console.log(`SKIP  e2e44 replaces the open project, and it has ${clipsOpen} clip(s) — save it and open an empty project (or set KADR_E2E_FORCE=1)`)
+  process.exit(0)
 }
 
-ws = new WebSocket(await getPageWs())
-await new Promise((r, j) => { ws.on('open', r); ws.on('error', j) })
-try { await rawEval('setTimeout(() => location.reload(), 50); 0') } catch { /* reloading */ }
-await new Promise((r) => setTimeout(r, 1800))
-for (let i = 0; i < 30; i++) {
+const savedSnap = await rawEval(`localStorage.getItem('kadr.snapBeats')`)
+let fragmentId = null
+let renderPath = null
+
+try {
+  await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    st().setProject({ ...st().project, name: 'e2e44', tracks: [], assets: [], markers: [], texts: [] }, null)
+    st().addTrack('video')
+    st().addTrack('audio')
+    st().setPlayhead(0)
+    E.useSettings.getState().setSnapBeats(true)
+    return 1
+  })()`)
+
+  // ---- 1. the library -------------------------------------------------------
+  const lib = await evalJs(`(async () => {
+    const E = window.kadrEditor
+    const L = await E.loadSoundLibrary()
+    const soft = E.findSfx(L.sfx, { soft: true })
+    const all = E.findSfx(L.sfx, {})
+    const rank = { low: 0, medium: 1, high: 2 }
+    let ordered = true
+    for (let i = 1; i < all.length; i++)
+      if (rank[all[i].hfRisk || 'medium'] < rank[all[i - 1].hfRisk || 'medium']) ordered = false
+    const bundled = L.sfx.filter((s) => s.origin === 'bundled')
+    return {
+      sfx: bundled.length, analysed: bundled.filter((s) => s.labelledBy === 'brag').length, music: L.music.length,
+      all: L.sfx.length, keyboardLabelled: bundled.filter((s) => s.family === 'keyboard' && s.hfRisk).length,
+      hits: bundled.filter((s) => s.hit > 0.05).length,
+      soft: soft.length, softHasHigh: soft.some((s) => s.hfRisk === 'high'), high: L.sfx.filter((s) => s.hfRisk === 'high').length,
+      ordered, first: all[0].hfRisk,
+      typing: E.findSfx(L.sfx, { use: 'typing' }).filter((s) => s.origin === 'bundled').length,
+      reveal: E.findSfx(L.sfx, { use: 'major reveal', limit: 3 }).map((s) => s.id),
+      mech: E.findSfx(L.sfx, { use: 'mechanical' }).filter((s) => s.origin === 'bundled')
+        .map((s) => ({ id: s.id, d: s.duration }))
+    }
+  })()`)
+  check('library: 260 bundled effects, 228 labelled by /brag, 5 music beds',
+    lib.sfx === 260 && lib.analysed === 228 && lib.music === 5, `${lib.sfx}/${lib.analysed}/${lib.music}`)
+  check('the 32 keypresses /brag skipped are labelled by Kadr', lib.keyboardLabelled === 32)
+  check('bundled sounds carry their hit time (dozens land later than 50 ms)', lib.hits > 50, `${lib.hits}`)
+  check('search: gentlest first (hfRisk never goes back down the list)', lib.ordered && lib.first === 'low')
+  check('«без резких» drops exactly the high-risk ones', !lib.softHasHigh && lib.soft === lib.all - lib.high,
+    `${lib.soft} = ${lib.all} − ${lib.high}`)
+  check('the bundled keyboard set answers to "typing"', lib.typing === 32, String(lib.typing))
+  check('"mechanical": short sounds of a mechanism, none of them a boom or a whoosh',
+    lib.mech.length >= 60 && lib.mech.every((m) => m.d <= 0.7 && !/whoosh|bong|bell|heavy|glitch|error/i.test(m.id)),
+    `${lib.mech.length}, longest ${Math.max(...lib.mech.map((m) => m.d)).toFixed(2)} s`)
+  check('"major reveal" finds the soft impacts first', lib.reveal.length === 3 && lib.reveal.every((id) => id.startsWith('impact/')),
+    lib.reveal.join(', '))
+
+  // ---- 2. music with its beats ------------------------------------------------
+  const music = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const r = await E.addSound(${JSON.stringify(TRACK)}, { at: 0 })
+    const p = st().project
+    const tr = p.tracks.find((t) => t.id === r.trackId)
+    return { r, trackKind: tr.kind, clipStart: tr.clips.find((c) => c.id === r.clipId).start,
+      beats: E.beatTimes(p), strong: E.beatTimes(p, { strongOnly: true }).length }
+  })()`, { timeout: 120000 })
+  check('music lands on an audio track at the playhead', music.trackKind === 'audio' && music.clipStart === 0)
+  check('…with its beats marked in the same step', music.r.beatMarkers > 50 && music.beats.length === music.r.beatMarkers,
+    `${music.r.beatMarkers} markers`)
+  const cues = JSON.parse(readFileSync(CUES, 'utf8'))
+  check('tempo equals librosa\'s', Math.abs(music.r.tempo - cues.tempo) < 0.05, `${music.r.tempo} vs ${cues.tempo}`)
+  const ref = cues.beats.map((b) => b.time)
+  const near = (xs, ys, tol) => xs.filter((x) => ys.some((y) => Math.abs(x - y) <= tol)).length / Math.max(1, xs.length)
+  const recall = near(ref, music.beats, 0.025)
+  const precision = near(music.beats, ref, 0.025)
+  // mixdown at 48 kHz → 44.1 kHz for the analysis vs librosa's own mp3 decode:
+  // a different resampling chain, so allow a handful of beats to differ
+  check('beats match librosa within 25 ms (through the export mixdown)', recall >= 0.95 && precision >= 0.95,
+    `recall ${(recall * 100).toFixed(1)} %, precision ${(precision * 100).toFixed(1)} %`)
+  const errs = ref.map((r) => Math.min(...music.beats.map((b) => Math.abs(b - r)))).filter((d) => d <= 0.025).sort((a, b) => a - b)
+  check('median beat offset vs librosa under 1 ms', errs[errs.length >> 1] < 0.001, `${(errs[errs.length >> 1] * 1000).toFixed(2)} ms`)
+  check('some beats are accents, not all', music.strong > 0 && music.strong < music.beats.length, `${music.strong}`)
+
+  // ---- 3. snapping, and a new grid replacing the old beats --------------------
+  const snap = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const snapPoints = E.snapPoints
+    const beats = E.beatTimes(st().project)
+    const userId = st().addMarker(12.345)
+    const on = snapPoints(st().project, '', 0)
+    E.useSettings.getState().setSnapBeats(false)
+    const off = snapPoints(st().project, '', 0)
+    E.useSettings.getState().setSnapBeats(true)
+    const self = snapPoints(st().project, userId, 0)
+    const before = beats.length
+    const all = st().project.markers || []
+    const bars = { withBar: all.filter((m) => m.kind === 'beat' && m.beatInBar >= 1).length,
+      downs: all.filter((m) => m.kind === 'beat' && m.beatInBar === 1).length,
+      sections: all.filter((m) => m.kind === 'section').length }
+    const bar = await E.detectBeats({ clipIds: [st().project.tracks.find((t) => t.kind === 'audio').clips[0].id], grid: 'bar' })
+    const after = E.beatTimes(st().project)
+    const user = (st().project.markers || []).filter((m) => !m.kind)
+    return {
+      beatsInOn: beats.every((b) => on.includes(b)), beatsInOff: beats.some((b) => off.includes(b)),
+      userInOff: off.includes(12.345), selfExcluded: !self.includes(12.345),
+      before, after: after.length, placed: bar.placed, user: user.map((m) => [m.time, m.label]), bars,
+      afterDowns: E.useEditor.getState().project.markers.filter((m) => m.kind === 'beat').every((m) => m.beatInBar === 1),
+      meter: bar.analysis.rhythm && bar.analysis.rhythm.meter
+    }
+  })()`, { timeout: 120000 })
+  check('every beat is a snap target', snap.beatsInOn)
+  check('the magnet off takes the beats out — and only them', !snap.beatsInOff && snap.userInOff)
+  check('a dragged marker does not snap to its own old place', snap.selfExcluded)
+  check('beats carry their bar (every beat numbered, a quarter of them "ones") and the song its sections',
+    snap.bars.withBar === snap.before && Math.abs(snap.bars.downs - snap.before / 4) <= 2 && snap.bars.sections >= 1,
+    JSON.stringify(snap.bars))
+  check('a "bar" grid keeps exactly the first beats of the bars', snap.afterDowns && snap.meter === 4)
+  check('a "bar" grid REPLACES the beats (about a quarter remain)',
+    snap.after === snap.placed && Math.abs(snap.after - snap.before / 4) <= 2, `${snap.before} → ${snap.after}`)
+  check('the user\'s own marker survives the re-detection', snap.user.length === 1 && snap.user[0][0] === 12.345 && snap.user[0][1] === '1',
+    JSON.stringify(snap.user))
+
+  // ---- 4. a sound effect never lands on top of the music ---------------------
+  const sfx = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const musicTrack = st().project.tracks.find((t) => t.kind === 'audio').id
+    const a = await E.addSound('impact/impactSoft_medium_001.ogg', { at: 5, gain: 0.7 })
+    const b = await E.addSound('impact/impactSoft_medium_002.ogg', { at: 5.05 })
+    const c = await E.addSound('interface/click_003.ogg', { at: 20 })
+    const p = st().project
+    const audio = p.tracks.filter((t) => t.kind === 'audio')
+    let overlap = false
+    for (const t of audio) for (const x of t.clips) for (const y of t.clips)
+      if (x !== y && x.start < y.start + y.duration && y.start < x.start + x.duration) overlap = true
+    const clipA = p.tracks.flatMap((t) => t.clips).find((x) => x.id === a.clipId)
+    const nClips = p.tracks.reduce((n, t) => n + t.clips.length, 0)
+    st().undo()
+    const q = st().project
+    return {
+      tracks: [a.trackId, b.trackId, c.trackId].map((id) => audio.findIndex((t) => t.id === id)),
+      musicTrackIdx: audio.findIndex((t) => t.id === musicTrack), audioTracks: audio.length, overlap,
+      gain: clipA.gain.value, label: clipA.label,
+      undone: q.tracks.reduce((n, t) => n + t.clips.length, 0) === nClips - 1 &&
+        !q.tracks.some((t) => t.clips.some((x) => x.id === c.clipId)) &&
+        q.tracks.some((t) => t.clips.some((x) => x.id === b.clipId))
+    }
+  })()`)
+  check('no two clips overlap on any audio track', !sfx.overlap)
+  check('the first effect gets a NEW track (the music track is busy)', sfx.tracks[0] !== sfx.musicTrackIdx && sfx.tracks[0] >= 0,
+    JSON.stringify(sfx.tracks))
+  check('an effect overlapping the first one gets yet another track', sfx.tracks[1] !== sfx.tracks[0] && sfx.tracks[1] !== sfx.musicTrackIdx)
+  check('a later effect reuses a track that is free by then', sfx.tracks[2] === sfx.tracks[0], JSON.stringify(sfx.tracks))
+  check('gain and label as asked', sfx.gain === 0.7 && sfx.label === 'impactSoft_medium_001', `${sfx.gain} ${sfx.label}`)
+  check('one undo takes back exactly the last effect', sfx.undone)
+
+  // ---- 4b. the HIT lands on the time asked for; the user's own folder ---------
+  const hit = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const L = await E.loadSoundLibrary()
+    const fan = L.sfx.find((s) => s.id === 'casino/card-fan-2.ogg')
+    const a = await E.addSound('casino/card-fan-2.ogg', { at: 30 })
+    const b = await E.addSound('casino/card-fan-2.ogg', { at: 40, alignHit: false })
+    const c = await E.addSound('casino/card-fan-2.ogg', { at: 0.2 })
+    const clip = (id) => st().project.tracks.flatMap((t) => t.clips).find((x) => x.id === id)
+    return { hit: fan.hit, a: [a.start, a.hitAt, clip(a.clipId).start], b: [b.start, b.hitAt], c: [c.start, c.hitAt] }
+  })()`)
+  check('an effect\'s HIT lands on `at` (the clip starts hit seconds earlier)',
+    hit.hit > 0.9 && Math.abs(hit.a[1] - 30) < 1e-9 && Math.abs(hit.a[2] - (30 - hit.hit)) < 1e-9, JSON.stringify(hit))
+  check('alignHit:false starts the file at `at`', hit.b[0] === 40)
+  check('a lead-in that would start before 0 is clamped, and says where the hit really is',
+    hit.c[0] === 0 && Math.abs(hit.c[1] - hit.hit) < 1e-9, JSON.stringify(hit.c))
+
+  // a family of the test's own in the user folder — never the user's files
+  const USERDIR = join(process.env.HOME, '.config', 'kadr', 'sfx', 'e2e44-tmp')
+  mkdirSync(USERDIR, { recursive: true })
+  copyFileSync(join(root, 'resources', 'sfx', 'impact', 'impactSoft_medium_001.ogg'), join(USERDIR, 'thump.ogg'))
+  copyFileSync(join(root, 'resources', 'sfx', 'keyboard', 'keypress-001.wav'), join(USERDIR, 'key.wav'))
   try {
-    if (await rawEval(`!!window.kadrEditor && !!window.kadr`)) break
-  } catch { /* mid-reload */ }
-  await new Promise((r) => setTimeout(r, 1000))
-}
-
-// helpers inside the page: a point at (track, time), and the selection
-await evalJs(`(() => {
-  const ed = window.kadrEditor
-  window.__st = () => ed.useEditor.getState()
-  window.__at = (name, time) => {
-    const s = window.__st()
-    const tr = s.project.tracks.find(t => t.name === name)
-    const lane = document.querySelector('[data-lane="' + tr.id + '"]')
-    const r = lane.getBoundingClientRect()
-    // below the level (gain/opacity) line, which owns the top of every clip
-    return { x: r.left + time * s.zoom, y: r.top + r.height * 0.75, top: r.top, h: r.height }
+    const user = await evalJs(`(async () => {
+      const E = window.kadrEditor
+      const L = await E.loadSoundLibrary(true)
+      const mine = L.sfx.filter((s) => s.family === 'e2e44-tmp')
+      const thump = mine.find((s) => s.id === 'user:e2e44-tmp/thump.ogg')
+      const bundled = L.sfx.find((s) => s.id === 'impact/impactSoft_medium_001.ogg')
+      const described = await E.setSoundMeta('user:e2e44-tmp/thump.ogg', { uses: ['major reveal', 'major reveal', ' Logo Payoff '], note: 'тест' })
+      const again = (await E.loadSoundLibrary(true)).sfx.find((s) => s.id === 'user:e2e44-tmp/thump.ogg')
+      let refused = ''
+      try { await E.setSoundMeta('impact/impactSoft_medium_001.ogg', { note: 'x' }) } catch (e) { refused = String(e.message || e) }
+      const found = E.findSfx(L.sfx, { family: 'e2e44-tmp' }).length
+      return { n: mine.length, origin: thump && thump.origin, by: thump && thump.labelledBy,
+        same: thump && bundled && thump.brightness === bundled.brightness && thump.hfRisk === bundled.hfRisk,
+        uses: described.uses, note: again.note, againUses: again.uses, refused, found,
+        families: E.sfxFamilies(L.sfx).slice(-3) }
+    })()`, { timeout: 120000 })
+    check('a new file in the user folder is found and labelled by Kadr', user.n === 2 && user.origin === 'user' && user.by === 'kadr',
+      `${user.n} ${user.origin} ${user.by}`)
+    check('…the same way as its bundled twin', user.same)
+    check('…and its folder becomes a family', user.found === 2 && user.families.includes('e2e44-tmp'))
+    check('uses are de-duplicated and normalised', JSON.stringify(user.uses) === JSON.stringify(['major reveal', 'logo payoff']),
+      JSON.stringify(user.uses))
+    check('the description survives a rescan', user.note === 'тест' && user.againUses.length === 2)
+    check('a bundled sound cannot be re-described', /only the user/.test(user.refused), user.refused)
+  } finally {
+    rmSync(USERDIR, { recursive: true, force: true })
+    await evalJs(`window.kadrEditor.loadSoundLibrary(true).then(() => 1)`, { timeout: 120000 })
   }
-  window.__sel = () => [...window.__st().selection].sort().join(',')
-  return true
-})()`)
 
-// A and B on V2 (0–4 and 6–10), C and D on V1 (0–4 and 6–10)
-const ids = await evalJs(`(() => {
-  const st = window.__st
-  st().setZoom(50)
-  // short lanes: the suite drives real screen coordinates, and the second
-  // video lane hangs below the window at the default track height. It is a
-  // SAVED user setting, so the run puts it back at the end.
-  window.__trackH0 = window.kadrEditor.useSettings.getState().trackH
-  window.kadrEditor.useSettings.getState().setTrackH(32)
-  st().insertTextClip(0); const a = st().selection[0]
-  st().insertTextClip(6); const b = st().selection[0]
-  st().insertTextClip(0); const c = st().selection[0]
-  st().insertTextClip(6); const d = st().selection[0]
-  const v1 = st().project.tracks.find(t => t.name === 'V1')
-  st().moveClip(c, v1.id, 0)
-  st().moveClip(d, v1.id, 6)
-  st().select([])
-  st().setPlayhead(1)
-  return { a, b, c, d }
-})()`)
-const key = (...k) => k.map((n) => ids[n]).sort().join(',')
+  // ---- 5. a fragment that hears the music ------------------------------------
+  const frag = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const f = await E.createFragment({ name: 'e2e44-react', start: 2, end: 6, transparent: true })
+    const b = await E.bakeAudio(f.clipId)
+    const clip = st().project.tracks.flatMap((t) => t.clips).find((c) => c.id === f.clipId)
+    const json = JSON.parse(await window.kadr.readTextFile(b.files[0]))
+    const ts = await window.kadr.readTextFile(b.files[1])
+    const fresh = E.bakeState(st().project, clip)
+    st().pushHistory('hMove')
+    st().updateClip(f.clipId, { start: 3 })
+    const moved = st().project.tracks.flatMap((t) => t.clips).find((c) => c.id === f.clipId)
+    const stale = E.bakeState(st().project, moved)
+    const n = await E.refreshStaleBakes(st().project)
+    const again = st().project.tracks.flatMap((t) => t.clips).find((c) => c.id === f.clipId)
+    const json2 = JSON.parse(await window.kadr.readTextFile(b.files[0]))
+    return {
+      id: f.id, entry: f.entry, clipId: f.clipId, frames: f.meta.durationInFrames, fps: f.meta.fps,
+      json: { frames: json.frames, level: json.level.length, bass: json.bass.length,
+        maxLevel: Math.max(...json.level), beats: json.beats.map((x) => x[0]), bpm: json.bpm,
+        timeline: json.timeline },
+      tsHasHook: ts.includes('export function useAudio') && ts.includes("import data from './audio.json'"),
+      tsHasAccent: ts.includes('export function useAccent') && ts.includes('export function breathAt'),
+      barsInJson: json.beats.filter((x) => x[4] === 1).length, beatsInJson: json.beats.length, meter: json.meter,
+      fresh, stale, refreshed: n, after: E.bakeState(st().project, again), timeline2: json2.timeline,
+      beats2: json2.beats.map((x) => x[0])
+    }
+  })()`, { timeout: 180000 })
+  fragmentId = frag.id
+  check('audio.json: one value per composition frame for every band',
+    frag.json.frames === frag.frames && frag.json.level === frag.frames && frag.json.bass === frag.frames,
+    `${frag.json.level}/${frag.frames}`)
+  check('…and the music is in it', frag.json.maxLevel > 0.3 && frag.json.bpm > 100, `max ${frag.json.maxLevel}, ${frag.json.bpm} BPM`)
+  // Reference: librosa's own beats of this track. The music starts at 0, so its
+  // source seconds ARE timeline seconds. (The timeline's beat markers are no use
+  // here — step 3 left only the every-4th grid on it.)
+  const refIn = (a, b) => ref.filter((t) => t >= a && t <= b)
+  const ref26 = refIn(2, 6)
+  const onGrid = frag.json.beats.filter((b) => ref26.some((t) => Math.abs(t - 2 - b) < 0.03)).length
+  check('beats in COMPOSITION seconds = librosa\'s beats − clip start',
+    onGrid === frag.json.beats.length && frag.json.beats.length === ref26.length,
+    `${onGrid}/${frag.json.beats.length} on the grid, librosa has ${ref26.length}`)
+  check('audio.ts is the reader (useAudio, imports audio.json)', frag.tsHasHook)
+  check('…with the bar hierarchy (useAccent, breathAt) and the bars in audio.json',
+    frag.tsHasAccent && frag.meter === 4 && frag.barsInJson >= 1 && frag.barsInJson < frag.beatsInJson,
+    `${frag.barsInJson} ones of ${frag.beatsInJson} beats, meter ${frag.meter}`)
+  check('fresh after baking, STALE after moving the clip', frag.fresh === 'fresh' && frag.stale === 'stale')
+  check('refreshStaleBakes() re-bakes it for the new place', frag.refreshed === 1 && frag.after === 'fresh' &&
+    frag.timeline2.start === 3, JSON.stringify(frag.timeline2))
+  // after the move composition second 0 is timeline 3
+  const ref37 = refIn(3, 7)
+  const onGrid2 = frag.beats2.filter((b) => ref37.some((t) => Math.abs(t - 3 - b) < 0.03)).length
+  check('…and the beats moved with it', onGrid2 === frag.beats2.length && frag.beats2.length === ref37.length,
+    `${onGrid2}/${frag.beats2.length} on the new grid, librosa has ${ref37.length}`)
 
-const geom = await evalJs(`(() => {
-  const a = window.__at('V2', 5)
-  const b = window.__at('V1', 5)
-  return { v2: a.top, v1: b.top, h: a.h, winH: window.innerHeight }
-})()`)
-check('both video lanes are on screen (the suite drives real coordinates)',
-  geom.h > 10 && geom.v2 > 0 && geom.v1 + geom.h < geom.winH,
-  JSON.stringify(geom))
+  // a composition that really uses the reader must go through Remotion's bundler
+  const tsx = `import React from 'react'
+import { AbsoluteFill } from 'remotion'
+import meta from './meta.json'
+import { useAudio, beats } from './audio'
 
-const at = (track, time) => evalJs(`window.__at('${track}', ${time})`)
+const Comp: React.FC = () => {
+  const a = useAudio()
+  return (
+    <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: 200 + 200 * a.bass, height: 200, background: 'rgb(255,0,255)', opacity: 0.4 + 0.6 * a.beat }} />
+      <div style={{ position: 'absolute', bottom: 20, color: 'white', fontSize: 40 }}>{beats.length}</div>
+    </AbsoluteFill>
+  )
+}
+export const fragment = { component: Comp, meta }
+`
+  const render = await evalJs(`(async () => {
+    await window.kadr.writeTextFile(${JSON.stringify(frag.entry)}, ${JSON.stringify(tsx)})
+    const r = await window.kadr.fragmentRender(${JSON.stringify(frag.id)}, { transparent: true })
+    const { asset } = await window.kadr.probeMedia(r.path)
+    return { path: r.path, duration: asset.duration, w: asset.width, h: asset.height }
+  })()`, { timeout: 600000 })
+  renderPath = render.path
+  check('a composition importing ./audio renders through Remotion', render.duration > 3.5 && render.w > 0,
+    `${render.duration.toFixed(2)} s ${render.w}×${render.h}`)
 
-// 1. band over empty space selects, and leaves the playhead alone ------------
-await drag(await at('V2', 4.4), await at('V2', 7))
-check('a band on empty space selects what it covers', await evalJs('window.__sel()') === key('b'),
-  await evalJs('window.__sel()'))
-check('…and the playhead stays where it was',
-  Math.abs(await evalJs('window.__st().playhead') - 1) < 1e-6,
-  String(await evalJs('window.__st().playhead')))
-
-// 2. the ruler is what moves the playhead ------------------------------------
-const ruler = await evalJs(`(() => {
-  const r = document.querySelector('.ruler').getBoundingClientRect()
-  return { x: r.left, y: r.top + r.height / 2 }
-})()`)
-const z = await evalJs('window.__st().zoom')
-await drag({ x: ruler.x + 100, y: ruler.y }, { x: ruler.x + 300, y: ruler.y })
-check('dragging the ruler moves the playhead',
-  Math.abs(await evalJs('window.__st().playhead') - 300 / z) < 0.1,
-  String(await evalJs('window.__st().playhead')))
-
-// 3. a band reaching both lanes catches both --------------------------------
-await evalJs(`(() => { window.__st().select([]); return true })()`)
-await drag(await at('V2', 4.4), await at('V1', 7))
-check('a band across two lanes catches clips on both',
-  await evalJs('window.__sel()') === key('b', 'd'), await evalJs('window.__sel()'))
-
-// 4. Ctrl+band adds ----------------------------------------------------------
-await evalJs(`(() => { window.__st().select([window.__st().project.tracks
-  .find(t => t.name === 'V2').clips.find(c => c.start === 0).id]); return true })()`)
-await drag(await at('V2', 4.4), await at('V2', 7), CTRL)
-check('Ctrl+band adds to the selection instead of replacing it',
-  await evalJs('window.__sel()') === key('a', 'b'), await evalJs('window.__sel()'))
-
-// 5. Ctrl+click toggles one clip out -----------------------------------------
-await click(await at('V2', 2), CTRL)
-check('Ctrl+click removes a clip from the selection',
-  await evalJs('window.__sel()') === key('b'), await evalJs('window.__sel()'))
-
-// 6. Shift+click spans from the first selected clip ---------------------------
-await click(await at('V2', 2))
-check('a plain click selects just that clip', await evalJs('window.__sel()') === key('a'),
-  await evalJs('window.__sel()'))
-await click(await at('V1', 8), SHIFT)
-check('Shift+click selects the whole rectangle to the clicked clip',
-  await evalJs('window.__sel()') === key('a', 'b', 'c', 'd'), await evalJs('window.__sel()'))
-
-// 7. the group moves as one ---------------------------------------------------
-const before = await evalJs(`(() => window.__st().project.tracks
-  .flatMap(t => t.clips).map(c => c.start).sort((x, y) => x - y))()`)
-await drag(await at('V2', 2), await at('V2', 4))
-const after = await evalJs(`(() => window.__st().project.tracks
-  .flatMap(t => t.clips).map(c => c.start).sort((x, y) => x - y))()`)
-check('dragging one clip of a selection moves all of them by the same delta',
-  before.length === after.length &&
-  before.every((s, i) => Math.abs(after[i] - s - 2) < 0.05),
-  JSON.stringify(before) + ' -> ' + JSON.stringify(after))
-
-// 8. a plain click narrows the group back to one ------------------------------
-await click(await at('V2', 4))
-check('a plain click on a group member keeps only that clip',
-  await evalJs('window.__sel()') === key('a'), await evalJs('window.__sel()'))
-
-// 9. Ctrl+CLICK on empty space still closes the gap ---------------------------
-const gapBefore = await evalJs(`(() => window.__st().project.tracks
-  .find(t => t.name === 'V2').clips.map(c => c.start).sort((a, b) => a - b))()`)
-await click(await at('V2', 6.5), CTRL)
-const gapAfter = await evalJs(`(() => window.__st().project.tracks
-  .find(t => t.name === 'V2').clips.map(c => c.start).sort((a, b) => a - b))()`)
-check('Ctrl+click on empty lane still closes the gap',
-  gapAfter[1] < gapBefore[1] - 0.5,
-  JSON.stringify(gapBefore) + ' -> ' + JSON.stringify(gapAfter))
-
-// 10. scrolling mid-drag must not move the band's anchor ----------------------
-// the wheel both scrolls and zooms the timeline, so a band anchored in screen
-// pixels would jump to another moment the instant the content moved under it
-await evalJs(`(() => {
-  const st = window.__st
-  const p = st().project
-  const at0 = (name, i) => p.tracks.find(t => t.name === name).clips
-    .sort((a, b) => a.start - b.start)[i].id
-  st().setClipStarts([
-    { id: at0('V2', 0), start: 0 }, { id: at0('V2', 1), start: 6 },
-    { id: at0('V1', 0), start: 0 }, { id: at0('V1', 1), start: 6 }
-  ])
-  st().select([])
-  document.querySelector('.tl-scroll').scrollLeft = 0
-  return true
-})()`)
-const anchor = await at('V2', 5)
-await mouse('mousePressed', anchor.x, anchor.y)
-await mouse('mouseMoved', anchor.x + 20, anchor.y)
-await evalJs(`(() => { document.querySelector('.tl-scroll').scrollLeft = 100; return true })()`)
-const backTo = await at('V2', 2.5)
-await mouse('mouseMoved', backTo.x, backTo.y)
-await new Promise((r) => setTimeout(r, 60))
-await mouse('mouseReleased', backTo.x, backTo.y)
-await new Promise((r) => setTimeout(r, 120))
-check('the band keeps its anchor when the timeline scrolls mid-drag',
-  await evalJs('window.__sel()') === key('a'), await evalJs('window.__sel()'))
-
-// trackH is a saved user setting — put it back the way it was
-await evalJs(`(() => {
-  window.kadrEditor.useSettings.getState().setTrackH(window.__trackH0)
-  return window.kadrEditor.useSettings.getState().trackH
-})()`)
-
-ws.close()
-console.log(process.exitCode ? '\nFAILED' : '\nall good')
+  // ---- 6. the dialogs ---------------------------------------------------------
+  const ui = await evalJs(`(async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms))
+    document.querySelector('[data-act="sounds"]').click()
+    await wait(100)
+    // the dialog remembers its tab and filters between openings (that is for the
+    // user) — so put them in a known state instead of assuming a fresh one
+    document.querySelector('[data-act="sounds-tab-sfx"]').click()
+    for (let i = 0; i < 50 && !document.querySelector('[data-sounds-list] .snd-row'); i++) await wait(100)
+    const softBox = [...document.querySelectorAll('.sounds-dialog label')]
+      .find((l) => l.textContent.includes('${'Без резких'}') || l.textContent.includes('No sharp')).querySelector('input')
+    if (softBox.checked) { softBox.click(); await wait(200) }
+    const rows = document.querySelectorAll('[data-sounds-list] .snd-row').length
+    softBox.click()
+    await wait(200)
+    const softRows = document.querySelectorAll('[data-sounds-list] .snd-row').length
+    softBox.click() // leave it as a fresh dialog has it
+    document.querySelector('[data-act="sounds-tab-music"]').click()
+    await wait(200)
+    const musicRows = document.querySelectorAll('.sounds-dialog .snd-row.music').length
+    const bpm = document.querySelector('.sounds-dialog .snd-row.music .snd-tag')?.textContent
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    document.querySelector('.sounds-dialog')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wait(200)
+    const soundsClosed = !document.querySelector('.sounds-dialog')
+    document.querySelector('[data-act="beats"]').click()
+    await wait(200)
+    const radios = document.querySelectorAll('input[name="beats-source"]').length
+    const grids = document.querySelectorAll('input[name="beats-grid"]').length
+    const snapBtn = !!document.querySelector('[data-act="beat-snap"][aria-pressed="true"]')
+    const lines = document.querySelectorAll('.tl-beat').length
+    const flags = document.querySelectorAll('.tl-marker-flag').length
+    document.querySelector('.modal [data-act="beats-run"]')?.closest('.modal')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await wait(200)
+    return { rows, softRows, musicRows, bpm, soundsClosed, radios, grids, snapBtn, lines, flags,
+      beatsClosed: !document.querySelector('input[name="beats-source"]') }
+  })()`)
+  check('«Звуки» lists every effect, the user\'s own included', ui.rows === lib.all, `${ui.rows} of ${lib.all}`)
+  check('…«Без резких» narrows it to the soft ones', ui.softRows === lib.soft, `${ui.softRows}`)
+  check('…the music tab shows 5 beds with their tempo', ui.musicRows === 5 && /BPM/.test(ui.bpm || ''), ui.bpm)
+  check('…and Escape closes it', ui.soundsClosed)
+  check('«Биты» dialog: sources and the four grids', ui.radios >= 2 && ui.grids === 4, `${ui.radios} sources`)
+  check('the beat magnet is shown, pressed', ui.snapBtn)
+  check('beats are drawn as lines, the user marker as the only flag', ui.lines > 0 && ui.flags === 1, `${ui.lines} lines, ${ui.flags} flag`)
+  check('…and Escape closes the beats dialog', ui.beatsClosed)
+} catch (err) {
+  check('suite ran to the end', false, String(err?.message || err))
+} finally {
+  // put everything back
+  try {
+    await evalJs(`(async () => {
+      const E = window.kadrEditor
+      if (${JSON.stringify(fragmentId)}) await E.deleteFragment(${JSON.stringify(fragmentId)})
+      const st = E.useEditor.getState()
+      st.setProject({ ...st.project, name: 'Untitled', tracks: [], assets: [], markers: [], texts: [] }, null)
+      E.useSoundsUi.getState().setOpen(false)
+      E.useBeatsUi.getState().setOpen(false)
+      return 1
+    })()`)
+    await rawEval(savedSnap === null ? `localStorage.removeItem('kadr.snapBeats')` : `localStorage.setItem('kadr.snapBeats', ${JSON.stringify(savedSnap)})`)
+    await rawEval(`window.kadrEditor.useSettings.setState({ snapBeats: localStorage.getItem('kadr.snapBeats') !== '0' })`)
+    if (renderPath && existsSync(renderPath)) unlinkSync(renderPath)
+  } catch (e) {
+    console.log('WARN  cleanup:', e.message)
+  }
+  sock.close()
+}

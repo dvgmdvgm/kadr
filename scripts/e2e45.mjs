@@ -1,76 +1,53 @@
-// Test: group speed change — Alt+drag on a clip edge (the same gesture as
-// Ctrl) stretches the whole selection, and the speed jog strip in the clip's
-// context menu turns it / sets it from a preset. The pure layout maths has
-// its own check: scripts/check-speedlayout.mjs.
+// Test: Remotion fragments in the PREVIEW — two bugs found while building the
+// Kadr demo video, both invisible in the export (which composites on the GPU):
 //
-// Makes its own 4 s A/V file with ffmpeg in <tmp>/kadr-test.
-// Run: node scripts/e2e45.mjs   (app started with --remote-debugging-port=9777)
+//   1. stacking: iframe fragments were added to the DOM top track first, so a
+//      full-frame background fragment on a lower track covered the title
+//      fragment above it. Now the DOM order is bottom → top.
+//   2. a fragment UNDER ordinary clips: an iframe sits over the GL canvas, so an
+//      opaque background fragment hid every screencast card on the tracks
+//      above it. Such a fragment now goes through pixel capture (into the GL
+//      stack at its own depth); with nothing GL-drawn above it, it stays an
+//      iframe.
+//   3. hot reload of a PROJECT-OWNED fragment created after the fragment dev
+//      server started: chokidar does not follow a symlinked folder that appears
+//      later, so edits were never seen — the preview served the first version
+//      of the file forever. The generated vite config now follows those folders.
+//
+// Launch the app with `npx electron-vite dev -- --remote-debugging-port=9777`.
+// REFUSES to run over an open project with clips (it replaces the project)
+// unless KADR_E2E_FORCE=1. Creates its project under /tmp/kadr-e2e45 and
+// deletes it, with the fragments it made.
 import WebSocket from 'ws'
-import { execFileSync } from 'child_process'
-import { mkdirSync, existsSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { rmSync, mkdirSync, writeFileSync, readFileSync } from 'fs'
 
 const PORT = process.env.KADR_CDP_PORT || 9777
-const dir = join(tmpdir(), 'kadr-test')
-const media = join(dir, 'speed-av.mp4')
-mkdirSync(dir, { recursive: true })
-if (!existsSync(media)) {
-  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=30',
-    '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '4', '-pix_fmt', 'yuv420p', '-c:v', 'libx264',
-    '-c:a', 'aac', '-shortest', '-movflags', '+faststart', '-y', media], { stdio: 'ignore' })
-}
+const DIR = '/tmp/kadr-e2e45'
 
-async function getPageWs() {
-  for (let i = 0; i < 30; i++) {
-    try {
-      const list = await fetch(`http://127.0.0.1:${PORT}/json/list`).then((r) => r.json())
-      const page = list.find((t) => t.type === 'page' && t.url.includes('localhost'))
-      if (page) return page.webSocketDebuggerUrl
-    } catch { /* starting */ }
-    await new Promise((r) => setTimeout(r, 1000))
-  }
-  throw new Error('CDP target not found')
-}
-
+const list = await fetch(`http://127.0.0.1:${PORT}/json/list`).then((r) => r.json())
+const page = list.find((t) => t.type === 'page' && t.url.includes('localhost'))
+if (!page) throw new Error('editor page not found')
+const sock = new WebSocket(page.webSocketDebuggerUrl)
+await new Promise((r, j) => { sock.on('open', r); sock.on('error', j) })
 let id = 0
-let ws
-function send(method, params = {}) {
-  return new Promise((resolve, reject) => {
-    const msgId = ++id
-    const onMsg = (raw) => {
-      const msg = JSON.parse(raw)
-      if (msg.id !== msgId) return
-      ws.off('message', onMsg)
-      msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result)
-    }
-    ws.on('message', onMsg)
-    ws.send(JSON.stringify({ id: msgId, method, params }))
-  })
-}
-async function rawEval(expression) {
+const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const m = ++id
+  const on = (raw) => { const x = JSON.parse(raw); if (x.id !== m) return; sock.off('message', on); x.error ? reject(new Error(JSON.stringify(x.error))) : resolve(x.result) }
+  sock.on('message', on)
+  sock.send(JSON.stringify({ id: m, method, params }))
+})
+const rawEval = async (expression) => {
   const r = await send('Runtime.evaluate', { expression, returnByValue: true })
-  if (r.exceptionDetails) {
-    throw new Error('JS exception: ' +
-      (r.exceptionDetails.exception?.description || r.exceptionDetails.text))
-  }
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text)
   return r.result.value
 }
-async function evalJs(expression, { timeout = 60000 } = {}) {
-  const key = `r${++id}`
-  await rawEval(
-    `window.__e2e = window.__e2e || {};` +
-    `(async () => { try { window.__e2e.${key} = JSON.stringify({ ok: await (${expression}) }) }` +
-    ` catch (e) { window.__e2e.${key} = JSON.stringify({ err: String((e && e.message) || e) }) } })(); 0`
-  )
+const evalJs = async (expression, timeout = 180000) => {
+  const key = `k${Date.now()}_${++id}`
+  await rawEval(`window.__e2e = window.__e2e || {}; (async () => { try { window.__e2e.${key} = JSON.stringify({ ok: await (${expression}) }) } catch (e) { window.__e2e.${key} = JSON.stringify({ err: String((e && e.message) || e) }) } })(); 0`)
   const t0 = Date.now()
   for (;;) {
     const raw = await rawEval(`window.__e2e.${key} ?? null`)
-    if (raw !== null) {
-      const r = JSON.parse(raw)
-      if ('err' in r) throw new Error('JS exception: ' + r.err)
-      return r.ok
-    }
+    if (raw !== null) { const r = JSON.parse(raw); if ('err' in r) throw new Error(r.err); return r.ok }
     if (Date.now() - t0 > timeout) throw new Error('eval timeout')
     await new Promise((r) => setTimeout(r, 200))
   }
@@ -79,131 +56,106 @@ function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${extra ? '  (' + extra + ')' : ''}`)
   if (!cond) process.exitCode = 1
 }
-const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const ALT = 1
-async function mouse(type, x, y, modifiers = 0, button = 'left') {
-  await send('Input.dispatchMouseEvent', {
-    type, x: Math.round(x), y: Math.round(y),
-    button, clickCount: 1,
-    buttons: type === 'mouseReleased' ? 0 : button === 'right' ? 2 : 1,
-    modifiers
-  })
+const clipsOpen = await rawEval(`window.kadrEditor.useEditor.getState().project.tracks.reduce((n, t) => n + t.clips.length, 0)`)
+if (clipsOpen > 0 && !process.env.KADR_E2E_FORCE) {
+  console.log(`SKIP  e2e45 replaces the open project, and it has ${clipsOpen} clip(s) — save it and open an empty project (or set KADR_E2E_FORCE=1)`)
+  process.exit(0)
 }
-async function path(points, modifiers = 0) {
-  await mouse('mousePressed', points[0].x, points[0].y, modifiers)
-  for (const p of points.slice(1)) {
-    await mouse('mouseMoved', p.x, p.y, modifiers)
-    await new Promise((r) => setTimeout(r, 25))
+
+rmSync(DIR, { recursive: true, force: true })
+mkdirSync(DIR, { recursive: true })
+let made = []
+try {
+  // a saved project, so fragments are project-owned (symlinked into the workspace)
+  const setup = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const mk = (name, kind) => ({ id: E.uid(), kind, name, muted: false, locked: false, gain: 1, clips: [] })
+    st().setProject({ version: 1, id: E.uid(), name: 'e2e45', width: 1280, height: 720, fps: 30, background: '#000000',
+      tracks: [mk('TOP', 'video'), mk('MID', 'video'), mk('BOT', 'video')], assets: [], markers: [], texts: [] }, null)
+    await window.kadr.writeProject('${DIR}/e2e45.kadr', st().project)
+    st().setProjectPath('${DIR}/e2e45.kadr')
+    const T = (n) => st().project.tracks.find((t) => t.name === n)
+    const top = await E.createFragment({ name: 'e2e45-top', start: 0, end: 4, transparent: true })
+    const bot = await E.createFragment({ name: 'e2e45-bot', start: 0, end: 4, transparent: false })
+    st().pushHistory('hMove')
+    st().moveClip(top.clipId, T('TOP').id, 0)
+    st().moveClip(bot.clipId, T('BOT').id, 0)
+    st().setPlayhead(1)
+    return { top: top.id, bot: bot.id, topEntry: top.entry, botEntry: bot.entry, topClip: top.clipId, botClip: bot.clipId }
+  })()`)
+  made = [setup.top, setup.bot]
+  await sleep(2500)
+
+  // ---- 1 + 2: stacking and the capture decision ------------------------------
+  const noGl = await evalJs(`(async () => {
+    const E = window.kadrEditor, p = E.useEditor.getState().project
+    const T = (n) => p.tracks.find((t) => t.name === n)
+    const c = (n) => T(n).clips[0]
+    for (let i = 0; i < 40 && document.querySelectorAll('.frag-clipbox iframe').length < 2; i++) await new Promise((r) => setTimeout(r, 200))
+    const order = [...document.querySelectorAll('.frag-clipbox iframe')].map((f) => new URL(f.src).searchParams.get('comp'))
+    return { order, top: E.fragmentNeedsCapture(T('TOP'), c('TOP'), p), bot: E.fragmentNeedsCapture(T('BOT'), c('BOT'), p) }
+  })()`)
+  check('two iframe fragments: DOM order is bottom track first', JSON.stringify(noGl.order) === JSON.stringify([setup.bot, setup.top]),
+    JSON.stringify(noGl.order))
+  check('with nothing GL-drawn above, neither needs capture', noGl.top === false && noGl.bot === false)
+
+  const withGl = await evalJs(`(async () => {
+    const E = window.kadrEditor, st = () => E.useEditor.getState()
+    const mid = st().project.tracks.find((t) => t.name === 'MID')
+    st().pushHistory('hInsert')
+    E.useEditor.setState((s) => ({ project: { ...s.project, tracks: s.project.tracks.map((t) => t.id === mid.id
+      ? { ...t, clips: [{ id: E.uid(), kind: 'text', text: 'card', start: 0.5, duration: 2, inPoint: 0, label: 'card',
+          textStyle: { fontFamily: 'sans-serif', fontSize: 80, color: '#ffffff', bold: true, italic: false, align: 'center',
+            outlineColor: '#000000', outlineWidth: 0, background: '' }, ...E.newClipDefaults() }] } : t) } }))
+    const p = st().project
+    const T = (n) => p.tracks.find((t) => t.name === n)
+    const late = { ...T('BOT').clips[0] }
+    const lateTrack = { ...T('BOT'), clips: [{ ...late, start: 3, duration: 1 }] }
+    const lateProject = { ...p, tracks: p.tracks.map((t) => t.name === 'BOT' ? lateTrack : t) }
+    await new Promise((r) => setTimeout(r, 600))
+    const order = [...document.querySelectorAll('.frag-clipbox iframe')].map((f) => new URL(f.src).searchParams.get('comp'))
+    return {
+      bot: E.fragmentNeedsCapture(T('BOT'), T('BOT').clips[0], p),
+      top: E.fragmentNeedsCapture(T('TOP'), T('TOP').clips[0], p),
+      noOverlap: E.fragmentNeedsCapture(lateTrack, lateTrack.clips[0], lateProject),
+      iframes: order
+    }
+  })()`)
+  check('a fragment UNDER a GL-drawn clip goes through capture', withGl.bot === true)
+  check('the fragment above it stays an iframe', withGl.top === false)
+  check('…and only while they overlap in time', withGl.noOverlap === false)
+  check('the captured fragment leaves the iframe overlay', !withGl.iframes.includes(setup.bot) && withGl.iframes.includes(setup.top),
+    JSON.stringify(withGl.iframes))
+
+  // ---- 3: hot reload of a fragment created after the server started ----------
+  const url = await evalJs(`window.kadrEditor.ensureFragmentServer()`)
+  const serve = () => fetch(`${url}/src/fragments/${setup.top}/index.tsx`).then((r) => r.text())
+  await serve() // the first transform, cached from here on
+  const src = readFileSync(setup.topEntry, 'utf8')
+  let seen = []
+  for (const n of [1, 2]) {
+    writeFileSync(setup.topEntry, src + `\nexport const __e2e45 = 'edit-${n}'\n`)
+    let got = false
+    for (let i = 0; i < 30 && !got; i++) { await sleep(200); got = (await serve()).includes(`edit-${n}`) }
+    seen.push(got)
   }
-  const last = points[points.length - 1]
-  await mouse('mouseReleased', last.x, last.y, modifiers)
-  await new Promise((r) => setTimeout(r, 150))
-}
-const line = (p0, p1, n = 8) =>
-  Array.from({ length: n + 1 }, (_, i) => ({ x: p0.x + ((p1.x - p0.x) * i) / n, y: p0.y + ((p1.y - p0.y) * i) / n }))
-
-ws = new WebSocket(await getPageWs())
-await new Promise((r, j) => { ws.on('open', r); ws.on('error', j) })
-try { await rawEval('setTimeout(() => location.reload(), 50); 0') } catch { /* reloading */ }
-await new Promise((r) => setTimeout(r, 1800))
-for (let i = 0; i < 30; i++) {
+  writeFileSync(setup.topEntry, src)
+  check('an edit to a project-owned fragment made after start reaches the dev server', seen[0], JSON.stringify(seen))
+  check('…and so does the next one', seen[1])
+} catch (err) {
+  check('suite ran to the end', false, String(err?.message || err))
+} finally {
   try {
-    if (await rawEval(`!!window.kadrEditor && !!window.kadr`)) break
-  } catch { /* mid-reload */ }
-  await new Promise((r) => setTimeout(r, 1000))
+    await evalJs(`(async () => {
+      const E = window.kadrEditor
+      for (const f of ${JSON.stringify(made)}) await E.deleteFragment(f)
+      const st = E.useEditor.getState()
+      st.setProject({ ...st.project, name: 'Untitled', tracks: [], assets: [], markers: [], texts: [] }, null)
+      return 1
+    })()`)
+  } catch (e) { console.log('WARN  cleanup:', e.message) }
+  rmSync(DIR, { recursive: true, force: true })
+  sock.close()
 }
-
-// two copies of the A/V file back to back on V1 (twins on A1), zoom 40 px/s
-await evalJs(`(async () => {
-  const ed = window.kadrEditor
-  window.__st = () => ed.useEditor.getState()
-  const [aid] = await ed.importFiles([${JSON.stringify(media)}], null)
-  const st = window.__st
-  st().setZoom(40)
-  const v1 = st().project.tracks.find(t => t.name === 'V1')
-  st().insertClipsFromAssets([aid, aid], v1.id, 0)
-  window.__vid = () => st().project.tracks.find(t => t.name === 'V1').clips
-    .slice().sort((a, b) => a.start - b.start)
-  window.__aud = () => st().project.tracks.find(t => t.kind === 'audio' && t.clips.length).clips
-    .slice().sort((a, b) => a.start - b.start)
-  window.__px = (clip) => {
-    const el = [...document.querySelectorAll('[data-lane="' + v1.id + '"] .clip')]
-      .find(e => Math.abs(parseFloat(e.style.left) - clip.start * st().zoom) < 0.5)
-    const r = el.getBoundingClientRect()
-    // mid = the extend grip; edge = the plain edge zone, clear of the
-    // level line at the top and the transition tip in the bottom corner
-    return { l: r.left, r: r.right, mid: r.top + r.height / 2, y: r.top + r.height * 0.68 }
-  }
-  return true
-})()`)
-const vid = () => evalJs('window.__vid().map(c => ({ id: c.id, start: c.start, duration: c.duration, speed: c.speed || 1 }))')
-const aud = () => evalJs('window.__aud().map(c => ({ start: c.start, duration: c.duration, speed: c.speed || 1 }))')
-
-let v = await vid()
-check('setup: two 4 s clips back to back', v.length === 2 && near(v[1].start, 4) && near(v[1].duration, 4),
-  JSON.stringify(v))
-
-// 1. Alt+drag the right edge of the second clip with both selected ----------
-await evalJs(`(() => { const s = window.__st(); s.select(s.project.tracks.flatMap(t => t.clips.map(c => c.id))); return true })()`)
-const hist0 = await evalJs('window.__st().past.length')
-let g = await evalJs('window.__px(window.__vid()[1])')
-// 4 s → 8 s at 40 px/s: +160 px, i.e. half speed
-await path(line({ x: g.r - 3, y: g.mid }, { x: g.r - 3 + 160, y: g.mid }), ALT)
-v = await vid()
-check('Alt+edge drag slows the whole selection', v.every((c) => near(c.speed, 0.5, 1e-3)), JSON.stringify(v))
-check('…each clip keeps its source span', v.every((c) => near(c.duration, 8, 1e-2)))
-check('…the group stays back to back from its start', near(v[0].start, 0) && near(v[1].start, v[0].duration, 1e-6))
-const a = await aud()
-check('…the linked audio follows', a.length === 2 && a.every((c) => near(c.speed, 0.5, 1e-3)) &&
-  near(a[1].start, v[1].start), JSON.stringify(a))
-check('…as one undo step', (await evalJs('window.__st().past.length')) === hist0 + 1)
-await evalJs(`(() => { window.__st().undo(); return true })()`)
-v = await vid()
-check('undo restores both clips', v.every((c) => near(c.speed, 1) && near(c.duration, 4)), JSON.stringify(v))
-
-// 2. Alt+drag on an unselected clip changes only that clip -----------------
-await evalJs(`(() => { window.__st().select([]); return true })()`)
-g = await evalJs('window.__px(window.__vid()[0])')
-await path(line({ x: g.r - 10, y: g.y }, { x: g.r - 10 - 80, y: g.y }), ALT)
-v = await vid()
-check('Alt+drag on an unselected clip touches only it',
-  near(v[0].speed, 2, 1e-3) && near(v[1].speed, 1), JSON.stringify(v))
-await evalJs(`(() => { window.__st().undo(); return true })()`)
-
-// 3. the context-menu jog strip ---------------------------------------------
-await evalJs(`(() => { const s = window.__st(); s.select(s.project.tracks.flatMap(t => t.clips.map(c => c.id))); return true })()`)
-g = await evalJs('window.__px(window.__vid()[0])')
-await mouse('mousePressed', g.l + 40, g.y, 0, 'right')
-await mouse('mouseReleased', g.l + 40, g.y, 0, 'right')
-await new Promise((r) => setTimeout(r, 200))
-const ring = await evalJs(`(() => {
-  const el = document.querySelector('.ctx-menu .speed-jog')
-  if (!el) return null
-  const r = el.getBoundingClientRect()
-  return { cx: r.left + r.width / 2, cy: r.top + r.height / 2 }
-})()`)
-check('the clip menu carries the speed jog strip', !!ring)
-if (ring) {
-  await evalJs(`(() => { [...document.querySelectorAll('.ctx-menu .speed-dial button')]
-    .find(b => b.textContent === '×2').click(); return true })()`)
-  await new Promise((r) => setTimeout(r, 100))
-  v = await vid()
-  check('a preset sets every selected clip', v.every((c) => near(c.speed, 2)) &&
-    near(v[1].start, 2), JSON.stringify(v))
-
-  // 40 px to the right = a quarter of JOG_PX: ×4^(1/4) ≈ 1.41 on top of ×2
-  const h1 = await evalJs('window.__st().past.length')
-  await path(line({ x: ring.cx - 20, y: ring.cy }, { x: ring.cx + 20, y: ring.cy }))
-  v = await vid()
-  check('dragging the strip right speeds the group up',
-    v.every((c) => c.speed > 2.6 && c.speed < 3.1) && near(v[0].speed, v[1].speed), JSON.stringify(v))
-  check('…the menu stays open while dragging', await evalJs('!!document.querySelector(".ctx-menu .speed-jog")'))
-  check('…one undo step per drag', (await evalJs('window.__st().past.length')) === h1 + 1)
-  await evalJs(`(() => { window.__st().undo(); return true })()`)
-  v = await vid()
-  check('undo of the drag goes back to ×2', v.every((c) => near(c.speed, 2)), JSON.stringify(v))
-}
-await mouse('mousePressed', 5, 5)
-await mouse('mouseReleased', 5, 5)
-ws.close()

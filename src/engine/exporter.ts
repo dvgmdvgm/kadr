@@ -17,7 +17,9 @@ import { chromiumCanDecode } from './codecs'
 import { evalAnim } from './anim'
 import { activity } from './autosave'
 import { projectDuration } from '@/state/store'
-import { logWarn } from './log'
+import { logInfo, logWarn } from './log'
+import { flushParamSaves } from './fragmentParams'
+import { refreshStaleBakes } from './audioReact'
 
 export interface ExportHandle {
   cancel(): void
@@ -109,9 +111,27 @@ export function startExport(
 ): ExportHandle {
   let cancelled = false
   const done = run()
-  return { cancel: () => { cancelled = true }, done }
+  return {
+    cancel: () => {
+      cancelled = true
+      // a fragment render runs in main and knows nothing of this flag: without
+      // this the render (and remotion's ffmpeg under it) went on for minutes
+      // after «Отмена»
+      void window.kadr.fragmentCancelRender?.()
+    },
+    done
+  }
 
   async function run(): Promise<void> {
+    // ONE export at a time. The raw encoder in the preload is a single global
+    // ffmpeg, and main's export state and the fragment render queue are shared
+    // too: a second export started while one ran (a script's and the dialog's,
+    // 2026-09-26) wrote its frames into the other's encoder — both failed at
+    // the very end («write after end» / «write ECANCELED»), and until then the
+    // second one sat on the first one's fragment renders looking frozen.
+    if (activity.exporting) {
+      throw new Error('уже идёт другой экспорт — дождитесь его или отмените')
+    }
     activity.exporting = true
     try {
       await runInner()
@@ -123,7 +143,8 @@ export function startExport(
   async function runInner(): Promise<void> {
     // remotion fragments render exactly once (content-hash cached) and turn
     // into ordinary media clips for the rest of the pipeline
-    project = await materializeFragments(project, onProgress)
+    project = await materializeFragments(project, onProgress, () => cancelled)
+    if (cancelled) throw new Error('cancelled')
     const width = preset.width === 'project' ? project.width : preset.width
     const height = preset.height === 'project' ? project.height : preset.height
     const fps = preset.fps === 'project' ? project.fps : preset.fps
@@ -515,7 +536,10 @@ export function startExport(
       let src = sources.get(clip.id)
       if (src === undefined) {
         const fastOff = (globalThis as { KADR_DISABLE_FAST_DECODE?: boolean }).KADR_DISABLE_FAST_DECODE
-        src = fastOff ? null : await Mp4FrameSource.open(asset)
+        // a rotated or HDR recording decodes fine — and WRONG (unrotated
+        // frames, untone-mapped colour): straight to the intermediate below
+        const bent = !fastOff && (await videoTraits(asset)).bent
+        src = fastOff || bent ? null : await Mp4FrameSource.open(asset)
         const noPack = (globalThis as { KADR_DISABLE_ALPHA_PACK?: boolean }).KADR_DISABLE_ALPHA_PACK
         if (!src && !fastOff && !noPack && asset.hasAlpha) {
           // Alpha video (VP9-alpha WebM — every transparent Remotion
@@ -537,7 +561,12 @@ export function startExport(
           // once to a cached full-res intermediate (H.264, or VP9+alpha
           // WebM for alpha sources) and decode that instead: mp4 through
           // the fast path, webm through the element via a pool override.
-          const alt = await undecodableFallback(asset)
+          // The same intermediate serves two more cases the fast path gets
+          // WRONG rather than black: a rotated recording (WebCodecs hands out
+          // the stored, unrotated frames — a phone's portrait clip exported
+          // lying on its side while the preview showed it upright, measured)
+          // and an HDR one (tone-mapped to SDR on the way, electron/hdr.ts).
+          const alt = await intermediateFallback(asset)
           if (alt) {
             src = await Mp4FrameSource.open(alt)
             if (!src) pool.setSourceOverride(clip.id, alt.path)
@@ -638,19 +667,40 @@ function alphaPackedFallback(asset: MediaAsset): Promise<MediaAsset | null> {
 }
 
 const undecodable = new Map<string, Promise<MediaAsset | null>>()
+const traits = new Map<string, Promise<{ codec?: string; hasAlpha?: boolean; rotation?: number; hdr?: 'hlg' | 'pq'; bent: boolean }>>()
 
-function undecodableFallback(asset: MediaAsset): Promise<MediaAsset | null> {
+/** codec, alpha, rotation, HDR of a video asset — from the asset, or (saved
+    before these fields existed) from the file, ffprobe only, once per path */
+function videoTraits(asset: MediaAsset) {
+  let p = traits.get(asset.path)
+  if (!p) {
+    p = (async () => {
+      let { codec, hasAlpha, rotation, hdr } = asset
+      if (!codec || asset.probeV !== 2) {
+        const fresh = await window.kadr.probeBasic(asset.path).catch(() => ({} as Awaited<ReturnType<typeof window.kadr.probeBasic>>))
+        codec = fresh.codec ?? codec
+        hasAlpha = fresh.hasAlpha ?? hasAlpha
+        rotation = fresh.rotation
+        hdr = fresh.hdr
+      }
+      const bent = (!!rotation && rotation % 360 !== 0) || !!hdr
+      return { codec, hasAlpha, rotation, hdr, bent }
+    })()
+    traits.set(asset.path, p)
+  }
+  return p
+}
+
+function intermediateFallback(asset: MediaAsset): Promise<MediaAsset | null> {
   let p = undecodable.get(asset.path)
   if (!p) {
     p = (async () => {
-      let { codec, hasAlpha } = asset
-      if (!codec) {
-        const fresh = (await window.kadr.probeMedia(asset.path)).asset
-        codec = fresh.codec
-        hasAlpha = fresh.hasAlpha
-      }
-      if (chromiumCanDecode(codec)) return null
-      console.info(`[kadr] ${asset.name}: '${codec}' is not decodable by Chromium — building a ${hasAlpha ? 'VP9+alpha' : 'H.264'} intermediate`)
+      const { codec, hasAlpha, rotation, hdr } = await videoTraits(asset)
+      const turned = !!rotation && rotation % 360 !== 0
+      if (chromiumCanDecode(codec) && !turned && !hdr) return null
+      const why = !chromiumCanDecode(codec) ? `'${codec}' is not decodable by Chromium`
+        : turned ? `it is shown rotated ${rotation}°` : `it is HDR (${hdr})`
+      console.info(`[kadr] ${asset.name}: ${why} — building a ${hasAlpha ? 'VP9+alpha' : 'H.264'} intermediate`)
       const path = await window.kadr.requestDecoded(asset.path, asset.duration,
         { alpha: !!hasAlpha, codec })
       return { ...asset, path }
@@ -671,10 +721,23 @@ function undecodableFallback(asset: MediaAsset): Promise<MediaAsset | null> {
  */
 async function materializeFragments(
   project: Project,
-  onProgress: (p: ExportProgress) => void
+  onProgress: (p: ExportProgress) => void,
+  isCancelled: () => boolean = () => false
 ): Promise<Project> {
   const hasFrags = project.tracks.some((t) => t.clips.some((c) => c.kind === 'remotion'))
   if (!hasFrags) return project
+  // a parameter slider let go a moment ago may not be in params.json yet
+  await flushParamSaves()
+  // a fragment that moves with the music must hear the edit as it is NOW: a
+  // clip moved or a track changed since the bake would otherwise render against
+  // the old sound. A failed re-bake is reported and the export goes on with the
+  // bake that is there — a dead export would be the worse outcome.
+  try {
+    const n = await refreshStaleBakes(project)
+    if (n) logInfo('экспорт', `звук под фрагментами обновлён перед рендером: ${n}`)
+  } catch (err) {
+    logWarn('экспорт', 'не удалось обновить звук под фрагментом — рендер с прежним', err)
+  }
   const p = JSON.parse(JSON.stringify(project)) as Project
   const rendered = new Map<string, string>() // fragmentId → assetId
   const todo = p.tracks.flatMap((t) => t.clips).filter((c) => c.kind === 'remotion' && c.fragmentId)
@@ -684,6 +747,7 @@ async function materializeFragments(
   })
   try {
     for (const clip of todo) {
+      if (isCancelled()) throw new Error('cancelled')
       let assetId = rendered.get(clip.fragmentId!)
       if (!assetId) {
         onProgress({ phase: 'fragments', progress: done / todo.length })
@@ -715,6 +779,7 @@ async function materializeFragments(
     })
     try {
       for (const a of alphaAssets) {
+        if (isCancelled()) throw new Error('cancelled')
         await alphaPackedFallback(a)
         n++
       }

@@ -6,7 +6,7 @@ import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume
+  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic
 } from './ffmpeg'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
@@ -16,7 +16,11 @@ import { registerTranscribeIpc } from './transcribe'
 import { registerTtsIpc } from './tts'
 import { registerVoiceIpc } from './voice'
 import { registerEnvelopeIpc } from './envelope'
-import { registerFragmentIpc } from './fragments'
+import { registerSoundsIpc } from './sounds'
+import { registerFragmentIpc, cancelFragmentRenders, stopAllCaptures } from './fragments'
+import { applyGpuChoice, registerGpuIpc } from './gpu'
+import { registerModelIpc } from './models'
+import { sourceHdr, hdrLut, hdrFilter, fragmentMedia } from './hdr'
 import type { ExportJob, Project } from '@shared/types'
 
 // Streamed local media under a privileged scheme so the renderer can play
@@ -32,6 +36,15 @@ protocol.registerSchemesAsPrivileged([
     privileges: { secure: true, stream: true, supportFetchAPI: true, corsEnabled: true, bypassCSP: true }
   }
 ])
+
+// A second, isolated instance (a test bench next to a working editor) needs
+// its own userData — its caches, stores and, above all, its startup sweep
+// (sweepStaleSessions matches helper processes by paths under userData) must
+// never reach the other instance's. Must run before anything reads the path.
+if (process.env.KADR_USER_DATA) app.setPath('userData', process.env.KADR_USER_DATA)
+
+// the discrete GPU when there is one (electron/gpu.ts) — before 'ready'
+applyGpuChoice()
 
 // Don't touch the OS keyring (gnome-keyring/libsecret): Chromium ≥ some
 // recent version otherwise pops a "unlock keyring" password dialog on
@@ -91,6 +104,14 @@ function createWindow() {
   })
   win.setMenuBarVisibility(false)
   const owner = win
+  // A reload of the editor page forgets which fragment capture windows it
+  // asked for, but main keeps them — found as windows of a project closed
+  // hours earlier, still rendering 60 frames a second offscreen. The new page
+  // starts the ones it wants again. Only the top document counts: the
+  // fragment iframes navigate inside this same webContents all the time.
+  win.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) stopAllCaptures()
+  })
   // The preview can be detached into a window of its own (src/engine/popout.ts).
   // The renderer opens an about:blank popup — same origin and same renderer
   // process, which is the only reason the live GL canvas can be adopted into
@@ -252,7 +273,10 @@ app.whenReady().then(() => {
   registerTtsIpc(() => win)
   registerVoiceIpc(() => win)
   registerEnvelopeIpc()
+  registerSoundsIpc()
   registerStorageIpc()
+  registerGpuIpc()
+  registerModelIpc()
   registerFragmentIpc(() => win)
   createWindow()
   app.on('activate', () => {
@@ -272,13 +296,15 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   exportState?.muxer?.cancel()
+  cancelFragmentRenders()
   void cleanupExport()
 })
 
 // ---------------------------------------------------------------------------
 
 const MEDIA_FILTERS = [
-  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'srt', 'txt'] },
+  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'srt', 'txt', 'stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
+  { name: '3D (STL, 3MF, STEP, OBJ, glTF)', extensions: ['stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
   { name: 'All files', extensions: ['*'] }
 ]
 const PROJECT_FILTERS = [{ name: 'Kadr project', extensions: ['kadr'] }]
@@ -314,11 +340,14 @@ let proxyChain: Promise<unknown> = Promise.resolve()
 async function requestProxy(
   srcPath: string,
   duration: number,
-  opts?: { alpha?: boolean; codec?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
 ): Promise<string> {
   const stat = statSync(srcPath)
+  // an HDR source is tone-mapped to SDR in its proxy (electron/hdr.ts)
+  const hdr = opts?.alpha ? null : await sourceHdr(srcPath)
+  if (hdr) opts = { ...opts, vfPre: hdrFilter(await hdrLut(hdr)) }
   // alpha proxies are a different artifact (webm) — separate cache identity
-  const key = mediaCacheKey(srcPath, stat.size, stat.mtimeMs, proxySuffix(opts?.alpha))
+  const key = mediaCacheKey(srcPath, stat.size, stat.mtimeMs, proxySuffix(opts?.alpha, !!hdr))
   const ext = opts?.alpha ? 'webm' : 'mp4'
   const out = join(proxyDir(), `${key}.${ext}`)
   try {
@@ -357,9 +386,12 @@ let decodedChain: Promise<unknown> = Promise.resolve()
 async function requestDecoded(
   srcPath: string,
   duration: number,
-  opts?: { alpha?: boolean; codec?: string; packed?: boolean; matrix?: string }
+  opts?: { alpha?: boolean; codec?: string; packed?: boolean; matrix?: string; sdr?: boolean; vfPre?: string }
 ): Promise<string> {
   const stat = statSync(srcPath)
+  // an HDR source's full-res intermediate is tone-mapped to SDR (electron/hdr.ts)
+  const hdr = opts?.alpha || opts?.packed ? null : await sourceHdr(srcPath)
+  if (hdr) opts = { ...opts, sdr: true, vfPre: hdrFilter(await hdrLut(hdr)) }
   const key = mediaCacheKey(srcPath, stat.size, stat.mtimeMs, decodedSuffix(opts))
   // packed = colour over its alpha matte in one fast-decodable H.264 mp4
   const ext = opts?.alpha && !opts?.packed ? 'webm' : 'mp4'
@@ -594,6 +626,9 @@ function registerIpc() {
 
   ipcMain.on('media:token', (e) => { e.returnValue = MEDIA_TOKEN })
   ipcMain.handle('media:probe', (_e, path: string) => probeMedia(path))
+  ipcMain.handle('media:probe-basic', (_e, path: string) => probeBasic(String(path)))
+  ipcMain.handle('media:fragment-media', (_e, path: string, projectDir: string, opts?: { name?: string; maxSide?: number }) =>
+    fragmentMedia(String(path), String(projectDir), opts ?? {}, (p) => win?.webContents.send('proxy:progress', { path, progress: p })))
 
   // sanitized basename + MIME-derived extension for downloaded/pasted media
   const mediaBase = (name: string, mime: string): string => {
@@ -909,14 +944,18 @@ function registerIpc() {
         : st.job
       await st.muxer.run(job, st.videoTemp, sendProgress)
       sendProgress({ phase: 'done', progress: 1 })
-    } catch (err: any) {
-      sendProgress({
-        phase: err?.message === 'cancelled' ? 'cancelled' : 'error',
-        progress: 0,
-        message: String(err?.message ?? err)
-      })
-    } finally {
       await cleanupExport()
+    } catch (err: any) {
+      const cancelled = err?.message === 'cancelled'
+      // the video stream took hours to render; a failed mux must not throw it
+      // away — keep the temp file and tell the user where it is
+      const keep = !cancelled && !st.job.preset.audioOnly
+      sendProgress({
+        phase: cancelled ? 'cancelled' : 'error',
+        progress: 0,
+        message: String(err?.message ?? err) + (keep ? ` (video kept at ${st.videoTemp})` : '')
+      })
+      await cleanupExport(keep)
     }
   })
 
@@ -930,12 +969,14 @@ function registerIpc() {
   })
 }
 
-async function cleanupExport() {
+async function cleanupExport(keepVideo = false) {
   if (!exportState) return
   const st = exportState
   exportState = null
   st.raw?.kill()
   st.rawWss?.close()
   try { await st.fh?.close() } catch { /* already closed */ }
-  try { await fs.unlink(st.videoTemp) } catch { /* never created */ }
+  if (!keepVideo) {
+    try { await fs.unlink(st.videoTemp) } catch { /* never created */ }
+  }
 }

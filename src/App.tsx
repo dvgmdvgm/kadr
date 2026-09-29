@@ -10,6 +10,9 @@ import { ClaudePanel } from './components/ClaudePanel'
 import { TranscribeDialog, SubtitlePanel } from './components/TextTools'
 import { CaptionsDialog } from './components/CaptionsDialog'
 import { NeonWaveDialog } from './components/NeonWaveDialog'
+import { BeatsDialog } from './components/BeatsDialog'
+import { ChecksDialog } from './components/ChecksDialog'
+import { SoundsDialog } from './components/SoundsDialog'
 import { TtsSettingsDialog, SpeakDialog, refreshTtsKey } from './components/TtsDialog'
 import { DefectsDialog } from './components/DefectsDialog'
 import { DebugPanel } from './components/DebugPanel'
@@ -83,6 +86,11 @@ async function saveProjectAs() {
 async function openProject() {
   const path = await window.kadr.openProjectDialog()
   if (!path) return
+  await openProjectAt(path)
+}
+
+/** Open a .kadr file exactly as «Открыть проект» does (also kadrEditor.openProject). */
+export async function openProjectAt(path: string) {
   const p = await window.kadr.readProject(path)
   useEditor.getState().setProject(p, path)
   markProjectSaved(useEditor.getState().project)
@@ -368,6 +376,9 @@ export default function App() {
       <SubtitlePanel />
       <CaptionsDialog />
       <NeonWaveDialog />
+      <BeatsDialog />
+      <ChecksDialog />
+      <SoundsDialog />
       <TtsSettingsDialog />
       <SpeakDialog />
       <DefectsDialog />
