@@ -2538,7 +2538,9 @@ div.tr-error {
   align-items: center;
   justify-content: center;
   padding: var(--s7) var(--s5);
-  z-index: 10;
+  /* above the floating panels (sub, Claude, log, storage: 55–60) — a dialog
+     opened while the Claude panel was up had its buttons under it */
+  z-index: 70;
   animation: modal-back-in var(--t-base) var(--ease);
 }
 .modal {

@@ -75,6 +75,9 @@ wireOffline()
   PRESETS, startExport, evalAnim, openProject: openProjectAt,
   transcribe: transcribeFlow, parseSrt, cuesToSrt, docTimeToProject, segmentsToCues,
   createFragment, ensureFragmentServer, deleteFragment, fragmentNeedsCapture, autoCaptions, captionsTsx, autosaveNow, activity,
+  // an embedded-Claude turn begins: main calls this before the turn's first /eval
+  // (electron/claude.ts) — a checkpoint outside undo, and a backup on disk
+  agentTurn: () => { useEditor.getState().agentCheckpoint(); void autosaveNow() },
   // offline media: the runtime set, and relink by map or by folder (one undo)
   useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink,
   reverseClip, importFiles, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,

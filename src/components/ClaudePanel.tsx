@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -8,6 +9,7 @@ import { useT } from '@/i18n'
 import { token } from '@/theme'
 import type { ClaudeChatInfo } from '@shared/types'
 import { Icon } from './icons'
+import { Modal } from './Modal'
 
 // panel position/size, persisted across launches; null = the default CSS
 // placement (docked to the right edge)
@@ -35,6 +37,41 @@ function loadRect(): PanelRect | null {
   return null
 }
 
+const clipCount = (p: { tracks: { clips: unknown[] }[] }) => p.tracks.reduce((n, t) => n + t.clips.length, 0)
+
+/** «Откатить ход агента»: what the revert changes, and the warning that the user's own edits go too */
+function AgentRevertPrompt({ onClose }: { onClose: () => void }) {
+  const t = useT()
+  const cp = useEditor((s) => s.agentCheckpoints.at(-1))
+  const now = useEditor((s) => s.project)
+  if (!cp) return null
+  const fill = (s: string, v: Record<string, string | number>) => s.replace(/\{(\w+)\}/g, (_, k) => String(v[k]))
+  return createPortal(
+    <Modal
+      title={t('agentRevert')}
+      onClose={onClose}
+      actions={
+        <>
+          <button onClick={onClose} data-act="agent-revert-cancel">{t('cancel')}</button>
+          <button
+            className="primary"
+            data-act="agent-revert-confirm"
+            onClick={() => { useEditor.getState().revertAgentTurn(); onClose() }}
+          >
+            {t('agentRevert')}
+          </button>
+        </>
+      }
+    >
+      <p>{fill(t('agentRevertBody'), { time: new Date(cp.at).toLocaleTimeString() })}</p>
+      <p data-agent-diff>{fill(t('agentRevertDiff'), {
+        c0: clipCount(now), c1: clipCount(cp.project), t0: now.tracks.length, t1: cp.project.tracks.length
+      })}</p>
+    </Modal>,
+    document.body
+  )
+}
+
 /**
  * Embedded Claude Code session: an xterm terminal driven by a PTY in the
  * main process running the user's `claude` CLI, with the kadr MCP server
@@ -45,6 +82,8 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
   const holder = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [rect, setRect] = useState<PanelRect | null>(loadRect)
+  const canRevert = useEditor((s) => s.agentCheckpoints.length > 0)
+  const [reverting, setReverting] = useState(false)
 
   // shared drag plumbing for the header (move) and the edge handles (resize)
   const trackDrag = (
@@ -232,6 +271,16 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
         </select>
         <button
           className="claude-new"
+          data-act="agent-revert"
+          title={t(canRevert ? 'agentRevert' : 'agentRevertNone')}
+          aria-label={t('agentRevert')}
+          disabled={!canRevert}
+          onClick={() => setReverting(true)}
+        >
+          <Icon name="undo" size={15} />
+        </button>
+        <button
+          className="claude-new"
           title={t('claudeNewChat')}
           aria-label={t('claudeNewChat')}
           onClick={() => setWant({ id: null })}
@@ -248,6 +297,7 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
       <div className="claude-term" ref={holder} />
+      {reverting && <AgentRevertPrompt onClose={() => setReverting(false)} />}
       <div className="claude-rs l" onPointerDown={startResize({ l: true })} />
       <div className="claude-rs r" onPointerDown={startResize({ r: true })} />
       <div className="claude-rs b" onPointerDown={startResize({ b: true })} />

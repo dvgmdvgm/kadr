@@ -14,6 +14,7 @@ import { ensureInStore, listChats } from './chats'
 import { claudeArgs, removeManagedSkills } from './claudeArgs'
 import { WIN_PROCESS_QUERY, parseWinProcs, pickWinOrphans } from './orphanSweep'
 import { WORKSPACE } from './fragments'
+import { turnTracker } from '../shared/agentTurn'
 
 // The session inherits this process's environment MINUS the markers of any
 // Claude session that launched the editor (see SESSION_MARKERS). Anything extra the
@@ -49,6 +50,8 @@ interface Session {
   pty: IPty
   server: Server
   port: number
+  /** where the agent's turns begin (shared/agentTurn.ts): keystrokes in, evals out */
+  turns: ReturnType<typeof turnTracker>
 }
 
 let session: Session | null = null
@@ -151,8 +154,10 @@ async function sweepWin32(marks: string[]): Promise<number> {
 }
 
 /** JS evaluated in the page (async function body) → JSON result. */
-async function evalInPage(win: BrowserWindow, code: string): Promise<string> {
+async function evalInPage(win: BrowserWindow, code: string, newTurn = false): Promise<string> {
+  // a new agent turn: checkpoint the project (and write a backup) BEFORE its first code runs
   const wrapped = `(async () => {
+    ${newTurn ? 'try { window.kadrEditor && window.kadrEditor.agentTurn && window.kadrEditor.agentTurn() } catch {}' : ''}
     try {
       const r = await (async () => { ${code}\n })()
       return JSON.stringify({ ok: r === undefined ? null : r })
@@ -181,7 +186,8 @@ async function evalInPage(win: BrowserWindow, code: string): Promise<string> {
  * The health check (GET /) stays open: mcp-bridge only needs *a* reply.
  */
 function startBridge(
-  win: BrowserWindow
+  win: BrowserWindow,
+  turns: ReturnType<typeof turnTracker>
 ): Promise<{ server: Server; port: number; token: string }> {
   const token = randomBytes(24).toString('hex')
   return new Promise((resolve, reject) => {
@@ -199,7 +205,8 @@ function startBridge(
       req.on('end', async () => {
         try {
           const { code } = JSON.parse(body)
-          const out = await evalInPage(win, String(code))
+          let out: string
+          try { out = await evalInPage(win, String(code), turns.evalStart()) } finally { turns.evalEnd() }
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(out)
         } catch (err) {
           res
@@ -311,9 +318,10 @@ async function spawnSession(
   const cmdName = process.env.KADR_CLAUDE_CMD || cfg.command || 'claude'
   const bin = (await which(cmdName)) ?? cmdName
 
+  const turns = turnTracker()
   let bridge: { server: Server; port: number; token: string }
   try {
-    bridge = await startBridge(win)
+    bridge = await startBridge(win, turns)
   } catch (err) {
     return { ok: false, error: `bridge: ${String(err)}` }
   }
@@ -380,7 +388,7 @@ async function spawnSession(
     })
     // publish BEFORE wiring the handlers: data emitted between spawn and the
     // assignment would otherwise be dropped by the identity guard below
-    const mine: Session = { pty: p, server: bridge.server, port: bridge.port }
+    const mine: Session = { pty: p, server: bridge.server, port: bridge.port, turns }
     session = mine
     // both handlers are keyed to THIS session: a pty that outlived its panel
     // (a kill that lost a race, say) must never paint into the live terminal
@@ -476,7 +484,10 @@ export function registerClaudeIpc(getWin: () => BrowserWindow | null) {
     return openSession(win, cols, rows, cwd, chatId ?? null)
   })
   ipcMain.handle('claude:chats', (_e, ids: string[]) => listChats(ids))
-  ipcMain.on('claude:input', (_e, data: string) => session?.pty.write(data))
+  ipcMain.on('claude:input', (_e, data: string) => {
+    session?.turns.input(data)
+    session?.pty.write(data)
+  })
   ipcMain.on('claude:resize', (_e, cols: number, rows: number) => {
     try { session?.pty.resize(Math.max(20, cols), Math.max(5, rows)) } catch { /* dying */ }
   })

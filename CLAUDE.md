@@ -180,6 +180,20 @@ mixes audio and muxes/transcodes per preset.
   send the request — and a flat refusal of any request carrying an `Origin`.
   The token reaches the MCP server as argv[3] of the generated config; the
   liveness ping on `GET /` stays open.
+  AGENT TURNS ARE CHECKPOINTED: the undo stack holds 50 steps, so an agent
+  turn of more edits pushed its own start out of undo, and pushing history is
+  only a convention the agent is told about. main marks a turn boundary on
+  the bridge (`shared/agentTurn.ts`): the first /eval after the user's last
+  keystroke in the panel (xterm's own focus/cursor replies do not count), or
+  after 20 s with no eval running — measured from the END of the last one, so
+  a long export never splits a turn. The first eval of a turn calls
+  `kadrEditor.agentTurn()` before its code: `agentCheckpoint` copies the
+  project into a ring of 10 OUTSIDE undo (an unchanged object is not copied
+  twice) and autosave writes a backup. «Откатить ход агента» in the panel
+  header restores the newest checkpoint as ONE undo step (the user's own
+  edits during the turn go too — the confirm says so) and drops it, so a
+  second click walks back the turn before. Test:
+  `node scripts/check-agent-turns.mjs`.
   On Windows there is no bash and no process groups: the command is found
   with `where` (npm's extensionless sh shim is skipped), claude runs directly
   in the pty, and a close kills its tree with `taskkill /t`.
@@ -755,6 +769,8 @@ mixes audio and muxes/transcodes per preset.
   and focus restored. It also exports `modalsOpen()`, which App.tsx checks
   before acting on a global shortcut — Space on a focused dialog button
   used to press the button AND start playback behind it.
+  The backdrop sits above the floating panels (z-index 70 over their
+  55–60): a dialog opened with the Claude panel up had its buttons under it.
 - `src/engine/log.ts` + `src/components/DebugPanel.tsx` — the session log.
   Twenty places reported failures with `console.warn` and nothing else, so
   a snapshot that did not happen and an import that brought nothing in

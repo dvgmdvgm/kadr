@@ -464,6 +464,16 @@ interface HistEntry {
   label: string
 }
 
+/** the project as it was when an agent turn began (card B8) */
+export interface AgentCheckpoint {
+  project: Project
+  path: string | null
+  at: number
+  /** the live object it was copied from: an unchanged project is not checkpointed twice */
+  source: Project
+}
+const AGENT_CHECKPOINTS = 10
+
 interface EditorState {
   project: Project
   projectPath: string | null
@@ -488,6 +498,9 @@ interface EditorState {
   clipboard: ClipboardItem[]
   past: HistEntry[]
   future: HistEntry[]
+  /** ring of pre-turn snapshots of the embedded Claude, OUTSIDE the undo stack:
+      a turn of more than 50 edits pushes its own start out of undo */
+  agentCheckpoints: AgentCheckpoint[]
 
   setProject(p: Project, path?: string | null): void
   setProjectPath(path: string | null): void
@@ -499,6 +512,10 @@ interface EditorState {
   pushHistory(label: string): void
   undo(): void
   redo(): void
+  /** an agent turn begins (main calls it before the turn's first /eval) */
+  agentCheckpoint(): void
+  /** restore the newest checkpoint as one undo entry and drop it; false when there is none */
+  revertAgentTurn(): boolean
 
   addAsset(a: MediaAsset): void
   /** Remove media files from the bin AND every timeline clip that uses them
@@ -710,6 +727,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   clipboard: [],
   past: [],
   future: [],
+  agentCheckpoints: [],
 
   setProject: (project, path = null) =>
     set({
@@ -751,6 +769,28 @@ export const useEditor = create<EditorState>((set, get) => ({
         selection: []
       }
     }),
+
+  agentCheckpoint: () =>
+    set((s) => {
+      // ponytail: "unchanged" is object identity — an in-place mutation between two
+      // turns (off-convention) keeps the older checkpoint; a JSON compare costs ~250 ms on big projects
+      if (s.agentCheckpoints.at(-1)?.source === s.project) return s
+      const cp = { project: cloneProject(s.project), path: s.projectPath, at: Date.now(), source: s.project }
+      return { agentCheckpoints: [...s.agentCheckpoints.slice(1 - AGENT_CHECKPOINTS), cp] }
+    }),
+  revertAgentTurn: () => {
+    const cp = get().agentCheckpoints.at(-1)
+    if (!cp) return false
+    get().pushHistory('hAgentRevert')
+    set((s) => ({
+      // chats are not an edit (as in undo): the conversation stays in the project
+      project: s.project.claudeChats === cp.project.claudeChats ? cp.project : { ...cp.project, claudeChats: s.project.claudeChats },
+      projectPath: cp.path,
+      agentCheckpoints: s.agentCheckpoints.slice(0, -1),
+      selection: []
+    }))
+    return true
+  },
 
   addAsset: (a) =>
     set((s) => ({ project: { ...s.project, assets: [...s.project.assets, a] } })),
