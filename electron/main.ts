@@ -10,6 +10,7 @@ import {
 } from './ffmpeg'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
+import { registerMediaStatIpc } from './mediaStat'
 import { registerClaudeIpc, sweepStaleSessions } from './claude'
 import { takeTranscripts, withTranscripts } from './chats'
 import { registerTranscribeIpc } from './transcribe'
@@ -317,6 +318,7 @@ app.whenReady().then(() => {
   registerEnvelopeIpc()
   registerSoundsIpc()
   registerStorageIpc()
+  registerMediaStatIpc()
   registerGpuIpc()
   registerModelIpc()
   registerFragmentIpc(() => win)
