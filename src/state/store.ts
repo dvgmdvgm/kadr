@@ -293,10 +293,13 @@ interface SettingsState {
   snapBeats: boolean
   /** «Подтверждать удаление»: deleting a track with clips asks first (default on; D5 row) */
   confirmDelete: boolean
+  /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export (default on; D5 row) */
+  previewLimiter: boolean
   setLang(l: 'ru' | 'en'): void
   setTrackH(h: number): void
   setSnapBeats(v: boolean): void
   setConfirmDelete(v: boolean): void
+  setPreviewLimiter(v: boolean): void
 }
 
 export const useSettings = create<SettingsState>((set) => ({
@@ -304,6 +307,11 @@ export const useSettings = create<SettingsState>((set) => ({
   trackH: Math.min(140, Math.max(32, Number(localStorage.getItem('kadr.trackh')) || 56)),
   snapBeats: localStorage.getItem('kadr.snapBeats') !== '0',
   confirmDelete: localStorage.getItem('kadr.confirmDelete') !== '0',
+  previewLimiter: localStorage.getItem('kadr.previewLimiter') !== '0',
+  setPreviewLimiter: (previewLimiter) => {
+    localStorage.setItem('kadr.previewLimiter', previewLimiter ? '1' : '0')
+    set({ previewLimiter })
+  },
   setConfirmDelete: (confirmDelete) => {
     localStorage.setItem('kadr.confirmDelete', confirmDelete ? '1' : '0')
     set({ confirmDelete })
