@@ -258,6 +258,21 @@ mixes audio and muxes/transcodes per preset.
   pixel-capture windows (created with `enableLargerThanScreen` — some
   window managers/displays clamp hidden windows otherwise). The player
   page syncs to the editor clock by nudging playbackRate, not seek jumps.
+  EVERY WORKSPACE TOOL (npm, vite, remotion, tsc) is spawned through
+  `electron/toolSpawn.ts`, the one place that knows the platform: on
+  Windows `npm`/`npx` are .cmd shims (ENOENT without a shell, and refused
+  without one since CVE-2024-27980) and `.bin/*` are sh scripts, so node
+  runs each tool's JS entry and npm goes through the shell. The vite
+  watchdog (vite dies when Kadr does) is `sh … kill -0` on POSIX and a
+  node wrapper polling `process.kill(pid, 0)` on Windows — MSYS `kill -0`
+  cannot see Windows pids and killed vite at once; there vite is the
+  wrapper's child, so it is stopped with `taskkill /T`. Test:
+  `node scripts/check-toolspawn.mjs [workspace]`. The workspace pins
+  `overrides: { yauzl: 3.4.0 }` (`WS_OVERRIDES`): remotion unpacks its
+  Chrome with extract-zip 2.0.1 over yauzl 2, which on Node ≥ 24.16
+  (nodejs/node#63487) stops after a few entries and exits 0 — no browser,
+  no video, no error; a Chrome zip still lying next to its folder is such a
+  half-unpacked browser and is dropped before a render (`healBrowserCache`).
   Every cache in the app builds into a `<key>.part.<ext>` sidecar and is
   RENAMED on success, so the presence of a cache file always means
   "finished". This matters most for fragment renders: remotion writes its

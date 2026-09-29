@@ -11,6 +11,7 @@ import { createHash } from 'crypto'
 import { homedir, tmpdir } from 'os'
 import { connect } from 'net'
 import type { FragmentSpec, FragmentInfo } from '@shared/types'
+import { workspaceTool, type WorkspaceTool } from './toolSpawn'
 // files Kadr keeps in the workspace's src/_kadr (see electron/fragment-kit)
 import VITE_CONFIG from './fragment-kit/vite.config.ts?raw'
 import PLAYER_TSX from './fragment-kit/player.tsx?raw'
@@ -110,12 +111,17 @@ const WS_DEV_DEPS: Record<string, string> = {
   typescript: '5.5.4',
   vite: '5.4.8'
 }
+// remotion unpacks its Chrome with extract-zip 2.0.1 over yauzl 2, which on
+// Node >= 24.16 (nodejs/node#63487) stops after a few entries and lets the
+// process exit 0: no browser, no video, no error. yauzl 3 reads the archive whole.
+const WS_OVERRIDES: Record<string, string> = { yauzl: '3.4.0' }
 const PKG_JSON = JSON.stringify({
   name: 'kadr-fragments',
   private: true,
   description: 'Kadr video editor: Remotion fragment compositions (managed; src/fragments/* are yours)',
   dependencies: WS_DEPS,
-  devDependencies: WS_DEV_DEPS
+  devDependencies: WS_DEV_DEPS,
+  overrides: WS_OVERRIDES
 }, null, 2) + '\n'
 
 const TSCONFIG = `{
@@ -288,6 +294,7 @@ async function migrateWorkspace(): Promise<boolean> {
     const has = (n: string) => !!(pkg.dependencies?.[n] || pkg.devDependencies?.[n])
     for (const [n, v] of Object.entries(WS_DEPS)) if (!has(n)) { (pkg.dependencies ??= {})[n] = v; changed = true }
     for (const [n, v] of Object.entries(WS_DEV_DEPS)) if (!has(n)) { (pkg.devDependencies ??= {})[n] = v; changed = true }
+    for (const [n, v] of Object.entries(WS_OVERRIDES)) if (!pkg.overrides?.[n]) { (pkg.overrides ??= {})[n] = v; changed = true }
     if (changed) await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
   } catch { /* unreadable package.json: npm install will say so */ }
   const tsPath = join(WORKSPACE, 'tsconfig.json')
@@ -299,8 +306,23 @@ async function migrateWorkspace(): Promise<boolean> {
     if (!co.paths?.['@kadr/*']) { co.paths = { ...(co.paths ?? {}), '@kadr/*': ['src/_kadr/*'] }; changed = true }
     if (changed) await fs.writeFile(tsPath, JSON.stringify(ts, null, 2) + '\n')
   } catch { /* hand-edited with comments: leave it alone */ }
-  return [...Object.keys(WS_DEPS), ...Object.keys(WS_DEV_DEPS)]
-    .some((n) => !existsSync(join(WORKSPACE, 'node_modules', n, 'package.json')))
+  const installed = (n: string) => {
+    try { return JSON.parse(readFileSync(join(WORKSPACE, 'node_modules', n, 'package.json'), 'utf8')).version as string } catch { return null }
+  }
+  return [...Object.keys(WS_DEPS), ...Object.keys(WS_DEV_DEPS)].some((n) => !installed(n)) ||
+    Object.entries(WS_OVERRIDES).some(([n, v]) => { const got = installed(n); return !!got && got !== v })
+}
+
+/**
+ * remotion deletes its Chrome zip only after a WHOLE extraction, so a zip
+ * still lying there means a half-unpacked browser (see WS_OVERRIDES) — whose
+ * exe then fails every render with spawn EFTYPE. Drop it; the render fetches
+ * it again.
+ */
+async function healBrowserCache(): Promise<void> {
+  const dir = join(WORKSPACE, 'node_modules', '.remotion', 'chrome-headless-shell')
+  const names = await fs.readdir(dir).catch(() => [] as string[])
+  if (names.some((n) => n.endsWith('.zip'))) await fs.rm(dir, { recursive: true, force: true })
 }
 
 /**
@@ -352,13 +374,13 @@ async function ensureWorkspace(
     onProgress?.('install', 0)
     const extraEnv = await netEnv()
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
+      const child = spawnTool('npm', ['install', '--no-audit', '--no-fund'], {
         cwd: WORKSPACE,
         env: { ...process.env, ...extraEnv },
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let err = ''
-      child.stderr.on('data', (c) => { err += c })
+      child.stderr!.on('data', (c) => { err += c })
       child.on('error', reject)
       child.on('close', (code) => {
         if (code === 0) resolve()
@@ -434,15 +456,8 @@ async function startServer(): Promise<{ url: string }> {
     server = { child: null, url: existing }
     return { url: existing }
   }
-  // a watchdog shell kills vite when this process dies — orphaned children
-  // inherit Electron's listening sockets and would block the next launch.
-  // The bin runs directly (NOT via npx — npx makes vite a grandchild the
-  // watchdog's kill couldn't reach).
-  const child = spawn('sh', ['-c',
-    `"./node_modules/.bin/vite" --port ${VITE_PORT} --strictPort & V=$!; ` +
-    `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; kill $V 2>/dev/null) & ` +
-    'wait $V'
-  ], {
+  // a watchdog kills vite when this process dies (toolSpawn.ts)
+  const child = spawnTool('vite', ['--port', String(VITE_PORT), '--strictPort'], {
     cwd: WORKSPACE,
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -479,8 +494,18 @@ async function startServer(): Promise<{ url: string }> {
 }
 
 function stopServer() {
-  server?.child?.kill()
+  const child = server?.child
+  // on win32 vite is the watchdog's child: kill the tree, not just the watchdog
+  if (process.platform === 'win32' && child?.pid) {
+    try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F']) } catch { /* already gone */ }
+  } else child?.kill()
   server = null
+}
+
+/** spawn a workspace tool the way this platform can (toolSpawn.ts) */
+function spawnTool(tool: WorkspaceTool, args: string[], opts: Parameters<typeof spawn>[2]): ChildProcess {
+  const c = workspaceTool(tool, args, { workspace: WORKSPACE })
+  return spawn(c.command, c.args, { ...opts, shell: c.shell, windowsHide: true })
 }
 
 // ------------------------------------------------------------ create/render
@@ -881,7 +906,7 @@ async function renderFragment(
   // replaces VP8 for alpha (dramatically better on sharp graphics), and a
   // low CRF keeps this intermediate visually lossless — the final export
   // pass re-encodes it once more.
-  const args = ['remotion', 'render', '--config=kadr.remotion.config.ts', 'src/_entries/current.tsx', id, tmp, '--log=error', '--image-format=png']
+  const args = ['render', '--config=kadr.remotion.config.ts', 'src/_entries/current.tsx', id, tmp, '--log=error', '--image-format=png']
   if (transparent) args.push('--codec=vp9', '--pixel-format=yuva420p', '--crf=12')
   else args.push('--codec=h264', '--crf=15')
 
@@ -896,11 +921,12 @@ async function renderFragment(
       // inside the queue: the entry is one file shared by every render
       await writeRenderEntry(id)
       await writeRenderConfig()
+      await healBrowserCache()
       await new Promise<void>((resolve, reject) => {
         // remotion runs chrome AND its own ffmpeg under this; a cancel kills
         // the whole tree (cancelFragmentRenders) — killing only npx once left
         // that ffmpeg encoding for minutes as an orphan nobody could reach
-        const child = spawn('npx', args, {
+        const child = spawnTool('remotion', args, {
           cwd: WORKSPACE,
           env: { ...process.env, ...extraEnv },
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -931,8 +957,8 @@ async function renderFragment(
         child.on('close', (code) => {
           if (activeRender === child) activeRender = null
           if (renderCancelled) reject(new Error('cancelled'))
-          else if (code === 0) resolve()
-          else reject(new Error(`remotion render exited ${code}: ${tail.slice(-800)}`))
+          else if (code === 0 && existsSync(tmp)) resolve()
+          else reject(new Error(`remotion render exited ${code}${code === 0 ? ' without writing the video' : ''}: ${tail.slice(-800)}`))
         })
       })
       await fs.rename(tmp, out)
@@ -1052,7 +1078,7 @@ async function typecheckFragment(id: string): Promise<{ ok: boolean; errors: Fra
   await fs.writeFile(join(WORKSPACE, cfgName), JSON.stringify(cfg, null, 2))
   try {
     const out = await new Promise<string>((resolve) => {
-      const child = spawn(join(WORKSPACE, 'node_modules', '.bin', 'tsc'), ['-p', cfgName, '--pretty', 'false'], {
+      const child = spawnTool('tsc', ['-p', cfgName, '--pretty', 'false'], {
         cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe']
       })
       let text = ''
@@ -1063,7 +1089,7 @@ async function typecheckFragment(id: string): Promise<{ ok: boolean; errors: Fra
     })
     const mine = [`src/fragments/${id}/`, 'src/_kadr/', ...(key ? [`src/_projects/${key}/`] : [])]
     const errors: FragmentTypeError[] = []
-    for (const line of out.split('\n')) {
+    for (const line of out.split(/\r?\n/)) { // tsc ends its lines with CRLF on Windows
       const m = line.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/)
       if (!m || !mine.some((p) => m[1].startsWith(p))) continue
       errors.push({ file: m[1], line: Number(m[2]), col: Number(m[3]), code: m[4], message: m[5] })
