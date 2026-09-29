@@ -91,8 +91,15 @@ let gone = false
 for (let i = 0; i < 80 && !gone; i++) { await sleep(100); gone = !alive(vitePid) }
 check('vite dies within a watchdog tick of its parent', gone)
 if (!gone && vitePid) try { process.kill(vitePid) } catch { /* gone */ }
-dog.kill()
-rmSync(WS, { recursive: true, force: true })
+// Windows will not remove a directory that is some process's cwd: the watchdog
+// runs with cwd WS and may still be exiting here (exitCode null), and a killed
+// process keeps its handles a little past the moment kill -0 stops seeing it.
+if (dog.exitCode === null && dog.signalCode === null) {
+  const exited = new Promise((r) => dog.once('exit', r))
+  dog.kill()
+  await exited
+}
+rmSync(WS, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')
 process.exit(fails ? 1 : 0)
