@@ -22,6 +22,7 @@ import { applyGpuChoice, registerGpuIpc } from './gpu'
 import { registerModelIpc } from './models'
 import { sourceHdr, hdrLut, hdrFilter, fragmentMedia } from './hdr'
 import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
+import { atomicWrite } from './atomicWrite'
 import type { ExportJob, Project } from '@shared/types'
 
 // Streamed local media under a privileged scheme so the renderer can play
@@ -575,7 +576,7 @@ async function rememberDir(kind: string, filePath: string) {
       data = JSON.parse(await fs.readFile(userStorePath(DIRS_STORE), 'utf8'))
     } catch { /* fresh store */ }
     data[kind] = dirname(filePath)
-    await fs.writeFile(userStorePath(DIRS_STORE), JSON.stringify(data, null, 1))
+    await atomicWrite(userStorePath(DIRS_STORE), JSON.stringify(data, null, 1))
   } catch { /* best effort */ }
 }
 
@@ -614,7 +615,7 @@ function registerIpc() {
   })
 
   ipcMain.handle('store:write', async (_e, name: string, data: unknown) => {
-    await fs.writeFile(userStorePath(name), JSON.stringify(data, null, 1))
+    await atomicWrite(userStorePath(name), JSON.stringify(data, null, 1))
   })
 
   ipcMain.handle('media:open-dialog', async () => {
@@ -820,21 +821,18 @@ function registerIpc() {
   })
 
   ipcMain.handle('project:write', async (_e, path: string, project: Project) => {
-    await fs.writeFile(path, JSON.stringify(await withTranscripts(project), null, 1), 'utf-8')
+    await atomicWrite(path, JSON.stringify(await withTranscripts(project), null, 1))
   })
 
   // periodic safety net: <name>.autosave.kadr next to the saved project
-  // (Downloads for never-saved ones); tmp+rename so a crash mid-write can
-  // never leave a torn file
+  // (Downloads for never-saved ones); atomic like every project write
   ipcMain.handle('project:autosave', async (_e, project: Project, mainPath: string | null) => {
     const dir = mainPath ? dirname(mainPath) : app.getPath('downloads')
     const base = mainPath
       ? basename(mainPath, '.kadr')
       : (project.name || 'Untitled').replace(/[^\p{L}\p{N}._ -]/gu, '').trim() || 'Untitled'
     const out = join(dir, `${base}.autosave.kadr`)
-    const tmp = `${out}.tmp`
-    await fs.writeFile(tmp, JSON.stringify(await withTranscripts(project), null, 1), 'utf-8')
-    await fs.rename(tmp, out)
+    await atomicWrite(out, JSON.stringify(await withTranscripts(project), null, 1))
     return out
   })
 
