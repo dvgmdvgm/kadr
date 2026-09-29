@@ -21,24 +21,26 @@ import type {
 import { spliceForward, toAnalysisTime, type SpliceUnitMap } from '@shared/voiceMap'
 import { FFMPEG, FFPROBE, audioCodecArgs } from './ffmpeg'
 import { speechPython } from './transcribe'
-import { pyLabel, type PyCmd } from './speechPython'
+import { pyLabel, detectorPython, type PyCmd } from './speechPython'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 
 /** python 3.11+ with torch and faster-whisper. Distributions still ship 3.9
     as `python3`, which cannot even import the package (tomllib), and the wheels
     are usually in a venv — hence the setting (voice-over settings → «Python»)
-    and KADR_TTSQC_PYTHON. Without either, the interpreter speech-to-text
-    resolved (it imports faster-whisper too); this default is the last resort. */
+    and KADR_TTSQC_PYTHON. Without either, this default, then the interpreter
+    speech-to-text resolved — only if it is >= 3.11 and imports torch. */
 const DEFAULT_PYTHON = 'python3.11'
 const CACHE_DAYS = 14
 
 const driver = () => join(app.getAppPath(), 'scripts', 'ttsqc_run.py')
+let detector: Promise<PyCmd> | null = null
 async function pythonFor(want?: string): Promise<PyCmd> {
   const set = (want && want.trim()) || process.env.KADR_TTSQC_PYTHON
   if (set) return { command: set, args: [] }
-  const r = await speechPython()
-  return 'error' in r ? { command: DEFAULT_PYTHON, args: [] } : r
+  // probed once per launch (importing torch takes seconds)
+  detector ??= detectorPython(process.env, speechPython, DEFAULT_PYTHON)
+  return detector
 }
 
 /** One run directory per (audio, script) pair, so two analyses never land on

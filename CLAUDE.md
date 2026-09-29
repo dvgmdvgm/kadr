@@ -201,8 +201,9 @@ mixes audio and muxes/transcodes per preset.
   stock Windows that name is the Microsoft Store stub. `electron/speechPython.ts`
   tries `KADR_PYTHON`, the app's own `.venv`, `py -3` (Windows), `python`,
   `python3` and takes the first that imports faster_whisper (once per launch;
-  a miss names every candidate and why). The detector falls back to the same
-  interpreter when its own setting is empty. Test:
+  a miss names every candidate and why). With its own setting empty, the detector
+  tries `python3.11`, then that interpreter — each only if it is ≥ 3.11 and
+  imports torch (`detectorPython`). Test:
   `node scripts/check-python-resolve.mjs`. The runner uses CUDA/float16 when
   ctranslate2 sees a GPU (`KADR_WHISPER_DEVICE=cpu|cuda|auto`; on Windows the
   pip `nvidia-*` wheels' DLL folders are registered) and redoes the job on

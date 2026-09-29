@@ -34,11 +34,11 @@ export function speechCandidates({ env, platform, appPath }: Where): PyCmd[] {
   return out
 }
 
-function probe(c: PyCmd, env: NodeJS.ProcessEnv): Promise<{ cuda: number } | { why: string }> {
+function probe(c: PyCmd, env: NodeJS.ProcessEnv, code = PROBE): Promise<{ cuda: number } | { why: string }> {
   return new Promise((resolve) => {
     let out = ''
     let err = ''
-    const p = spawn(c.command, [...c.args, '-c', PROBE], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const p = spawn(c.command, [...c.args, '-c', code], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     const timer = setTimeout(() => { p.kill(); err = `no answer in ${PROBE_MS / 1000} s` }, PROBE_MS)
     p.stdout.on('data', (d) => { out += d })
     p.stderr.on('data', (d) => { err += d })
@@ -60,4 +60,19 @@ export async function resolveSpeechPython(where: Where): Promise<SpeechPython> {
     tried.push(`${pyLabel(c)} (${r.why})`)
   }
   return { error: `no Python imports faster_whisper; tried: ${tried.join('; ')}` }
+}
+
+// The voice-over detector needs more than faster_whisper: python >= 3.11
+// (tomllib) and torch. Its old default `python3.11` keeps going first; the
+// speech interpreter is taken only if it passes the detector's own probe.
+const DETECTOR_PROBE = 'import sys, torch; assert sys.version_info >= (3, 11); print(0)'
+
+export async function detectorPython(
+  env: NodeJS.ProcessEnv, speech: () => Promise<SpeechPython>, dflt = 'python3.11'
+): Promise<PyCmd> {
+  const first = { command: dflt, args: [] }
+  if ('cuda' in await probe(first, env, DETECTOR_PROBE)) return first
+  const r = await speech()
+  if (!('error' in r) && 'cuda' in await probe(r, env, DETECTOR_PROBE)) return { command: r.command, args: r.args }
+  return first
 }

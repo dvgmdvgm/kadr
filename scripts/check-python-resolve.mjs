@@ -32,7 +32,7 @@ try {
 } catch (err) {
   check('electron/speechPython.ts loads', false, String(err).split('\n')[0])
 }
-const { speechCandidates, resolveSpeechPython } = mod
+const { speechCandidates, resolveSpeechPython, detectorPython } = mod
 const win = process.platform === 'win32'
 
 // --- the order of the candidates
@@ -64,6 +64,8 @@ if (resolveSpeechPython) {
   // python3 is the Store stub, anything else lacks the package
   writeFileSync(pre, `
 const name = process.env.FAKE_NAME || require('path').basename(process.argv0).replace(/\\.exe$/i, '')
+// the detector's probe (python >= 3.11 with torch): FAKE_TORCH names the ones that pass
+if (process.argv.join(' ').includes('torch')) process.exit((process.env.FAKE_TORCH || '').split(',').includes(name) ? 0 : 1)
 if (name === 'python3') { process.stderr.write('Python was not found; run without arguments to install from the Microsoft Store\\n'); process.exit(9009) }
 if ((process.env.FAKE_GOOD || '').split(',').includes(name)) { process.stdout.write((process.env.FAKE_CUDA || '1') + '\\n'); process.exit(0) }
 process.stderr.write("ModuleNotFoundError: No module named 'faster_whisper'\\n"); process.exit(1)
@@ -79,7 +81,7 @@ process.stderr.write("ModuleNotFoundError: No module named 'faster_whisper'\\n")
     }
     return dir
   }
-  const dStub = fake('python3'), dPy = fake('python'), dCustom = fake('custom')
+  const dStub = fake('python3'), dPy = fake('python'), dCustom = fake('custom'), d311 = fake('python3.11')
   const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(path|kadr_python)$/i.test(k)))
   const envFor = (dirs, extra = {}) => ({ ...base, PATH: dirs.join(delimiter), NODE_OPTIONS: `--require "${pre.replace(/\\/g, '/')}"`, ...extra })
   const nowhere = join(box, 'app')
@@ -104,6 +106,18 @@ process.stderr.write("ModuleNotFoundError: No module named 'faster_whisper'\\n")
 
   const e = await run(envFor([dStub, dPy], { FAKE_GOOD: 'python', KADR_PYTHON: join(box, 'missing.exe') }))
   check('a broken KADR_PYTHON falls through to the next candidate', e.command === 'python', JSON.stringify(e))
+
+  // --- the detector takes the speech interpreter only if it is >= 3.11 with torch; python3.11 goes first
+  if (detectorPython) {
+    const speech = (env) => () => run(env)
+    const det = (dirs, extra) => { const env = envFor(dirs, extra); return detectorPython(env, speech(env), 'python3.11') }
+    const f = await det([dStub, dPy], { FAKE_GOOD: 'python', FAKE_TORCH: '' })
+    check('detector: a speech python without torch/3.11 is refused → python3.11', f.command === 'python3.11', JSON.stringify(f))
+    const g = await det([dStub, dPy], { FAKE_GOOD: 'python', FAKE_TORCH: 'python' })
+    check('detector: a speech python with torch and 3.11 is taken', g.command === 'python', JSON.stringify(g))
+    const h = await det([dStub, dPy, d311], { FAKE_GOOD: 'python', FAKE_TORCH: 'python,python3.11' })
+    check('detector: a working python3.11 goes before the speech python', h.command === 'python3.11', JSON.stringify(h))
+  } else check('detectorPython is exported', false)
 
   rmSync(box, { recursive: true, force: true })
   check('fakes cleaned up', !existsSync(box))
