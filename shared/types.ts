@@ -2,6 +2,7 @@
 // All times are in seconds, all dimensions in pixels.
 
 import type { RelinkWanted } from './relinkMatch'
+import type { GainKey } from './gainKeys'
 
 export type AssetKind = 'video' | 'audio' | 'image'
 
@@ -970,6 +971,8 @@ export interface AudioSegment {
   /** position in the timeline */
   start: number
   gain: number
+  /** keyframed clip gain, multiplied over `gain` (shared/gainKeys.ts); absent = flat */
+  gainKeys?: GainKey[]
   speed: number
   /** local fade windows in timeline seconds */
   fadeIn: number
