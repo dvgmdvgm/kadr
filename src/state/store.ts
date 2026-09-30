@@ -788,6 +788,12 @@ interface EditorState {
   selection: string[]
   playhead: number
   playing: boolean
+  /** the clock's signed rate: L/J step it through 1, 2, 4, 8 (player.ts); a pause brings it back to 1 */
+  playRate: number
+  /** Ctrl+L: playback wraps inside the range, or the whole timeline */
+  loop: boolean
+  /** play in→out (/): where playback stops; a pause forgets it */
+  playEnd: number | null
   previewLoading: boolean
   /** the preview's GL context died (GPU reset); nothing can be drawn until it is back */
   previewGpuLost: boolean
@@ -983,6 +989,11 @@ interface EditorState {
   setKfMarker(t: number | null): void
   setPlayhead(t: number): void
   setPlaying(p: boolean): void
+  /** L (1) / J (-1): play that way, or double the rate up to 8× if already playing that way */
+  shuttle(dir: 1 | -1): void
+  toggleLoop(): void
+  /** / : play the range (or the whole timeline) from its in, stopping at its out */
+  playInOut(): void
   setPreviewLoading(l: boolean): void
   setPreviewGpuLost(lost: boolean): void
   setZoom(z: number): void
@@ -1057,6 +1068,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   selection: [],
   playhead: 0,
   playing: false,
+  playRate: 1,
+  loop: false,
+  playEnd: null,
   previewLoading: false,
   previewGpuLost: false,
   zoom: 60,
@@ -1073,7 +1087,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   setProject: (project, path = null) =>
     set({
       project: sanitizeProject(project), projectPath: path, past: [], future: [],
-      selection: [], playhead: 0, playing: false, range: null
+      selection: [], playhead: 0, playing: false, playRate: 1, playEnd: null, range: null
     }),
   setProjectPath: (projectPath) => set({ projectPath }),
   noteClaudeChat: (id) =>
@@ -2186,7 +2200,17 @@ export const useEditor = create<EditorState>((set, get) => ({
     set((s) => ({ motionTrackId, animClipId: motionTrackId ? null : s.animClipId })),
   setKfMarker: (kfMarker) => set({ kfMarker }),
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
-  setPlaying: (playing) => set({ playing }),
+  setPlaying: (playing) => set(playing ? { playing } : { playing, playRate: 1, playEnd: null }),
+  shuttle: (dir) => {
+    const { playing, playRate } = get()
+    set({ playing: true, playEnd: null, playRate: playing && Math.sign(playRate) === dir ? dir * Math.min(8, Math.abs(playRate) * 2) : dir })
+  },
+  toggleLoop: () => set((s) => ({ loop: !s.loop })),
+  playInOut: () => {
+    const { range, project } = get()
+    const [a, b] = range ? [range.start, range.end] : [0, projectDuration(project)]
+    set({ playhead: a, playing: true, playRate: 1, playEnd: b })
+  },
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
   setPreviewGpuLost: (previewGpuLost) => set({ previewGpuLost }),
   setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(4, zoom)) }),

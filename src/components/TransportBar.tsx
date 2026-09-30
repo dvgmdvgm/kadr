@@ -23,6 +23,8 @@ export function TransportBar() {
   const t = useT()
   const [shot, setShot] = useState<'idle' | 'busy' | 'ok' | 'fail'>('idle')
   const playing = useEditor((s) => s.playing)
+  const rate = useEditor((s) => s.playRate)
+  const loop = useEditor((s) => s.loop)
   const playhead = useEditor((s) => s.playhead)
   const fps = useEditor((s) => s.project.fps)
   const duration = useEditor((s) => projectDuration(s.project))
@@ -73,6 +75,16 @@ export function TransportBar() {
               onClick={() => st().setPlayhead(projectDuration(st().project))}>
         <Icon name="toEnd" />
       </button>
+      <button
+        className={`icon-only${loop ? ' active' : ''}`}
+        data-act="loop"
+        title={loop ? t('loopOn') : t('loopOff')}
+        aria-label={t('actLoop')}
+        aria-pressed={loop}
+        onClick={() => st().toggleLoop()}
+      >
+        <Icon name="loop" />
+      </button>
       <span className="sep" />
       <button className="icon-only" data-act="split" title={t('split')} aria-label={t('split')}
               onClick={() => st().splitAtPlayhead()}>
@@ -118,6 +130,11 @@ export function TransportBar() {
       </button>
       <OnionControls />
       <span className="time">
+        {playing && rate !== 1 && (
+          <span className="rate-badge" data-act="rate" title={t('rateLbl')}>
+            {rate < 0 ? '−' : ''}{Math.abs(rate)}×
+          </span>
+        )}
         {formatTime(playhead, fps)} <span className="dim">/ {formatTime(duration, fps)}</span>
         <span className="frame-counter dim">
           {' '}· {t('frameLbl')} {Math.floor(playhead * fps + 1e-6)}

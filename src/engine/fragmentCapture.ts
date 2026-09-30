@@ -203,7 +203,9 @@ export function wireFragmentCapture() {
       kadr: true,
       type: 'sync',
       frame: fragmentFrameAt(clip, rel),
-      playing: s.playing && inside,
+      // reverse has no play path on the page: it follows by seeking, like a scrub
+      playing: s.playing && s.playRate > 0 && inside,
+      rate: s.playRate,
       volume: vol
     })
     // a capture window has no parent to say 'ready' to, so the parameters

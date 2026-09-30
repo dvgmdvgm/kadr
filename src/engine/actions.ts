@@ -43,9 +43,17 @@ interface Handler {
   why?: TKey
 }
 const hasSel = (s: EditorState) => s.selection.length > 0 || !!s.range
+/** the stop key (K) is down — see onEditorKey */
+let stopHeld = false
 
 const HANDLERS: Record<ActionId, Handler> = {
   'transport.play': { run: (s) => s.setPlaying(!s.playing) },
+  // J/L with K held step a frame (the Avid/Premiere habit); alone they shuttle
+  'transport.forward': { run: (s) => { if (stopHeld) s.setPlayhead(s.playhead + 1 / s.project.fps); else s.shuttle(1) } },
+  'transport.reverse': { run: (s) => { if (stopHeld) s.setPlayhead(s.playhead - 1 / s.project.fps); else s.shuttle(-1) } },
+  'transport.stop': { run: (s) => s.setPlaying(false) },
+  'transport.loop': { run: (s) => s.toggleLoop() },
+  'transport.playInOut': { run: (s) => s.playInOut() },
   'edit.split': { run: (s) => s.splitAtPlayhead() },
   'file.save': { run: () => appCommands.save() },
   'file.saveAs': { run: () => appCommands.saveAs() },
@@ -165,5 +173,22 @@ export function onEditorKey(e: KeyboardEvent) {
   const a = actionFor(e, useKeymap.getState().diff)
   if (!a) return
   if ('prevent' in a && a.prevent) e.preventDefault()
+  const shuttle = a.id === 'transport.forward' || a.id === 'transport.reverse'
+  // an auto-repeating L/J would race to 8×; with K held the repeat walks frames
+  if (e.repeat && (a.id === 'transport.stop' || (shuttle && !stopHeld))) return
+  if (a.id === 'transport.stop') {
+    // held until its own key comes up, or the window loses focus with it down
+    stopHeld = true
+    const win = e.currentTarget as Window | null
+    const code = e.code
+    const off = (ev: Event) => {
+      if (ev.type === 'keyup' && (ev as KeyboardEvent).code !== code) return
+      stopHeld = false
+      win?.removeEventListener('keyup', off)
+      win?.removeEventListener('blur', off)
+    }
+    win?.addEventListener('keyup', off)
+    win?.addEventListener('blur', off)
+  }
   runAction(a.id)
 }

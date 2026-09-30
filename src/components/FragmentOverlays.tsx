@@ -258,7 +258,9 @@ function FragmentFrame({
       post({
         type: 'sync',
         frame: fragmentFrameAt(clip, r),
-        playing: st.playing && inside,
+        // reverse has no play path on the page: it follows by seeking, like a scrub
+        playing: st.playing && st.playRate > 0 && inside,
+        rate: st.playRate,
         volume: vol
       })
     }
@@ -289,7 +291,7 @@ function FragmentFrame({
     place()
     sync()
     const unsub = useEditor.subscribe((st, prev) => {
-      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.project !== prev.project) {
+      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.playRate !== prev.playRate || st.project !== prev.project) {
         place()
         sync()
       }

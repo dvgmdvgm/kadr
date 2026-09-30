@@ -611,6 +611,18 @@ mixes audio and muxes/transcodes per preset.
   pool ≤ 15. `previewPoolStats()`, `audioStats()` (with
   AudioContext.playbackStats) and `silencePreview(on)` on kadrEditor are
   there to measure it.
+  THE CLOCK HAS A SIGNED RATE (J/K/L, card E5): `advanceClock` in
+  `timelineMath.ts` is the whole clock — `t = anchor.t + rate·Δts`, a new
+  rate re-anchors like a scrub, a loop (`loop`, Ctrl+L: the range or the
+  whole timeline) wraps with the overshoot carried over and re-anchors at
+  the wrap, and play in→out (`/`) stops at `playEnd`. A pause resets the
+  rate to 1. Forward rates multiply the element `playbackRate` (pitch kept,
+  the resync tolerance scales with it; audio past the 16× cap is silent, as
+  for a clip that fast). REVERSE HAS NO ELEMENT PATH: elements are handled
+  as paused and follow by seeking, muted, with no loading spinner. Fragment
+  pages get `rate` in the sync message (the Remotion Player caps at 4×; the
+  drift check seeks past that) and `playing: false` in reverse, so they
+  follow by seek. Test: `node scripts/check-clock.mjs`.
 - `src/components/Timeline.tsx` + `src/engine/timelineMath.ts` — on big
   projects: clips culled to the view ± half a screen (plus the selection)
   once the content is longer than 4 screens; `ClipView` is memo'd and gets

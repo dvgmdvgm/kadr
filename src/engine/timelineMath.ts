@@ -132,3 +132,22 @@ export function toFrame(t: number, fps: number, snap: (x: number) => number = Ma
   const x = t * r
   return snap(snap === Math.floor ? x + 1e-6 : snap === Math.ceil ? x - 1e-6 : x) / r
 }
+
+/** The playback clock's anchor: the playhead `t` at rAF time `ts`, moving at `rate` (signed). */
+export interface ClockAnchor { ts: number; t: number; rate: number }
+
+/** Where the playhead is at `ts`. Inside [lo, hi] it runs at the anchor's rate;
+    past the edge it wraps (loop) with the overshoot carried over — seamless — or
+    stops on the edge. A loop started outside its span jumps to its start (end in
+    reverse). On `wrapped` the caller re-anchors at {ts, t}. */
+export function advanceClock(a: ClockAnchor, ts: number, lo: number, hi: number, loop: boolean):
+  { t: number; stop: boolean; wrapped: boolean } {
+  const t = a.t + (a.rate * (ts - a.ts)) / 1000
+  const fwd = a.rate > 0
+  const outside = fwd ? a.t >= hi || a.t < lo : a.t <= lo || a.t > hi
+  if (!(loop && outside) && (fwd ? t < hi : t > lo)) return { t, stop: false, wrapped: false }
+  const span = hi - lo
+  if (!loop || !(span > 0)) return { t: fwd ? hi : lo, stop: true, wrapped: false }
+  const over = (outside ? Math.abs(t - a.t) : fwd ? t - hi : lo - t) % span
+  return { t: fwd ? lo + over : hi - over, stop: false, wrapped: true }
+}

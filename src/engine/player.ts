@@ -8,6 +8,7 @@ import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/aud
 import { getTextLayer } from './text'
 import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
 import { logError } from './log'
+import { advanceClock, type ClockAnchor } from './timelineMath'
 
 export interface ActiveLayer {
   clip: Clip
@@ -597,7 +598,11 @@ function drawClipLayer(
 }
 
 interface PlayerHooks {
-  getState(): { project: Project; playhead: number; playing: boolean }
+  getState(): {
+    project: Project; playhead: number; playing: boolean
+    /** signed clock rate (J/K/L), the loop switch, the range it loops and play in→out's stop */
+    playRate: number; loop: boolean; range: { start: number; end: number } | null; playEnd: number | null
+  }
   setPlayhead(t: number): void
   setPlaying(p: boolean): void
   setLoading(l: boolean): void
@@ -623,7 +628,7 @@ export class Player {
   private lastDrawnT = -1
   private stableTicks = 0
   /** playback clock anchor — see tick() */
-  private anchor: { ts: number; t: number } | null = null
+  private anchor: ClockAnchor | null = null
   private lastSet = -1
 
   constructor(private hooks: PlayerHooks) {}
@@ -735,30 +740,32 @@ export class Player {
   }
 
   private tick(ts: number) {
-    const { project, playhead, playing } = this.hooks.getState()
+    const { project, playhead, playing, playRate, loop, range, playEnd } = this.hooks.getState()
+    const rate = playing ? playRate || 1 : 1
 
     let t = playhead
     if (playing) {
       resumeAudio()
       // anchored clock: rAF timestamps are vsync-aligned, so projecting from
       // a fixed anchor gives constant velocity — accumulating per-frame
-      // deltas would fold frame-time jitter into the motion (visible judder)
-      if (!this.anchor || Math.abs(playhead - this.lastSet) > 1e-9) {
-        this.anchor = { ts, t: playhead } // started or externally scrubbed
+      // deltas would fold frame-time jitter into the motion (visible judder).
+      // A new rate re-anchors where the playhead is, as a scrub does.
+      if (!this.anchor || Math.abs(playhead - this.lastSet) > 1e-9 || this.anchor.rate !== rate) {
+        this.anchor = { ts, t: playhead, rate } // started, externally scrubbed or re-rated
       }
       const dur = this.hooks.duration()
-      t = this.anchor.t + (ts - this.anchor.ts) / 1000
-      if (t >= dur) {
-        t = dur
-        this.hooks.setPlaying(false)
-      }
+      const [lo, hi] = loop ? (range ? [range.start, range.end] : [0, dur]) : [0, playEnd ?? dur]
+      const c = advanceClock(this.anchor, ts, lo, hi, loop)
+      t = c.t
+      if (c.wrapped) this.anchor = { ts, t, rate }
+      if (c.stop) this.hooks.setPlaying(false)
       this.hooks.setPlayhead(t)
       this.lastSet = t
     } else {
       this.anchor = null
     }
 
-    this.syncMedia(project, t, playing)
+    this.syncMedia(project, t, playing, rate)
 
     // paused with nothing changed: idle at ~4 fps instead of a full 60 fps
     // composite (texture re-uploads of every visible video are not free) —
@@ -780,7 +787,11 @@ export class Player {
     if (this.gcCounter % 30 === 0) this.pool.evictExcept(clipsAround(project, t))
   }
 
-  private syncMedia(project: Project, t: number, playing: boolean) {
+  private syncMedia(project: Project, t: number, playing: boolean, rate: number) {
+    // Reverse has no element path (a <video> only plays forward): the elements
+    // are handled as paused and follow the clock by seeking, muted — frames
+    // are painted by per-frame seeks, and beyond ~2× the seeks skip frames.
+    const running = playing && rate > 0
     playbackHealth.drift.clear() // the clips audible on THIS frame
     const activeIds = new Set<string>()
     const seen = new Set<string>()
@@ -801,24 +812,26 @@ export class Player {
       const rel = t - clip.start
       const desired = clipSourceTime(clip, asset, rel)
       const isAudible = audible.some((a) => a.clip.id === clip.id)
-      el.muted = !isAudible || !playing
+      const eff = (clip.speed || 1) * (running ? rate : 1)
+      // beyond Chromium's cap the audio is silent, as for a clip that fast (shared/audioSpeed.ts)
+      el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
       this.pool.setVolume(el, Math.max(0,
         evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip))
       ))
       // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
       // is muted (shared/audioSpeed.ts), the element free-runs at the clamped
       // rate and the resync below keeps it on the master clock with seeks
-      el.playbackRate = Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, clip.speed || 1))
+      el.playbackRate = Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, eff))
 
       if (el.readyState < 2) loading = true
-      if (playing) {
+      if (running) {
         // Resync discipline: a seek on a software-decoded element takes
         // ~0.1-0.2 s, during which the master clock runs on — naively
         // reseeking on every drift made each correction land already
         // behind, storming into a seek-per-few-frames flicker at high
         // clip speeds. Never reseek mid-seek, scale the tolerance with
         // speed, and aim slightly AHEAD so the seek lands on time.
-        const speed = clip.speed || 1
+        const speed = eff
         const tolerance = Math.max(0.15, 0.08 * speed)
         if (isAudible && !el.seeking && !el.paused) playbackHealth.drift.set(clip.id, el.currentTime - desired)
         if (!el.seeking && Math.abs(el.currentTime - desired) > tolerance) {
@@ -831,7 +844,7 @@ export class Player {
         if (Math.abs(el.currentTime - desired) > 0.04 && el.readyState >= 1 && !el.seeking) {
           el.currentTime = desired
         }
-        if (el.seeking) loading = true
+        if (el.seeking && !playing) loading = true // reverse seeks all the time: no spinner for that
       }
     }
 

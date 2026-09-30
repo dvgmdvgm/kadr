@@ -25,7 +25,7 @@ export function Preview() {
     const player = new Player({
       getState: () => {
         const s = useEditor.getState()
-        return { project: s.project, playhead: s.playhead, playing: s.playing }
+        return { project: s.project, playhead: s.playhead, playing: s.playing, playRate: s.playRate, loop: s.loop, range: s.range, playEnd: s.playEnd }
       },
       setPlayhead: (t) => useEditor.getState().setPlayhead(t),
       setPlaying: (p) => useEditor.getState().setPlaying(p),

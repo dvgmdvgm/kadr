@@ -844,6 +844,16 @@ body.kadr-popout .preview {
   color: var(--c-text);
 }
 .frame-counter { font-size: var(--fz-sm); }
+/* J/L shuttle rate beside the timecode, shown only off 1× */
+.rate-badge {
+  margin-right: var(--s3);
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  background: var(--c-accent-soft);
+  border: 1px solid var(--c-accent-line);
+  color: var(--c-accent-hi);
+  font-weight: 600;
+}
 
 /* ===========================================================================
    Inspector
