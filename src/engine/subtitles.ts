@@ -208,7 +208,9 @@ export function collectRangeAudio(
           ...(gainKeys ? { gainKeys } : {}),
           speed,
           fadeIn: fiLocal,
-          fadeOut: foLocal
+          fadeOut: foLocal,
+          ...(fiLocal && clip.fadeInCurve ? { fadeInCurve: clip.fadeInCurve } : {}),
+          ...(foLocal && clip.fadeOutCurve ? { fadeOutCurve: clip.fadeOutCurve } : {})
         })
         local += segDur
       }

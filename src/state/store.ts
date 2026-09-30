@@ -32,11 +32,12 @@ import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
 import { blendOf } from '@shared/blend'
 import { hexRgb } from '@shared/key'
+import type { FadeCurve } from '@shared/fadeCurves'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
   Clip,
-  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut' | 'transitionIn'
+  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut' | 'fadeInCurve' | 'fadeOutCurve' | 'transitionIn'
 > => ({
   // «Переход по умолчанию»: stamped into the clip (duration 0 = the overlap blend), so the
   // project renders the same everywhere; crossfade is what a clip without one gets anyway
@@ -47,6 +48,10 @@ export const newClipDefaults = (): Pick<
   muted: false,
   fadeIn: 0,
   fadeOut: 0,
+  // «Кривая затухания»: stamped like the transition, so an overlap made with this clip
+  // crossfades at equal power while clips of older projects keep their linear fades (K2)
+  fadeInCurve: setting<FadeCurve>('editing.fadeCurve'),
+  fadeOutCurve: setting<FadeCurve>('editing.fadeCurve'),
   transform: {
     x: { value: 0 },
     y: { value: 0 },

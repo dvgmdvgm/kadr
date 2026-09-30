@@ -9,6 +9,7 @@ import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment
 import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
+import { AFADE_CURVE } from '@shared/fadeCurves'
 import { proxyColourArgs, PACK_GAP, type FfColour } from '@shared/streamColour'
 import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
@@ -842,6 +843,9 @@ function segmentInput(s: AudioSegment): string[] {
   return ['-ss', String(s.inPoint), '-t', String(s.duration + (retimed(s) ? ATEMPO_TAIL : 0)), '-i', s.path]
 }
 
+/** afade's curve, from the same table the preview uses (shared/fadeCurves.ts); linear = the default, no argument */
+const curveArg = (c?: AudioSegment['fadeInCurve']) => (c && c !== 'lin' && AFADE_CURVE[c] ? `:curve=${AFADE_CURVE[c]}` : '')
+
 /** per-segment filter chain shared by the single-graph mix and the premix */
 function segmentChain(s: AudioSegment): string[] {
   const speed = s.speed || 1
@@ -855,9 +859,9 @@ function segmentChain(s: AudioSegment): string[] {
     ...(s.gainKeys?.length
       ? ['asetpts=N/SR/TB', 'asetnsamples=n=480:p=0', `volume='${gainExpr(s.gainKeys)}':eval=frame`]
       : []),
-    ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}`] : []),
+    ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}${curveArg(s.fadeInCurve)}`] : []),
     ...(s.fadeOut > 0.001
-      ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}`]
+      ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}${curveArg(s.fadeOutCurve)}`]
       : [])
   ]
 }

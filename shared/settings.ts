@@ -52,6 +52,8 @@ export const SETTINGS = {
   'editing.edgeDuration': { type: 'number', min: 0.05, max: 10, default: 0.5, section: 'editing' },
   /** fade-in/out of a new clip on an audio track, s */
   'editing.fade': { type: 'number', min: 0, max: 10, default: 0, section: 'editing' },
+  /** the audio fade curve a NEW clip carries — its fades and the crossfade over an overlap (shared/fadeCurves.ts) */
+  'editing.fadeCurve': { type: 'enum', options: ['lin', 'qsin', 'log', 'exp'], default: 'qsin', section: 'editing' },
   /** snapping distance, screen px */
   'editing.snapRadius': { type: 'number', min: 0, max: 50, default: 10, section: 'editing' },
   /** S: 'selection' = the selection, or every track when nothing is selected; 'all' = every unlocked track */

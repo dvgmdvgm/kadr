@@ -8,6 +8,7 @@ import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
 import type { GainKey } from './gainKeys'
+import type { FadeCurve } from './fadeCurves'
 import type { SettingsSnapshot, SettingValue } from './settings'
 import type { RawEncodeOpts } from './rawEncode'
 
@@ -207,6 +208,9 @@ export interface Clip {
   /** fade in/out lengths in timeline seconds (video opacity + audio gain) */
   fadeIn?: number
   fadeOut?: number
+  /** audio fade shape (shared/fadeCurves.ts), also over an overlap crossfade; absent = linear */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
   gain: Anim // audio gain 0..2
   muted: boolean
   transform: ClipTransform
@@ -1097,6 +1101,9 @@ export interface AudioSegment {
   /** local fade windows in timeline seconds */
   fadeIn: number
   fadeOut: number
+  /** absent = linear */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
 }
 
 export interface ExportProgress {

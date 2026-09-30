@@ -21,6 +21,7 @@ import {
 } from '@shared/settings'
 import type { ClaudeStatus, ToolCheck } from '@shared/types'
 import { RESOLUTION_PRESETS } from '@shared/projectFormat'
+import { FADE_CURVES, FADE_CURVE_NAME } from '@shared/fadeCurves'
 
 export const useSettingsUi = create<{ open: boolean; setOpen(v: boolean): void }>((set) => ({
   open: false,
@@ -352,6 +353,10 @@ function Editing({ t }: { t: T }) {
       </Row>
       <Row label={t('setFade')} keys={['editing.fade']} shown={`0 ${sec}`} unit={sec}>
         <Num k="editing.fade" label={t('setFade')} step={0.1} />
+      </Row>
+      <Row label={t('setFadeCurve')} keys={['editing.fadeCurve']} shown={t('fcQsin')}>
+        <Choice k="editing.fadeCurve" label={t('setFadeCurve')} width={158}
+                options={FADE_CURVES.map((c) => [c, t(FADE_CURVE_NAME[c])])} />
       </Row>
       <div className="insp-section">{t('setTlHead')}</div>
       <Row label={t('setTrackH')} keys={['editing.trackHeight']} shown="56 px" unit="px">

@@ -10,6 +10,7 @@ import { blendOf } from '@shared/blend'
 import { keyAt } from '@shared/key'
 import { lutFor } from './lut'
 import { evalAnim } from './anim'
+import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
 import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
@@ -53,18 +54,18 @@ export function elementRuns(clip: Clip, playing: boolean, rate: number): boolean
   return playing && rate > 0 && clip.freezeAt === undefined
 }
 
-/** Combined fade-in/out gain (0..1) at a clip-local time. */
-export function fadeFactor(
-  clip: Clip,
-  rel: number,
-  fades?: { fadeIn: number; fadeOut: number }
-): number {
+type Fades = { fadeIn: number; fadeOut: number; inCurve?: FadeCurve; outCurve?: FadeCurve }
+
+/** Combined fade-in/out gain (0..1) at a clip-local time. Linear without
+    `fades` (video opacity); the audio callers pass overlapFades, which carries
+    the clip's curves (K2). */
+export function fadeFactor(clip: Clip, rel: number, fades?: Fades): number {
   let f = 1
   const fi = fades ? fades.fadeIn : clip.fadeIn ?? 0
   const fo = fades ? fades.fadeOut : clip.fadeOut ?? 0
-  if (fi > 0.001 && rel < fi) f *= Math.max(0, rel / fi)
+  if (fi > 0.001 && rel < fi) f *= fadeGain(fades?.inCurve, rel / fi)
   const tail = clip.duration - rel
-  if (fo > 0.001 && tail < fo) f *= Math.max(0, tail / fo)
+  if (fo > 0.001 && tail < fo) f *= fadeGain(fades?.outCurve, tail / fo)
   return f
 }
 
@@ -72,7 +73,7 @@ export function fadeFactor(
  * Auto-crossfade: when clips overlap on the same track, the overlap behaves
  * as a fade-out of the earlier clip into a fade-in of the later one (audio).
  */
-export function overlapFades(track: Track, clip: Clip): { fadeIn: number; fadeOut: number } {
+export function overlapFades(track: Track, clip: Clip): Fades {
   let fadeIn = clip.fadeIn ?? 0
   let fadeOut = clip.fadeOut ?? 0
   const end = clip.start + clip.duration
@@ -88,7 +89,7 @@ export function overlapFades(track: Track, clip: Clip): { fadeIn: number; fadeOu
       fadeOut = Math.max(fadeOut, end - o.start)
     }
   }
-  return { fadeIn, fadeOut }
+  return { fadeIn, fadeOut, inCurve: clip.fadeInCurve, outCurve: clip.fadeOutCurve }
 }
 
 /** Visible video layers at time t, in draw order (bottom first). */

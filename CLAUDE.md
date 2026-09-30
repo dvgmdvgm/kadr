@@ -36,7 +36,9 @@ mixes audio and muxes/transcodes per preset.
   within 0.5 LU by ebur128 with the true peak ≤ −1 dBTP, and the reported
   numbers are the file's);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
-  timeline position); `check-eta.mjs` (G8: the export's fps / time left from
+  timeline position); `check-fade-curves.mjs` wants ffmpeg (K2: each
+  fade curve against afade's own, an equal-power crossfade of two noise clips
+  within 0.5 dB in the preview's gain maths and in a mixdown); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
@@ -256,6 +258,16 @@ mixes audio and muxes/transcodes per preset.
   mix, as a tree 0.4 s. A gain that never changes stays a
   scalar and mixes bit-identically. Test: `node scripts/check-gain-keys.mjs`.
   The keys are drawn on the clip's level line (K1, see Timeline below).
+  FADE CURVES (K2, `shared/fadeCurves.ts`): `Clip.fadeInCurve`/`fadeOutCurve`
+  — lin, qsin (equal power), log, exp — shape the clip's audio fades AND the
+  automatic crossfade over an overlap. One table: `fadeFactor` multiplies the
+  preview's element volume by it (given `overlapFades`, which carries the
+  curves; video opacity stays linear) and `segmentChain` names the same curve
+  to afade (af_afade.c's formulas). ABSENT = LINEAR, so a project from before
+  sounds the same; `editing.fadeCurve` (default qsin) is STAMPED into each new
+  clip like the default transition, so new overlaps hold their loudness where
+  a linear pair dips ~3 dB. The curve is picked from the fade handle's
+  right-click menu. Test: `node scripts/check-fade-curves.mjs`.
   TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
   carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
   scheduler roughly QUADRATICALLY in N: that mix ran at a quarter of realtime —

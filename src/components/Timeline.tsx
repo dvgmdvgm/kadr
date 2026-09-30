@@ -19,6 +19,7 @@ import { duckHere, duckTargets } from '@/engine/duck'
 import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, type Silence } from '@/engine/silences'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
+import { FADE_CURVES, FADE_CURVE_NAME, type FadeCurve } from '@shared/fadeCurves'
 import { CtxMenu } from './CtxMenu'
 import { PasteAttrsMenu } from './PasteAttrsMenu'
 import { Modal } from './Modal'
@@ -272,12 +273,12 @@ function startBand(
 interface MenuState {
   x: number
   y: number
-  kind: 'track' | 'clip' | 'transition' | 'edge' | 'junction'
+  kind: 'track' | 'clip' | 'transition' | 'edge' | 'junction' | 'fade'
   trackId?: string
   trackKind?: Track['kind']
   clipId?: string
   linked?: boolean
-  /** edge menus: which clip tip was clicked */
+  /** edge and fade menus: which clip end was clicked */
   edge?: 'in' | 'out'
   /** junction menus: [outgoing clip, incoming clip] */
   clipIds?: [string, string]
@@ -827,6 +828,28 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           </span>
           {t('trNone')}
         </button>
+      </CtxMenu>
+    )
+  }
+  if (menu.kind === 'fade' && menu.clipId) {
+    // K2: the shape of this end's audio fade — also of the crossfade over an overlap
+    const key = menu.edge === 'in' ? 'fadeInCurve' : 'fadeOutCurve'
+    const cur = findClip(useEditor.getState().project, menu.clipId)?.clip[key] ?? 'lin'
+    const pick = (c: FadeCurve) => {
+      const st = useEditor.getState()
+      st.pushHistory('hFade')
+      st.updateClip(menu.clipId!, { [key]: c })
+      onClose()
+    }
+    return (
+      <CtxMenu x={menu.x} y={menu.y} className="trans-menu">
+        <div className="ctx-title dim">{t(key)}</div>
+        {FADE_CURVES.map((c) => (
+          <button key={c} data-curve={c} onClick={() => pick(c)}>
+            <span className="ctx-check">{cur === c && <Icon name="check" size={13} />}</span>
+            {t(FADE_CURVE_NAME[c])}
+          </button>
+        ))}
       </CtxMenu>
     )
   }
@@ -2832,6 +2855,11 @@ const ClipView = memo(function ClipView({
     e.stopPropagation()
     onMenu({ x: e.clientX, y: e.clientY, kind: 'edge', clipId: clip.id, edge })
   }
+  const openFadeMenu = (edge: 'in' | 'out') => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onMenu({ x: e.clientX, y: e.clientY, kind: 'fade', clipId: clip.id, edge })
+  }
 
   const loopMarks: number[] = []
   if (loops) {
@@ -2981,12 +3009,14 @@ const ClipView = memo(function ClipView({
             style={{ left: fadeInX }}
             title={t('fadeInHandle')}
             onPointerDown={startFadeDrag('fadeIn')}
+            onContextMenu={openFadeMenu('in')}
           />
           <div
             className="fade-handle right"
             style={{ right: fadeOutX }}
             title={t('fadeOutHandle')}
             onPointerDown={startFadeDrag('fadeOut')}
+            onContextMenu={openFadeMenu('out')}
           />
           <div
             className="extend-handle"

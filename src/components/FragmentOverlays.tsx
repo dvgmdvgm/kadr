@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { evalAnim } from '@/engine/anim'
-import { fadeFactor, trackHeard } from '@/engine/player'
+import { fadeFactor, overlapFades, trackHeard } from '@/engine/player'
 import { ensureFragmentServer, useFragmentServer } from '@/engine/fragments'
 import { fragmentNeedsCapture, fragmentFrameAt } from '@/engine/fragmentCapture'
 import { usePopout } from '@/engine/popout'
@@ -254,7 +254,7 @@ function FragmentFrame({
       const inside = r >= 0 && r < clip.duration
       const vol = clip.muted || !trackHeard(st.project, track) || !inside
         ? 0
-        : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r))
+        : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r, overlapFades(track, clip)))
       post({
         type: 'sync',
         frame: fragmentFrameAt(clip, r),
