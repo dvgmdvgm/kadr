@@ -101,7 +101,8 @@ if (clipsOpen > 0 && !process.env.KADR_E2E_FORCE) {
   process.exit(0)
 }
 
-const savedSnap = await rawEval(`localStorage.getItem('kadr.snapBeats')`)
+// the beat magnet is a saved user setting (userData/settings.json) — put it back after
+const savedSnap = await rawEval(`window.kadrEditor.useSettings.getState().snapBeats`)
 let fragmentId = null
 let renderPath = null
 
@@ -445,8 +446,7 @@ export const fragment = { component: Comp, meta }
       E.useBeatsUi.getState().setOpen(false)
       return 1
     })()`)
-    await rawEval(savedSnap === null ? `localStorage.removeItem('kadr.snapBeats')` : `localStorage.setItem('kadr.snapBeats', ${JSON.stringify(savedSnap)})`)
-    await rawEval(`window.kadrEditor.useSettings.setState({ snapBeats: localStorage.getItem('kadr.snapBeats') !== '0' })`)
+    await rawEval(`window.kadrEditor.useSettings.getState().setSnapBeats(${savedSnap !== false})`)
     if (renderPath && existsSync(renderPath)) unlinkSync(renderPath)
   } catch (e) {
     console.log('WARN  cleanup:', e.message)

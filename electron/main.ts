@@ -26,6 +26,7 @@ import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
 import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
 import { argvProject } from '@shared/argvProject'
+import { openSettings, type SettingsStore } from './settings'
 import type { ExportJob, Project } from '@shared/types'
 
 // Streamed local media under a privileged scheme so the renderer can play
@@ -290,7 +291,11 @@ function mediaResponse(filePath: string, rangeHeader: string | null): Response {
   })
 }
 
+// read before any window exists (shared/settings.ts, the diff in userData/settings.json)
+let settings: SettingsStore
+
 app.whenReady().then(() => {
+  settings = openSettings(app.getPath('userData'))
   protocol.handle('kadr', (request) => {
     const url = new URL(request.url)
     if (url.searchParams.get('t') !== MEDIA_TOKEN) {
@@ -685,6 +690,9 @@ function registerIpc() {
   })
 
   ipcMain.on('media:token', (e) => { e.returnValue = MEDIA_TOKEN })
+  // sync on purpose: the renderer's store is built from it before the first frame
+  ipcMain.on('settings:get', (e) => { e.returnValue = settings.snapshot() })
+  ipcMain.handle('settings:set', (_e, patch) => settings.set(patch))
   ipcMain.on('app:close-guard', () => { closeGuard = true })
   // the launch's own .kadr — handed out once (StrictMode asks twice in dev)
   ipcMain.handle('app:argv-project', () => { const p = pendingOpen; pendingOpen = null; return p })

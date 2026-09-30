@@ -434,11 +434,26 @@ mixes audio and muxes/transcodes per preset.
   between survives); the dev server announces a params.json change from the
   WATCHER (a created file never reaches handleHotUpdate) and pages reload
   the values, not themselves; the render entry imports the file.
+- `shared/settings.ts` + `electron/settings.ts` — the settings: one schema
+  entry per setting (type, default, range, `restart`, the overriding `env`
+  variable, section). Main owns `userData/settings.json`, read BEFORE the
+  window exists and holding only the DIFFERENCES from the defaults (a changed
+  default reaches everyone who never touched it); a broken file starts the
+  editor on defaults with one warning. An env variable wins and is reported
+  as the source. The old localStorage keys (`kadr.lang`, `kadr.trackh`,
+  `kadr.snapBeats`, `kadr.confirmDelete`, `kadr.previewLimiter`) move over
+  once on boot and are removed only after main wrote them — localStorage
+  loses writes on a hard kill (seen live), so it is never a second source of
+  truth. Layout conveniences (`kadr.tlh`, `kadr.sidew`, …) stay there.
+  Test: `node scripts/check-settings.mjs`.
 - `src/state/store.ts` — zustand store. Undo convention: callers invoke
   `pushHistory(labelKey)` once before a discrete edit; high-level actions
   push their own. `sanitizeProject` heals foreign/script-written projects
   on load (scalar Anims → {value}, broken keyframes dropped, missing
   fields defaulted). File-backed preset stores (pose/fx) via user-store IPC.
+  `useSettings` is a MIRROR of main's settings (see `shared/settings.ts`):
+  built from a synchronous `settings:get` on boot, every setter sends
+  `settings:set`; `effective(key)` gives `{value, source}`.
   `insertClipsFromAssets` lays several assets back-to-back in one undo
   (audio → audio track, AV twins as usual); `removeAssets` drops bin
   entries AND every clip using them (one undo); `setClipSpeed` rescales

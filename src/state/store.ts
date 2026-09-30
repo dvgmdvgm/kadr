@@ -5,6 +5,12 @@ import type {
 } from '@shared/types'
 import { isMusicMarker } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
+import { logWarn } from '../engine/log'
+import { tr } from '../i18n'
+import {
+  SETTINGS, effective, fromLegacy, healValue,
+  type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
+} from '@shared/settings'
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
 
@@ -286,6 +292,8 @@ export function snapPoints(
 }
 
 interface SettingsState {
+  /** main's copy (shared/settings.ts): the file's diff and the env overrides */
+  snap: SettingsSnapshot
   lang: 'ru' | 'en'
   /** uniform lane height for all tracks, px */
   trackH: number
@@ -295,6 +303,9 @@ interface SettingsState {
   confirmDelete: boolean
   /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export (default on; D5 row) */
   previewLimiter: boolean
+  effective(key: SettingKey): { value: SettingValue; source: SettingSource }
+  /** change one setting (null = back to its default); main writes it to userData/settings.json */
+  set(key: SettingKey, value: SettingValue | null): void
   setLang(l: 'ru' | 'en'): void
   setTrackH(h: number): void
   setSnapBeats(v: boolean): void
@@ -302,33 +313,68 @@ interface SettingsState {
   setPreviewLimiter(v: boolean): void
 }
 
-export const useSettings = create<SettingsState>((set) => ({
-  lang: (localStorage.getItem('kadr.lang') as 'ru' | 'en') || 'ru',
-  trackH: Math.min(140, Math.max(32, Number(localStorage.getItem('kadr.trackh')) || 56)),
-  snapBeats: localStorage.getItem('kadr.snapBeats') !== '0',
-  confirmDelete: localStorage.getItem('kadr.confirmDelete') !== '0',
-  previewLimiter: localStorage.getItem('kadr.previewLimiter') !== '0',
-  setPreviewLimiter: (previewLimiter) => {
-    localStorage.setItem('kadr.previewLimiter', previewLimiter ? '1' : '0')
-    set({ previewLimiter })
-  },
-  setConfirmDelete: (confirmDelete) => {
-    localStorage.setItem('kadr.confirmDelete', confirmDelete ? '1' : '0')
-    set({ confirmDelete })
-  },
-  setLang: (lang) => {
-    localStorage.setItem('kadr.lang', lang)
-    set({ lang })
-  },
-  setTrackH: (h) => {
-    const trackH = Math.min(140, Math.max(32, h))
-    localStorage.setItem('kadr.trackh', String(trackH))
-    set({ trackH })
-  },
-  setSnapBeats: (snapBeats) => {
-    localStorage.setItem('kadr.snapBeats', snapBeats ? '1' : '0')
-    set({ snapBeats })
+/** the named fields the components read, from the effective values */
+const settingFields = (snap: SettingsSnapshot) => {
+  const v = (k: SettingKey) => effective(k, snap).value
+  return {
+    snap,
+    lang: v('general.lang') as 'ru' | 'en',
+    trackH: v('editing.trackHeight') as number,
+    snapBeats: v('editing.snapBeats') as boolean,
+    confirmDelete: v('editing.confirmDelete') as boolean,
+    previewLimiter: v('playback.previewLimiter') as boolean
   }
+}
+
+/**
+ * Main's settings, read synchronously on boot. The values that used to live in
+ * localStorage move over once: a legacy key main has no value for is sent to
+ * main, and removed here only after main has written it.
+ */
+// node checks bundle this store without a window
+const kadrApi = () => (typeof window === 'undefined' ? undefined : window.kadr)
+
+function bootSettings(): SettingsSnapshot {
+  const snap: SettingsSnapshot = kadrApi()?.settingsGet?.() ?? { user: {}, env: {} }
+  const ls = typeof localStorage === 'undefined' ? null : localStorage
+  if (!ls) return snap
+  const patch: SettingsDiff = {}
+  const legacy: string[] = []
+  for (const [k, d] of Object.entries(SETTINGS) as [SettingKey, SettingDef][]) {
+    const raw = d.legacy ? ls.getItem(d.legacy) : null
+    if (raw === null) continue
+    legacy.push(d.legacy!)
+    const v = fromLegacy(k, raw)
+    if (snap.user[k] === undefined && v !== undefined && v !== d.default) patch[k] = v
+  }
+  if (!legacy.length) return snap
+  const user = { ...snap.user, ...patch }
+  void kadrApi()?.settingsSet?.(patch)
+    .then(() => legacy.forEach((k) => ls.removeItem(k)))
+    .catch((err) => logWarn(tr('logStore'), `${tr('storeWriteFail')}: settings.json`, err))
+  return { ...snap, user }
+}
+
+export const useSettings = create<SettingsState>((set, get) => ({
+  ...settingFields(bootSettings()),
+  effective: (key) => effective(key, get().snap),
+  set: (key, value) => {
+    const cur = get().snap
+    const h = value === null ? undefined : healValue(key, value)
+    if (value !== null && h === undefined) return
+    const user = { ...cur.user }
+    if (h === undefined || h === SETTINGS[key].default) delete user[key]
+    else user[key] = h
+    set(settingFields({ ...cur, user }))
+    // the write can fail (read-only userData): the value holds for this session, the log says why
+    kadrApi()?.settingsSet?.({ [key]: value })
+      .catch((err) => logWarn(tr('logStore'), `${tr('storeWriteFail')}: settings.json`, err))
+  },
+  setPreviewLimiter: (v) => get().set('playback.previewLimiter', v),
+  setConfirmDelete: (v) => get().set('editing.confirmDelete', v),
+  setLang: (l) => get().set('general.lang', l),
+  setTrackH: (h) => get().set('editing.trackHeight', h),
+  setSnapBeats: (v) => get().set('editing.snapBeats', v)
 }))
 
 // ---------------------------------------------------------------------------

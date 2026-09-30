@@ -117,6 +117,8 @@ const api: KadrApi = {
   storagePrune: (req) => ipcRenderer.invoke('storage:prune', req),
   readUserStore: (name) => ipcRenderer.invoke('store:read', name),
   writeUserStore: (name, data) => ipcRenderer.invoke('store:write', name, data),
+  settingsGet: () => ipcRenderer.sendSync('settings:get'),
+  settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
 
   reverseMedia: (path, start, duration, info) =>
     ipcRenderer.invoke('media:reverse', path, start, duration, info),

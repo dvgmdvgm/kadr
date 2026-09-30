@@ -3,6 +3,7 @@
 
 import type { RelinkWanted } from './relinkMatch'
 import type { GainKey } from './gainKeys'
+import type { SettingsSnapshot, SettingValue } from './settings'
 
 export type AssetKind = 'video' | 'audio' | 'image'
 
@@ -1180,6 +1181,9 @@ export interface KadrApi {
   storagePrune(req: StoragePruneRequest): Promise<StoragePruneResult>
   readUserStore(name: string): Promise<unknown>
   writeUserStore(name: string, data: unknown): Promise<void>
+  /** main's settings (shared/settings.ts): a synchronous copy for the boot, and a patch (null = default) */
+  settingsGet(): SettingsSnapshot
+  settingsSet(patch: Partial<Record<string, SettingValue | null>>): Promise<SettingsSnapshot>
 
   /** Render (or reuse) a reversed copy of a source range; resolves with the file path. */
   reverseMedia(
