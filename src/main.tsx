@@ -31,6 +31,7 @@ import { usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow } 
 import { wireExportChime } from './engine/chime'
 import { wireOffline, useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink } from './engine/offline'
 import { normalizeClip } from './engine/normalize'
+import { wireFonts } from './engine/fonts'
 import { neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS } from './engine/neonWave'
 import { speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS } from './engine/tts'
 import { useTtsUi } from './components/TtsDialog'
@@ -65,6 +66,7 @@ wireDropDiagnostics()
 wireModels()
 wireOnion()
 wireOffline()
+wireFonts()
 
 // Tell main which GPU WebGL really runs on (electron/gpu.ts falls back to the
 // default one when the discrete GPU was asked for and this says otherwise).

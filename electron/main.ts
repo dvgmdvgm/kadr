@@ -25,6 +25,7 @@ import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
 import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
 import { argvProject } from '@shared/argvProject'
+import { FONT_FILE } from '@shared/fontName'
 import type { SettingsStore } from './settings'
 import { appSettings, cacheDir, setting, tempDir } from './appSettings'
 import { probeTool } from './toolCheck'
@@ -845,6 +846,10 @@ function registerIpc() {
     return writeImported(out, buf)
   })
 
+  ipcMain.handle('fonts:lib', async (_e, projectPath: string) => {
+    const dir = join(dirname(projectPath), 'kadr-lib', 'fonts')
+    try { return (await fs.readdir(dir)).filter((f) => FONT_FILE.test(f)).sort().map((f) => join(dir, f)) } catch { return [] }
+  })
   ipcMain.handle('dialog:pick-dir', async (_e, title?: string) => {
     const r = await dialog.showOpenDialog(win!, {
       title: title || undefined,

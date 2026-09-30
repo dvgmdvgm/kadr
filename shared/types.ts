@@ -140,6 +140,18 @@ export interface TextStyle {
   outlineColor: string
   outlineWidth: number
   background: string // '' = none
+  /** the plate's padding around the block, × fontSize */
+  backgroundPad: number
+  shadowColor: string // '' = none
+  shadowBlur: number
+  shadowX: number
+  shadowY: number
+  /** line pitch, × fontSize */
+  lineHeight: number
+  /** px between letters (canvas letterSpacing) */
+  letterSpacing: number
+  /** px of the project frame a line may take before it wraps at a space; 0 = never */
+  wrapWidth: number
 }
 
 export interface Clip {
@@ -1246,6 +1258,8 @@ export interface KadrApi {
       sources; cached like proxies, video-only. */
   requestDecoded(path: string, duration: number,
     opts?: { alpha?: boolean; codec?: string; packed?: boolean }): Promise<string>
+  /** Font files in `<dir of projectPath>/kadr-lib/fonts` (absolute paths; [] when none). */
+  libFonts(projectPath: string): Promise<string[]>
   /** Native directory picker; null when the user cancels. */
   pickDirectory(title?: string): Promise<string | null>
   /** Write a frame snapshot PNG into dir (Downloads when null) under a

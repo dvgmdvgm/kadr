@@ -8,6 +8,7 @@ import { audibleTracksInRange } from '@/engine/subtitles'
 import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
 import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
+import { fontChoices } from '@/engine/fonts'
 
 function Num({
   label, value, step = 1, min, max, onChange,
@@ -85,6 +86,105 @@ function ProjectProps() {
   )
 }
 
+/** F2: every TextStyle field. Colour pickers and number fields take one undo
+    step per focus; a checkbox or a list choice is a step of its own. */
+function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<TextStyle>) => void }) {
+  const t = useT()
+  const hist = () => useEditor.getState().pushHistory('hEdit')
+  const step = (p: Partial<TextStyle>) => { hist(); set(p) }
+  const [fonts, setFonts] = useState<{ project: string[]; system: string[] } | null>(null)
+  // the system list needs a user gesture: asked on the first press of the list
+  const loadFonts = () => { if (!fonts) void fontChoices(useEditor.getState().projectPath).then(setFonts) }
+  const listed = fonts ? [...fonts.project, ...fonts.system] : []
+  const color = (k: 'color' | 'outlineColor' | 'background' | 'shadowColor') => (
+    <input type="color" value={style[k] || '#000000'} onFocus={hist} onChange={(e) => set({ [k]: e.target.value })} />
+  )
+  return (
+    <>
+      <label className="insp-field">
+        <span>{t('font')}</span>
+        <select data-act="text-font" value={style.fontFamily} onPointerDown={loadFonts} onFocus={loadFonts}
+          onChange={(e) => step({ fontFamily: e.target.value })}>
+          {!listed.includes(style.fontFamily) && <option value={style.fontFamily}>{style.fontFamily}</option>}
+          {!!fonts?.project.length && (
+            <optgroup label={t('fontsProject')}>
+              {fonts.project.map((f) => <option key={f} value={f}>{f}</option>)}
+            </optgroup>
+          )}
+          {fonts && (
+            <optgroup label={t('fontsSystem')}>
+              {fonts.system.map((f) => <option key={f} value={f}>{f}</option>)}
+            </optgroup>
+          )}
+        </select>
+      </label>
+      <Num label={t('fontSize')} value={style.fontSize} min={8} max={500}
+        onChange={(v) => set({ fontSize: v })} />
+      <label className="insp-field">
+        <span>{t('bold')}</span>
+        <input type="checkbox" checked={style.bold} onChange={(e) => step({ bold: e.target.checked })} />
+      </label>
+      <label className="insp-field">
+        <span>{t('italic')}</span>
+        <input type="checkbox" data-act="text-italic" checked={style.italic} onChange={(e) => step({ italic: e.target.checked })} />
+      </label>
+      <label className="insp-field">
+        <span>{t('align')}</span>
+        <select data-act="text-align" value={style.align} onChange={(e) => step({ align: e.target.value as TextStyle['align'] })}>
+          <option value="left">{t('alignLeft')}</option>
+          <option value="center">{t('alignCenter')}</option>
+          <option value="right">{t('alignRight')}</option>
+        </select>
+      </label>
+      <label className="insp-field">
+        <span>{t('color')}</span>
+        {color('color')}
+      </label>
+      <label className="insp-field">
+        <span>{t('outline')}</span>
+        {color('outlineColor')}
+      </label>
+      <Num label={`${t('outline')} px`} value={style.outlineWidth} min={0} max={40}
+        onChange={(v) => set({ outlineWidth: v })} />
+      <label className="insp-field">
+        <span>{t('background')}</span>
+        <span className="insp-inline">
+          <input type="checkbox" data-act="text-bg" checked={!!style.background} aria-label={t('background')}
+            onChange={(e) => step({ background: e.target.checked ? '#000000' : '' })} />
+          {!!style.background && color('background')}
+        </span>
+      </label>
+      {!!style.background && (
+        <Num label={t('bgPad')} value={style.backgroundPad} step={0.05} min={0} max={4}
+          onChange={(v) => set({ backgroundPad: v })} />
+      )}
+      <label className="insp-field">
+        <span>{t('shadow')}</span>
+        <span className="insp-inline">
+          <input type="checkbox" data-act="text-shadow" checked={!!style.shadowColor} aria-label={t('shadow')}
+            onChange={(e) => step(e.target.checked
+              ? { shadowColor: '#000000', ...(style.shadowBlur || style.shadowX || style.shadowY ? {} : { shadowBlur: 8, shadowX: 4, shadowY: 4 }) }
+              : { shadowColor: '' })} />
+          {!!style.shadowColor && color('shadowColor')}
+        </span>
+      </label>
+      {!!style.shadowColor && (
+        <>
+          <Num label={t('shadowBlur')} value={style.shadowBlur} min={0} max={200} onChange={(v) => set({ shadowBlur: v })} />
+          <Num label={t('shadowX')} value={style.shadowX} min={-500} max={500} onChange={(v) => set({ shadowX: v })} />
+          <Num label={t('shadowY')} value={style.shadowY} min={-500} max={500} onChange={(v) => set({ shadowY: v })} />
+        </>
+      )}
+      <Num label={t('lineHeight')} value={style.lineHeight} step={0.05} min={0.5} max={4}
+        onChange={(v) => set({ lineHeight: v })} />
+      <Num label={t('letterSpacing')} value={style.letterSpacing} step={0.5} min={-50} max={200}
+        onChange={(v) => set({ letterSpacing: v })} />
+      <Num label={t('wrapWidth')} value={style.wrapWidth} step={10} min={0} max={10000}
+        onChange={(v) => set({ wrapWidth: Math.max(0, v) })} />
+    </>
+  )
+}
+
 function ClipProps({ clip }: { clip: Clip }) {
   const t = useT()
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
@@ -123,25 +223,7 @@ function ClipProps({ clip }: { clip: Clip }) {
               onChange={(e) => update({ text: e.target.value })}
             />
           </label>
-          <Num label={t('fontSize')} value={clip.textStyle.fontSize} min={8} max={500}
-            onChange={(v) => setStyle({ fontSize: v })} />
-          <label className="insp-field">
-            <span>{t('color')}</span>
-            <input type="color" value={clip.textStyle.color}
-              onChange={(e) => setStyle({ color: e.target.value })} />
-          </label>
-          <label className="insp-field">
-            <span>{t('outline')}</span>
-            <input type="color" value={clip.textStyle.outlineColor}
-              onChange={(e) => setStyle({ outlineColor: e.target.value })} />
-          </label>
-          <Num label={`${t('outline')} px`} value={clip.textStyle.outlineWidth} min={0} max={40}
-            onChange={(v) => setStyle({ outlineWidth: v })} />
-          <label className="insp-field">
-            <span>{t('bold')}</span>
-            <input type="checkbox" checked={clip.textStyle.bold}
-              onChange={(e) => setStyle({ bold: e.target.checked })} />
-          </label>
+          <TextStyleRows style={clip.textStyle} set={setStyle} />
         </>
       )}
       <div className="insp-section">{t('position')}</div>

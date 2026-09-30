@@ -12,6 +12,7 @@ import { createHash } from 'crypto'
 import { homedir, tmpdir } from 'os'
 import { connect } from 'net'
 import type { FragmentSpec, FragmentInfo } from '@shared/types'
+import { FONT_FILE } from '@shared/fontName'
 import { workspaceTool, type WorkspaceTool } from './toolSpawn'
 // files Kadr keeps in the workspace's src/_kadr (see electron/fragment-kit)
 import VITE_CONFIG from './fragment-kit/vite.config.ts?raw'
@@ -723,8 +724,6 @@ function fragmentHash(id: string): string {
   return h.digest('hex').slice(0, 16)
 }
 
-/** A font file in kadr-lib/fonts: registered by the preview and the render. */
-const FONT_FILE = /\.(woff2?|ttf|otf)$/i
 
 /**
  * The render's entry: ONE composition. The old entry (src/index.ts → Root)

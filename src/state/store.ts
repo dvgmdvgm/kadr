@@ -22,17 +22,9 @@ export const uid = () => Math.random().toString(36).slice(2, 10)
 const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) => number) =>
   Math.max(toFrame(end, fps, snap), toFrame(start + 1 / fps, fps))
 
-export const defaultTextStyle = (): TextStyle => ({
-  fontFamily: 'sans-serif',
-  fontSize: 72,
-  color: '#ffffff',
-  bold: true,
-  italic: false,
-  align: 'center',
-  outlineColor: '#000000',
-  outlineWidth: 4,
-  background: ''
-})
+
+import { defaultTextStyle } from '@/engine/text'
+export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
   Clip,
@@ -215,9 +207,24 @@ export function sanitizeProject(p: Project): Project {
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
+      if (c.kind === 'text') c.textStyle = textStyleOf(c.textStyle)
     }
   }
   return p
+}
+
+/** F2: a text style with every field present and of its type — the fields
+    added later default to what the renderer drew before them. */
+function textStyleOf(raw: unknown): TextStyle {
+  const d = defaultTextStyle() as unknown as Record<string, unknown>
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(d))
+    out[k] = typeof o[k] === typeof d[k] && (typeof d[k] !== 'number' || Number.isFinite(o[k])) ? o[k] : d[k]
+  if (!['left', 'center', 'right'].includes(out.align as string)) out.align = d.align
+  for (const k of ['fontSize', 'wrapWidth', 'shadowBlur', 'outlineWidth', 'backgroundPad', 'lineHeight'])
+    if ((out[k] as number) < 0) out[k] = d[k]
+  return out as unknown as TextStyle
 }
 
 /** All animatable scalars of a clip (transform, gain, mask, shape). */

@@ -135,6 +135,7 @@ const api: KadrApi = {
   },
   requestProxy: (path, duration, opts) => ipcRenderer.invoke('proxy:request', path, duration, opts),
   requestDecoded: (path, duration, opts) => ipcRenderer.invoke('media:decoded', path, duration, opts),
+  libFonts: (projectPath) => ipcRenderer.invoke('fonts:lib', projectPath),
   pickDirectory: (title) => ipcRenderer.invoke('dialog:pick-dir', title),
   saveSnapshot: (dir, baseName, png) => ipcRenderer.invoke('snapshot:save', dir, baseName, png),
   measureLoudness: (path, start, duration) => ipcRenderer.invoke('media:loudness', path, start, duration),

@@ -15,7 +15,8 @@ import {
 import { Mp4FrameSource } from './demux'
 import { chromiumCanDecode } from './codecs'
 import { activity } from './autosave'
-import { projectDuration } from '@/state/store'
+import { projectDuration, useEditor } from '@/state/store'
+import { registerLibFonts } from './fonts'
 import { logInfo, logWarn } from './log'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
@@ -102,6 +103,8 @@ export function startExport(
   async function runInner(): Promise<void> {
     // remotion fragments render exactly once (content-hash cached) and turn
     // into ordinary media clips for the rest of the pipeline
+    // text clips draw with the project's kadr-lib fonts: they must have loaded
+    await registerLibFonts(useEditor.getState().projectPath)
     project = await materializeFragments(project, onProgress, () => cancelled)
     if (cancelled) throw new Error('cancelled')
     const width = preset.width === 'project' ? project.width : preset.width
