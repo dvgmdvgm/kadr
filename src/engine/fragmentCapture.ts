@@ -150,6 +150,7 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   // J1: the grade is shader-only
   const g = clip.grade
   if (g && GRADE_KEYS.some((k) => animActive(g[k]))) return true
+  if (clip.lut) return true // J2
   if (clip.transitionIn && clip.transitionIn.type !== 'none') return true
   if (clip.transitionOut && clip.transitionOut.type !== 'none') return true
   const end = clip.start + clip.duration

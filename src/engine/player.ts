@@ -6,6 +6,7 @@ import { chromiumCanDecode } from './codecs'
 import { playsProxy } from '@shared/proxyChoice'
 import { packSourceHeight } from '@shared/streamColour'
 import { gradeAt } from '@shared/colour'
+import { lutFor } from './lut'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -556,6 +557,13 @@ export function clipGeom(project: Project, track: Track, clip: Clip, t: number):
   return { srcWidth, srcHeight, ...clipPlacement(clip, track, t) }
 }
 
+/** J2: the clip's LUT and its intensity at clip-local `rel`; nothing while the file loads or at 0 */
+function lutAt(clip: Clip, rel: number) {
+  const table = clip.lut && lutFor(clip.lut.path)
+  const mix = table ? Math.min(1, Math.max(0, evalAnim(clip.lut!.intensity, rel))) : 0
+  return table && mix > 0 ? { table, mix } : undefined
+}
+
 function drawClipLayer(
   comp: Compositor,
   project: Project,
@@ -594,7 +602,8 @@ function drawClipLayer(
             invert: ms.invert
           }))
         : undefined,
-      grade: gradeAt(clip.grade, rel, evalAnim)
+      grade: gradeAt(clip.grade, rel, evalAnim),
+      lut: lutAt(clip, rel)
     }
     if (common.opacity <= 0.001) return
     // enabled outer glows render the layer through the effect pass; smoke is

@@ -222,6 +222,11 @@ export function sanitizeProject(p: Project): Project {
         if (!c.grade || typeof c.grade !== 'object') delete c.grade
         else for (const k of GRADE_KEYS) c.grade[k] = anim(c.grade[k], 0)
       }
+      // J2: a LUT needs a path; its intensity defaults to full
+      if (c.lut !== undefined) {
+        if (!c.lut || typeof c.lut.path !== 'string' || !c.lut.path) delete c.lut
+        else c.lut.intensity = anim(c.lut.intensity, 1)
+      }
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
@@ -261,6 +266,7 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
     for (const k of GRADE_KEYS) if (g[k]) g[k] = fn(g[k]!)
     c.grade = g as ClipGrade
   }
+  if (c.lut) c.lut = { ...c.lut, intensity: fn(c.lut.intensity) }
   if (c.mask) {
     c.mask = {
       left: fn(c.mask.left), top: fn(c.mask.top),

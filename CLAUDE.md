@@ -63,7 +63,7 @@ mixes audio and muxes/transcodes per preset.
   `check-collect.mjs` (H8: «Собрать проект» copies every path kind — media,
   transcripts, voice-over scripts and run folders, reversed renders, downloads
   and frame-run intermediates — into `<project>/media/` and rewrites them;
-  paths inside the project folder are saved relative);
+  paths inside the project folder are saved relative; J2: a clip's LUT too);
   `check-i18n-literals.mjs` (no Cyrillic literal anywhere outside
   `src/i18n.ts` — errors included — nor in the Python drivers, and every
   key main or a driver says is in the table) and `check-said.mjs` (H9: main has no table and no UI language, so
@@ -128,6 +128,10 @@ mixes audio and muxes/transcodes per preset.
   through the REAL Compositor in a hidden window match `shared/colour.ts`'s
   reference within 1/255 for every primary control, a neutral grade is
   pixel-exact, a keyframed exposure is neutral at its 0 key);
+  `check-lut.mjs` wants ffmpeg and the installed electron (J2: .cube 1D and
+  3D parsed, the reference sampler and the REAL Compositor within 2/255 of
+  ffmpeg's lut3d/lut1d on the same pixels, an identity LUT and intensity 0
+  within 1);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -855,7 +859,16 @@ mixes audio and muxes/transcodes per preset.
   skips the grade, so an ungraded clip is not a single pixel different. The
   grade is optional on the clip (absent = none; a present one is completed by
   `sanitizeProject`), its keys follow trims and speed through `forEachAnim`,
-  and a graded fragment goes through pixel capture. `holdSources`
+  and a graded fragment goes through pixel capture. A LUT (J2, `Clip.lut`
+  {path, intensity: Anim}, `shared/lut.ts`) runs after the grade, still on
+  straight colour: a .cube 3D table is a half-float TEXTURE_3D sampled
+  trilinearly by the hardware at texel centres, a 1D one an N×1 texture read
+  per channel; within 1/255 of ffmpeg's lut3d/lut1d. The file is read once per
+  path (`src/engine/lut.ts`): the preview draws without it until it has loaded,
+  the export and snapshots await it first. `lutImport` copies a file into
+  `<project>/kadr-lib/luts`, and the path is one of the project's
+  (`projectPaths` kind `lut`), so it is saved relative and collected.
+  `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.
   CONTEXT LIFECYCLE: `dispose()` frees the GL resources and drops the

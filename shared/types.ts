@@ -177,6 +177,12 @@ export interface TextStyle {
   wrapWidth: number
 }
 
+/** J2: a LUT on a clip — the file lives in `<project>/kadr-lib/luts` (lutImport) or anywhere else until a collect */
+export interface ClipLut {
+  path: string
+  intensity: Anim
+}
+
 export interface Clip {
   id: string
   /** source asset; text clips have no asset */
@@ -214,6 +220,8 @@ export interface Clip {
   maskShapes?: MaskShape[]
   /** J1: primary colour correction (shared/colour.ts); absent = none */
   grade?: ClipGrade
+  /** J2: a .cube LUT (shared/lut.ts) after the grade; `intensity` mixes it 0…1. Absent = none */
+  lut?: ClipLut
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string
@@ -1342,6 +1350,8 @@ export interface KadrApi {
     opts?: { alpha?: boolean; codec?: string; packed?: boolean }): Promise<string>
   /** Font files in `<dir of projectPath>/kadr-lib/fonts` (absolute paths; [] when none). */
   libFonts(projectPath: string): Promise<string[]>
+  /** J2: copy a .cube into `<dir of projectPath>/kadr-lib/luts` (an equal file there is reused, another of the name gets `-2`); the path to put on `Clip.lut` */
+  lutImport(src: string, projectPath: string): Promise<string>
   /** Native directory picker; null when the user cancels. */
   pickDirectory(title?: string): Promise<string | null>
   /** Write a frame snapshot PNG into dir (Downloads when null) under a

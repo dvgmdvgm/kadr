@@ -148,6 +148,25 @@ await run('a cancel stops between files and leaves no half file', async () => {
   check('the next plan reuses what was copied', (await col.planCollect(project, join(dir2, 'x.kadr'))).items.filter((i) => i.action === 'reuse').length === 1)
 })
 
+await run('J2: a clip\'s LUT travels with the project', async () => {
+  const dir3 = join(tmp, 'Proj3'), file3 = join(dir3, 'x.kadr')
+  const lutOut = put(join(elsewhere, 'looks', 'teal.cube'), 'LUT_1D_SIZE 2\n0 0 0\n1 1 1\n')
+  const lutIn = put(join(dir3, 'kadr-lib', 'luts', 'warm.cube'), 'LUT_1D_SIZE 2\n0 0 0\n1 1 1\n')
+  const clip = (id, path) => ({ id, lut: { path, intensity: { value: 1 } } })
+  const p = { ...project, assets: [], texts: [], voiceRuns: [], tracks: [{ id: 'v', clips: [clip('a', lutOut), clip('b', lutIn), { id: 'c' }] }] }
+  check('projectPaths names a clip\'s LUT', projectPaths(p).filter((r) => r.kind === 'lut').map((r) => r.path).join() === [lutOut, lutIn].join())
+  const plan = await col.planCollect(p, file3)
+  check('a LUT outside the folder is collected, one in kadr-lib/luts is already inside',
+    plan.items.find((i) => i.from === lutOut)?.action === 'copy' && plan.items.find((i) => i.from === lutIn)?.action === 'inside')
+  const map = await col.copyCollect(plan.items, () => {})
+  const onDisk = saveRelative(mapPaths(p, (x) => map[x] ?? x), file3)
+  const [a, b, c] = onDisk.tracks[0].clips
+  check('the LUT paths are saved relative, the rest of the clip survives',
+    a.lut.path === 'media/teal.cube' && b.lut.path === 'kadr-lib/luts/warm.cube' && a.lut.intensity.value === 1 && c.lut === undefined, `${a.lut.path} · ${b.lut.path}`)
+  check('opened elsewhere, the LUT resolves against the new folder',
+    loadResolved(JSON.parse(JSON.stringify(onDisk)), '/elsewhere/p/x.kadr').tracks[0].clips[1].lut.path === '/elsewhere/p/kadr-lib/luts/warm.cube')
+})
+
 await run('relative paths are portable between Windows and POSIX', () => {
   check('win: inside, any case', relPath('C:\\Work\\Proj\\media\\a.mp4', 'c:\\work\\proj') === 'media/a.mp4', relPath('C:\\Work\\Proj\\media\\a.mp4', 'c:\\work\\proj'))
   check('win: a sibling folder with the same prefix is outside', relPath('C:\\Work\\Proj2\\a.mp4', 'C:\\Work\\Proj') === 'C:\\Work\\Proj2\\a.mp4')

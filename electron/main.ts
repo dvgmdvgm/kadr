@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard, shell, powerSaveBlocker } from 'electron'
-import { join, dirname, basename } from 'path'
+import { join, dirname, basename, extname } from 'path'
 import { promises as fs, createReadStream, statSync, existsSync, appendFileSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
@@ -940,6 +940,19 @@ function registerIpc() {
   ipcMain.handle('fonts:lib', async (_e, projectPath: string) => {
     const dir = join(dirname(projectPath), 'kadr-lib', 'fonts')
     try { return (await fs.readdir(dir)).filter((f) => FONT_FILE.test(f)).sort().map((f) => join(dir, f)) } catch { return [] }
+  })
+  // J2: a LUT joins the project in kadr-lib/luts so it travels with the folder
+  ipcMain.handle('lut:import', async (_e, src: string, projectPath: string) => {
+    const dir = join(dirname(projectPath), 'kadr-lib', 'luts')
+    await fs.mkdir(dir, { recursive: true })
+    const data = await fs.readFile(src)
+    const ext = extname(src), stem = basename(src, ext)
+    for (let i = 1; ; i++) {
+      const out = join(dir, i === 1 ? stem + ext : `${stem}-${i}${ext}`)
+      const had = await fs.readFile(out).catch(() => null)
+      if (had?.equals(data)) return out
+      if (!had) { await fs.writeFile(out, data); return out }
+    }
   })
   ipcMain.handle('dialog:pick-dir', async (_e, title?: string) => {
     const r = await dialog.showOpenDialog(win!, {

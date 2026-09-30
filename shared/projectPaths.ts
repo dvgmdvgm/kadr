@@ -9,7 +9,7 @@
 // for project:read/write and the collect, the check runs it in plain node.
 import type { Project } from './types'
 
-export type PathKind = 'media' | 'proxy' | 'text' | 'script' | 'run'
+export type PathKind = 'media' | 'proxy' | 'text' | 'script' | 'run' | 'lut'
 
 /** absolute on either OS: `/x`, `\\x`, `C:\x`, `C:/x`, `\\server\share` */
 const isAbs = (p: string) => /^([a-zA-Z]:)?[\\/]/.test(p)
@@ -54,6 +54,12 @@ export function mapPaths(p: Project, fn: (path: string, kind: PathKind) => strin
       return path === a.path && proxyPath === a.proxyPath ? a
         : { ...a, path, ...(a.proxyPath !== undefined ? { proxyPath } : {}) }
     }),
+    ...(p.tracks ? {
+      tracks: p.tracks.map((t) => !t.clips?.some((c) => c.lut) ? t : {
+        ...t,
+        clips: t.clips.map((c) => { if (!c.lut) return c; const path = f(c.lut.path, 'lut')!; return path === c.lut.path ? c : { ...c, lut: { ...c.lut, path } } })
+      })
+    } : {}),
     ...(p.texts ? { texts: p.texts.map((t) => { const path = f(t.path, 'text')!; return path === t.path ? t : { ...t, path } }) } : {}),
     ...(p.voiceRuns ? {
       voiceRuns: p.voiceRuns.map((r) => {

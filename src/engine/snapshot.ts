@@ -12,6 +12,7 @@ import {
 } from './fragmentCapture'
 import { ensureFragmentServer } from './fragments'
 import { importFiles } from './mediaImport'
+import { loadLuts } from './lut'
 import { logWarn } from './log'
 import { token } from '@/theme'
 import { trf, tr } from '../i18n'
@@ -94,6 +95,7 @@ async function inShotMode<T>(times: number[], fn: () => Promise<T>): Promise<T> 
 async function settleAt(t: number): Promise<void> {
   const st = () => useEditor.getState()
   if (Math.abs(t - st().playhead) > 1e-9) st().setPlayhead(t)
+  await loadLuts(st().project) // J2
   const forced = hasFragmentsNear(t)
   // give the player a tick to notice the src swaps (previewLoading rises),
   // then wait for seeks + captures, then one idle-draw period (~4 fps)

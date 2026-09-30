@@ -17,6 +17,7 @@ import { chromiumCanDecode } from './codecs'
 import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
 import { registerLibFonts } from './fonts'
+import { loadLuts } from './lut'
 import { logInfo, logWarn } from './log'
 import {
   rawEncodeArgs, outputRect, exportFrameCount, rawCodec, videoCodecOf, pickEncoder, seqPattern, VIDEO_CODECS
@@ -114,6 +115,7 @@ export function startExport(
     // text clips draw with the project's kadr-lib fonts: they must have loaded
     await registerLibFonts(useEditor.getState().projectPath)
     project = await materializeFragments(project, onProgress, () => cancelled)
+    await loadLuts(project) // J2: no frame draws before its clip's LUT is there
     if (cancelled) throw new Error('cancelled')
     const width = preset.width === 'project' ? project.width : preset.width
     const height = preset.height === 'project' ? project.height : preset.height
