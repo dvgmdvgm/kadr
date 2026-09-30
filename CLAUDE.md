@@ -487,6 +487,12 @@ mixes audio and muxes/transcodes per preset.
   entries AND every clip using them (one undo); `setClipSpeed` rescales
   keyframes/fades and takes an optional `start` (left-edge speed drags
   keep the right edge anchored).
+  RIPPLE is one primitive, `shiftAfter(p, t, dt, trackIds, skip)` (every
+  clip starting at or right of t moves; a clip across t never does): the
+  voice-over splice, `closeGapAt`, `closeGaps`, `rippleDelete` (with twins;
+  closes only what the clips left EMPTY) and `extractRange` (all unlocked
+  tracks, markers follow) go through it; locked tracks are never passed.
+  Test: `node scripts/check-ripple.mjs`.
   COPYING THE PROJECT IS THE HOT PATH. A project is deep-copied TWICE per
   edit — once by `pushHistory`, once by the mutation itself (33
   `cloneProject` call sites) — so a drag copies it on every pointermove and

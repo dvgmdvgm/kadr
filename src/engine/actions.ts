@@ -53,6 +53,16 @@ const HANDLERS: Record<ActionId, Handler> = {
     enabled: hasSel, why: 'whyNoSel',
     run: (s) => { if (s.selection.length) s.deleteSelection(); else if (s.range) s.deleteRange() }
   },
+  'edit.rippleDelete': {
+    enabled: hasSel, why: 'whyNoSel',
+    run: (s) => { if (s.selection.length) s.rippleDelete(); else if (s.range) s.extractRange() }
+  },
+  'edit.closeGaps': {
+    // the selection's tracks, or every track
+    run: (s) => s.closeGaps(s.selection.length
+      ? s.project.tracks.filter((t) => t.clips.some((c) => s.selection.includes(c.id))).map((t) => t.id)
+      : 'all')
+  },
   'edit.undo': { enabled: (s) => s.past.length > 0, why: 'whyNoUndo', run: (s) => s.undo() },
   'edit.redo': { enabled: (s) => s.future.length > 0, why: 'whyNoRedo', run: (s) => s.redo() },
   'edit.copy': {

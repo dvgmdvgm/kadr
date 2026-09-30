@@ -32,6 +32,7 @@ export const ACTIONS = [
   { id: 'file.save', labelKey: 'save', context: g, defaultKeys: [k('KeyS', ctrl)], prevent: true },
   { id: 'file.saveAs', labelKey: 'saveAs', context: g, defaultKeys: [k('KeyS', { ctrl: true, shift: true })], prevent: true },
   { id: 'edit.delete', labelKey: 'actDelete', context: g, defaultKeys: [k('KeyD'), k('Delete'), k('Backspace')] },
+  { id: 'edit.rippleDelete', labelKey: 'actRippleDelete', context: g, defaultKeys: [k('Delete', { shift: true })] },
   { id: 'edit.undo', labelKey: 'undoShort', context: g, defaultKeys: [k('KeyZ', ctrl)], prevent: true },
   { id: 'edit.redo', labelKey: 'redoShort', context: g, defaultKeys: [k('KeyZ', { ctrl: true, shift: true }), k('KeyY', ctrl)], prevent: true },
   { id: 'edit.copy', labelKey: 'actCopy', context: g, defaultKeys: [k('KeyC', ctrl)] },
@@ -56,7 +57,8 @@ export const ACTIONS = [
   { id: 'tools.sounds', labelKey: 'actSounds', context: g, defaultKeys: [] },
   { id: 'tools.checks', labelKey: 'actChecks', context: g, defaultKeys: [] },
   { id: 'preview.snapshot', labelKey: 'actSnapshot', context: g, defaultKeys: [] },
-  { id: 'preview.popout', labelKey: 'actPopout', context: g, defaultKeys: [] }
+  { id: 'preview.popout', labelKey: 'actPopout', context: g, defaultKeys: [] },
+  { id: 'edit.closeGaps', labelKey: 'actCloseGaps', context: g, defaultKeys: [] }
 ] as const satisfies readonly ActionSpec[]
 
 export type ActionId = (typeof ACTIONS)[number]['id']

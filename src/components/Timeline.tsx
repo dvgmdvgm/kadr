@@ -880,6 +880,16 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {t('clipDelete')}
           </button>
+          <button
+            className="danger"
+            onClick={() => {
+              const st = useEditor.getState()
+              st.rippleDelete(st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+              onClose()
+            }}
+          >
+            {t('actRippleDelete')}
+          </button>
         </>
       )}
     </CtxMenu>

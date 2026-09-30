@@ -269,6 +269,89 @@ export function rescaleClipAnims(c: Clip, factor: number) {
   if (c.fadeOut) c.fadeOut *= factor
 }
 
+/** THE ripple primitive: every clip on `trackIds` (minus `skip`) whose start
+    is at or right of `t` moves by `dt`. A clip spanning t does not move —
+    callers trim it. Lock-agnostic: callers pass the tracks they may move. */
+export function shiftAfter(p: Project, t: number, dt: number, trackIds: Iterable<string>, skip?: Set<string>) {
+  const ids = new Set(trackIds)
+  for (const tr of p.tracks) {
+    if (!ids.has(tr.id)) continue
+    for (const c of tr.clips) if (c.start >= t - 1e-6 && !skip?.has(c.id)) c.start += dt
+  }
+}
+
+/** Gaps between the clips of one track, left to right (not the lead-in). */
+function gapsOf(clips: Clip[]): Array<[number, number]> {
+  const out: Array<[number, number]> = []
+  let end = -Infinity
+  for (const c of [...clips].sort((a, b) => a.start - b.start)) {
+    if (c.start > end + 1e-6 && end > -Infinity) out.push([end, c.start])
+    end = Math.max(end, c.start + c.duration)
+  }
+  return out
+}
+
+/** What deleting `gone` leaves EMPTY: their spans minus what `kept` still covers. */
+function freedSpans(gone: Clip[], kept: Clip[]): Array<[number, number]> {
+  let spans: Array<[number, number]> = []
+  for (const c of [...gone].sort((a, b) => a.start - b.start)) {
+    const last = spans[spans.length - 1]
+    if (last && c.start <= last[1] + 1e-6) last[1] = Math.max(last[1], c.start + c.duration)
+    else spans.push([c.start, c.start + c.duration])
+  }
+  for (const k of kept) {
+    const ka = k.start, kb = k.start + k.duration
+    spans = spans.flatMap(([a, b]): Array<[number, number]> =>
+      kb <= a + 1e-6 || ka >= b - 1e-6 ? [[a, b]]
+        : [...(ka > a + 1e-6 ? [[a, ka] as [number, number]] : []), ...(kb < b - 1e-6 ? [[kb, b] as [number, number]] : [])])
+  }
+  return spans
+}
+
+/** Lift a range off every unlocked track: clips inside go, clips across it
+    are trimmed or split. Leaves the hole (extractRange closes it). */
+function liftRange(p: Project, r: { start: number; end: number }) {
+  for (const tr of p.tracks) {
+    if (tr.locked) continue
+    const out: Clip[] = []
+    for (const c of tr.clips) {
+      const end = c.start + c.duration
+      const speed = c.speed || 1
+      if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
+        out.push(c) // outside
+      } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
+        // fully inside — drop
+      } else if (c.start < r.start && end > r.end) {
+        // covers the range — split into two
+        const right: Clip = {
+          ...clone(c),
+          id: uid(),
+          start: r.end,
+          duration: end - r.end,
+          inPoint: c.inPoint + (r.end - c.start) * speed,
+          fadeIn: 0,
+          linkId: undefined
+        }
+        shiftClipAnims(right, -(r.end - c.start))
+        c.duration = r.start - c.start
+        c.fadeOut = 0
+        out.push(c, right)
+      } else if (c.start < r.start) {
+        c.duration = r.start - c.start
+        out.push(c)
+      } else {
+        const cut = r.end - c.start
+        c.inPoint += cut * speed
+        c.duration = end - r.end
+        c.start = r.end
+        shiftClipAnims(c, -cut)
+        out.push(c)
+      }
+    }
+    tr.clips = out
+  }
+}
+
 /** Expand clip ids with their linked partners (video + its audio). */
 export function withLinked(p: Project, ids: string[]): string[] {
   const out = new Set(ids)
@@ -717,11 +800,19 @@ interface EditorState {
   trimClip(clipId: string, edge: 'in' | 'out', time: number): void
   splitAtPlayhead(): void
   deleteSelection(): void
+  /** Delete clips (default: the selection) with their linked twins and close
+      what they leave empty on their tracks — one undo step. */
+  rippleDelete(ids?: string[]): void
   /** Close the gap between clips around `time` on a track (Ctrl+click). */
   closeGapAt(trackId: string, time: number): void
+  /** Close every gap between clips on these unlocked tracks (the lead-in stays). */
+  closeGaps(trackIds: string[] | 'all'): void
   copySelection(): void
   copyRange(): void
   deleteRange(): void
+  /** Delete a range (default: the current one) on every unlocked track and
+      close it everywhere; markers right of it follow — one undo step. */
+  extractRange(range?: { start: number; end: number }): void
   pasteAtPlayhead(): void
 
   select(ids: string[]): void
@@ -980,12 +1071,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       // shift events: after this clip ended, everything moves by d
       const events = affected.map((a) => ({ at: a.oldEnd, d: a.duration - (a.oldEnd - a.oldStart) }))
         .sort((x, y) => x.at - y.at)
-      const shiftFor = (start: number) =>
-        ripple ? events.reduce((n, e) => (e.at <= start + 1e-6 ? n + e.d : n), 0) : 0
       const tracksToRipple = new Set(
         rippleAllTracks ? p.tracks.filter((t) => !t.locked).map((t) => t.id)
                         : affected.map((a) => a.track.id))
 
+      // what does NOT ride the ripple: clips on other tracks, and a clip that
+      // STRADDLES the splice — it would have to stretch. Say so rather than pretend.
+      const skip = new Set<string>()
       for (const track of p.tracks) {
         for (const c of track.clips) {
           const mine = affected.find((a) => a.clip.id === c.id)
@@ -993,21 +1085,23 @@ export const useEditor = create<EditorState>((set, get) => ({
             c.assetId = newAsset.id
             c.inPoint = mine.inPoint
             c.duration = mine.duration
-            c.start = mine.oldStart + shiftFor(mine.oldStart)
             continue
           }
-          if (!ripple || !tracksToRipple.has(track.id)) continue
-          // a clip that STRADDLES the splice cannot be fixed by shifting: it
-          // would have to stretch. Say so rather than pretend.
-          const spans = events.some((e) => c.start < e.at - 1e-6 && c.start + c.duration > e.at + 1e-6)
-          if (spans) {
-            if (!warnings.length || !warnings.some((w) => w.includes('накрывает место склейки'))) {
+          if (!tracksToRipple.has(track.id)) { skip.add(c.id); continue }
+          if (events.some((e) => c.start < e.at - 1e-6 && c.start + c.duration > e.at + 1e-6)) {
+            skip.add(c.id)
+            if (ripple && !warnings.some((w) => w.includes('накрывает место склейки'))) {
               warnings.push('часть клипов накрывает место склейки — их длину сдвиг не исправит')
             }
-            continue
           }
-          c.start += shiftFor(c.start)
         }
+      }
+      // right to left, so an event's clips are judged where they stood before it.
+      // ponytail: a clip pulled left past an EARLIER event (voice copies overlapping
+      // on two tracks) would miss that event's shift; one-pass sum if that ever happens
+      if (ripple) {
+        const all = p.tracks.map((t) => t.id)
+        for (const e of [...events].reverse()) shiftAfter(p, e.at, e.d, all, skip)
       }
       if (!ripple) warnings.push('сдвиг выключен: клипы правее могут наехать друг на друга')
 
@@ -1744,15 +1838,43 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (c.start >= time && c.start < nextStart) nextStart = c.start
     }
     if (!isFinite(nextStart) || nextStart - prevEnd < 1e-6) return
-    const shift = nextStart - prevEnd
     s.pushHistory('hCloseGap')
     set((st) => {
       const p = cloneProject(st.project)
-      const tr = p.tracks.find((t) => t.id === trackId)!
-      for (const c of tr.clips) {
-        if (c.start >= nextStart - 1e-6) c.start -= shift
+      shiftAfter(p, nextStart, prevEnd - nextStart, [trackId])
+      return { project: p }
+    })
+  },
+
+  closeGaps: (which) => {
+    const s = get()
+    const tracks = s.project.tracks.filter((t) => !t.locked && (which === 'all' || which.includes(t.id)))
+    if (!tracks.some((t) => gapsOf(t.clips).length)) return
+    s.pushHistory('hCloseGaps')
+    set((st) => {
+      const p = cloneProject(st.project)
+      for (const t of tracks) {
+        for (const [a, b] of gapsOf(t.clips).reverse()) shiftAfter(p, b, a - b, [t.id])
       }
       return { project: p }
+    })
+  },
+
+  rippleDelete: (ids) => {
+    const s = get()
+    const want = new Set(withLinked(s.project, ids ?? s.selection))
+    if (!s.project.tracks.some((t) => !t.locked && t.clips.some((c) => want.has(c.id)))) return
+    s.pushHistory('hRippleDelete')
+    set((st) => {
+      const p = cloneProject(st.project)
+      for (const tr of p.tracks) {
+        if (tr.locked) continue
+        const gone = tr.clips.filter((c) => want.has(c.id))
+        if (!gone.length) continue
+        tr.clips = tr.clips.filter((c) => !want.has(c.id))
+        for (const [a, b] of freedSpans(gone, tr.clips).reverse()) shiftAfter(p, b, a - b, [tr.id])
+      }
+      return { project: p, selection: st.selection.filter((id) => !want.has(id)) }
     })
   },
 
@@ -1790,46 +1912,26 @@ export const useEditor = create<EditorState>((set, get) => ({
     s.pushHistory('hDeleteRange')
     set((st) => {
       const p = cloneProject(st.project)
-      for (const tr of p.tracks) {
-        if (tr.locked) continue
-        const out: Clip[] = []
-        for (const c of tr.clips) {
-          const end = c.start + c.duration
-          const speed = c.speed || 1
-          if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
-            out.push(c) // outside
-          } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
-            // fully inside — drop
-          } else if (c.start < r.start && end > r.end) {
-            // covers the range — split into two
-            const right: Clip = {
-              ...clone(c),
-              id: uid(),
-              start: r.end,
-              duration: end - r.end,
-              inPoint: c.inPoint + (r.end - c.start) * speed,
-              fadeIn: 0,
-              linkId: undefined
-            }
-            shiftClipAnims(right, -(r.end - c.start))
-            c.duration = r.start - c.start
-            c.fadeOut = 0
-            out.push(c, right)
-          } else if (c.start < r.start) {
-            c.duration = r.start - c.start
-            out.push(c)
-          } else {
-            const cut = r.end - c.start
-            c.inPoint += cut * speed
-            c.duration = end - r.end
-            c.start = r.end
-            shiftClipAnims(c, -cut)
-            out.push(c)
-          }
-        }
-        tr.clips = out
-      }
+      liftRange(p, r)
       return { project: p, selection: [] }
+    })
+  },
+
+  extractRange: (range) => {
+    const s = get()
+    const r = range ?? s.range
+    if (!r || r.end - r.start < 1e-6) return
+    s.pushHistory('hExtract')
+    set((st) => {
+      const p = cloneProject(st.project)
+      liftRange(p, r)
+      const len = r.end - r.start
+      shiftAfter(p, r.end, -len, p.tracks.filter((t) => !t.locked).map((t) => t.id))
+      // a ripple over every track moves the markers too; inside the range they land on its start
+      if (p.markers) {
+        p.markers = p.markers.map((m) => m.time > r.start ? { ...m, time: Math.max(r.start, m.time - len) } : m)
+      }
+      return { project: p, selection: [], range: null }
     })
   },
 
