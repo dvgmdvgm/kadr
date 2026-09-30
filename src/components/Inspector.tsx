@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Anim, Clip, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
+import type { Anim, Clip, ClipFit, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
 import { useEditor, useFxPresets, findClip, uid, type ProjectSettingsPatch } from '@/state/store'
 import { GLOW_DEFAULTS } from '@/gl/glow'
 import { useT } from '@/i18n'
@@ -189,6 +189,7 @@ function ClipProps({ clip }: { clip: Clip }) {
   const t = useT()
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
   const named = useRef(false)
+  const visual = useEditor((s) => clip.kind !== 'media' || s.project.assets.some((a) => a.id === clip.assetId && a.kind !== 'audio'))
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
   const setGain = (v: number) => update({ gain: { ...clip.gain, value: v } as Anim })
@@ -235,6 +236,31 @@ function ClipProps({ clip }: { clip: Clip }) {
         onChange={(v) => setAnim('rotation', v)} />
       <Num label={t('opacity')} value={clip.transform.opacity.value} step={0.05} min={0} max={1}
         onChange={(v) => setAnim('opacity', v)} />
+      {visual && (
+        <>
+          {/* F4: each choice is its own undo step */}
+          <label className="insp-field">
+            <span>{t('fit')}</span>
+            <select data-act="clip-fit" value={clip.fit ?? 'contain'} onChange={(e) => {
+              useEditor.getState().pushHistory('hEdit')
+              update({ fit: e.target.value === 'contain' ? undefined : e.target.value as ClipFit })
+            }}>
+              <option value="contain">{t('fitContain')}</option>
+              <option value="cover">{t('fitCover')}</option>
+              <option value="stretch">{t('fitStretch')}</option>
+            </select>
+          </label>
+          {(['flipX', 'flipY'] as const).map((k) => (
+            <label className="insp-field" key={k}>
+              <span>{t(k)}</span>
+              <input type="checkbox" data-act={`clip-${k}`} checked={!!clip[k]} onChange={(e) => {
+                useEditor.getState().pushHistory('hEdit')
+                update({ [k]: e.target.checked || undefined })
+              }} />
+            </label>
+          ))}
+        </>
+      )}
       <div className="insp-section">{t('volume')}</div>
       <Num label={t('volume')} value={clip.gain.value} step={0.05} min={0} max={2} onChange={setGain} />
       <label className="insp-field">

@@ -198,6 +198,9 @@ export function sanitizeProject(p: Project): Project {
       label(c)
       if (c.disabled !== undefined) { if (c.disabled) c.disabled = true; else delete c.disabled }
       if (c.freezeAt !== undefined && !(Number.isFinite(c.freezeAt) && c.freezeAt >= 0)) delete c.freezeAt
+      // F4: contain is the default and stays implicit; flips are booleans
+      if (c.fit !== 'cover' && c.fit !== 'stretch') delete c.fit
+      for (const k of ['flipX', 'flipY'] as const) { if (c[k]) c[k] = true; else delete c[k] }
       for (const k of ['start', 'duration', 'inPoint'] as const)
         if (!Number.isFinite(c[k])) c[k] = 0
       if (!Number.isFinite(c.speed) || c.speed <= 0) c.speed = 1

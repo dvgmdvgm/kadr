@@ -3,7 +3,7 @@
 // without a decoder; drawFrame builds the layer from the decoded frame or the
 // element. Both must land on the same four corners, for footage decoded at a
 // proxy's size, stills, any rotation, a 3D tilt and whole-track motion.
-// (The fit is contain; cover and stretch join these rows with card F4.)
+// Every row runs under contain, cover and stretch (card F4; stretch flipped too).
 //
 // Cost of getting it wrong: handles that do not sit on the picture.
 // Run: node scripts/check-gizmo-box.mjs
@@ -86,14 +86,14 @@ const cases = [
   ['footage under whole-track motion', video, [960, 540], { x: A(50), rotation: A(20) }, motion]
 ]
 for (const [W, H] of [[1280, 720], [1080, 1920]]) {
-  for (const [name, asset, frameSize, tr, trackMotion] of cases) {
-    const clip = mk('c', asset.id, tr)
+  for (const [name, asset, frameSize, tr, trackMotion] of cases) for (const fit of ['contain', 'cover', 'stretch']) {
+    const clip = { ...mk('c', asset.id, tr), fit, ...(fit === 'stretch' ? { flipX: true, flipY: true } : {}) }
     const track = { id: 'V1', kind: 'video', name: 'V1', muted: false, locked: false, gain: 1, clips: [clip], ...(trackMotion ? { motion: trackMotion } : {}) }
     const project = { width: W, height: H, fps: 30, background: '#000000', assets: [video, still], tracks: [track], markers: [] }
     const drawn = drawnCorners(project, 'c', frameSize)
     const g = clipGeom(project, track, clip, 1)
     const box = g && layerQuad(g, W, H)
-    check(`the gizmo box equals the drawn layer bounds for contain, cover and stretch at any rotation: ${name} (${W}×${H}, contain)`,
+    check(`the gizmo box equals the drawn layer bounds for contain, cover and stretch at any rotation: ${name} (${W}×${H}, ${fit}${clip.flipX ? ', flipped' : ''})`,
       same(box, drawn), { box: round(box), drawn: round(drawn) })
   }
 }

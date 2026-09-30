@@ -100,6 +100,9 @@ export interface ClipMask {
   bottom: Anim
 }
 
+/** how a source meets the frame: whole picture with bars, fill with a crop, or distorted to the frame */
+export type ClipFit = 'contain' | 'cover' | 'stretch'
+
 export type MaskShapeType = 'rect' | 'ellipse' | 'triangle'
 
 /** Drawn shape mask in layer UV space (0..1), with soft borders. */
@@ -179,6 +182,11 @@ export interface Clip {
   gain: Anim // audio gain 0..2
   muted: boolean
   transform: ClipTransform
+  /** absent = contain (preview and export alike) */
+  fit?: ClipFit
+  /** mirror the picture; crop and mask shapes follow it */
+  flipX?: boolean
+  flipY?: boolean
   mask?: ClipMask
   /** legacy single shape — superseded by maskShapes */
   maskShape?: MaskShape

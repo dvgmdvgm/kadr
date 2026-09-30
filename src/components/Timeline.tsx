@@ -912,6 +912,28 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {findClip(useEditor.getState().project, menu.clipId!)?.clip.disabled ? t('clipEnable') : t('clipDisable')}
           </button>
+          {(() => {
+            // F4: «Заполнить кадр» — cover on the clicked clip (the selection, when it is in it); again → contain
+            const p = useEditor.getState().project
+            const f = findClip(p, menu.clipId!)
+            if (!f || f.track.kind !== 'video') return null
+            const filled = f.clip.fit === 'cover'
+            return (
+              <button
+                data-act="clip-fill-frame"
+                onClick={() => {
+                  const st = useEditor.getState()
+                  const ids = (st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+                    .filter((id) => findClip(st.project, id)?.track.kind === 'video')
+                  st.pushHistory('hEdit')
+                  st.setClipProps(ids, { fit: filled ? undefined : 'cover' })
+                  onClose()
+                }}
+              >
+                {filled ? t('fitFrame') : t('fillFrame')}
+              </button>
+            )
+          })()}
           <Swatches
             value={findClip(useEditor.getState().project, menu.clipId!)?.clip.color}
             onPick={(color) => {

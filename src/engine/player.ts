@@ -453,6 +453,9 @@ export function clipPlacement(clip: Clip, track: Track, t: number): Omit<LayerGe
   const tr = clip.transform
   const motion = track.motion
   return {
+    fit: clip.fit,
+    flipX: clip.flipX,
+    flipY: clip.flipY,
     x: evalAnim(tr.x, rel),
     y: evalAnim(tr.y, rel),
     scale: evalAnim(tr.scale, rel),

@@ -104,7 +104,9 @@ export function ClipGizmo({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
   const outline = [q[0], q[2], q[3], q[1]]
   const c = centreOf(q)
   const flat = !tilted(geom)
-  const topMid = { x: (q[0].x + q[2].x) / 2, y: (q[0].y + q[2].y) / 2 }
+  // the knob sits over the picture's top as placed, not the source's (a flipY moves that to the bottom)
+  const qt = geom.flipY ? quadOf({ ...geom, flipY: false }) : q
+  const topMid = { x: (qt[0].x + qt[2].x) / 2, y: (qt[0].y + qt[2].y) / 2 }
   const up = Math.hypot(topMid.x - c.x, topMid.y - c.y) || 1
   const rot = { x: topMid.x + ((topMid.x - c.x) / up) * 22, y: topMid.y + ((topMid.y - c.y) / up) * 22 }
 

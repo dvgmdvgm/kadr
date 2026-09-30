@@ -4,6 +4,7 @@ import { transitionGlsl } from './transitions'
 import { edgeGlsl } from './edges'
 import { GLOW_FIELD_FS, GLOW_FS, type GlowParams } from './glow'
 import { logError } from '@/engine/log'
+import type { ClipFit } from '@shared/types'
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;   // NDC xy premultiplied by w, plus w
@@ -202,6 +203,11 @@ export interface LayerDraw {
   dynamic: boolean
   srcWidth: number
   srcHeight: number
+  /** how the source meets the frame before the clip scale; absent = contain */
+  fit?: ClipFit
+  /** mirror the layer about its own centre — crop and masks (layer uv) go with it */
+  flipX?: boolean
+  flipY?: boolean
   x: number
   y: number
   scale: number
@@ -489,7 +495,8 @@ export class Compositor {
       gl.uniform1iv(this.uShapeType, types)
       gl.uniform4fv(this.uShapeRect, rects)
       gl.uniform3fv(this.uShapeFeather, feathers)
-      gl.uniform1f(this.uAspect, l.srcWidth / Math.max(1, l.srcHeight))
+      const [fw, fh] = fitSize(l, this.width, this.height)
+      gl.uniform1f(this.uAspect, fw / Math.max(1e-6, fh))
     }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
@@ -990,7 +997,15 @@ function hexToRgb(hex: string | undefined): [number, number, number] {
 }
 
 /** the part of a layer that decides where it lands on the frame */
-export type LayerGeom = Pick<LayerDraw, 'srcWidth' | 'srcHeight' | 'x' | 'y' | 'scale' | 'rotation' | 'rotX' | 'rotY' | 'z' | 'outer'>
+export type LayerGeom = Pick<LayerDraw, 'srcWidth' | 'srcHeight' | 'fit' | 'flipX' | 'flipY' | 'x' | 'y' | 'scale' | 'rotation' | 'rotX' | 'rotY' | 'z' | 'outer'>
+
+/** the layer's drawn size in project px before rotation: the source fitted
+    into the frame (contain / cover / stretch), times the clip scale */
+export function fitSize(l: Pick<LayerGeom, 'srcWidth' | 'srcHeight' | 'fit' | 'scale'>, width: number, height: number): [number, number] {
+  if (l.fit === 'stretch') return [width * l.scale, height * l.scale]
+  const fit = (l.fit === 'cover' ? Math.max : Math.min)(width / l.srcWidth, height / l.srcHeight) * l.scale
+  return [l.srcWidth * fit, l.srcHeight * fit]
+}
 
 /**
  * Where a layer's corners land, in project pixels — THE geometry the
@@ -1001,10 +1016,10 @@ export type LayerGeom = Pick<LayerDraw, 'srcWidth' | 'srcHeight' | 'x' | 'y' | '
 export function layerQuad(
   l: LayerGeom, width: number, height: number, sub: [number, number, number, number] = [0, 0, 1, 1]
 ): { sx: number; sy: number; u: number; v: number; w: number }[] {
-  // fit the source into the project frame, then apply the clip scale
-  const fit = Math.min(width / l.srcWidth, height / l.srcHeight) * l.scale
-  const w = l.srcWidth * fit
-  const h = l.srcHeight * fit
+  const [w, h] = fitSize(l, width, height)
+  // a flip mirrors where a uv lands, not the uv — so crop and masks follow
+  const mx = l.flipX ? -1 : 1
+  const my = l.flipY ? -1 : 1
   const clipRot = makeRot3(l.rotation, l.rotX ?? 0, l.rotY ?? 0)
   const outer = l.outer
   const outerRot = outer ? makeRot3(outer.rotation, outer.rotX, outer.rotY) : null
@@ -1012,7 +1027,7 @@ export function layerQuad(
   const [u0, v0, u1, v1] = sub
   return [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(([u, v]) => {
     // clip transform: 3D rotation around the layer center, then offset
-    let P = rotApply(clipRot, (u - 0.5) * w, (v - 0.5) * h, 0)
+    let P = rotApply(clipRot, mx * (u - 0.5) * w, my * (v - 0.5) * h, 0)
     P[0] += l.x
     P[1] += l.y
     P[2] += l.z ?? 0

@@ -140,6 +140,8 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   const tr = clip.transform
   if (animActive(tr.rotX) || animActive(tr.rotY) || animActive(tr.z)) return true
   if (track.motion) return true
+  // the iframe overlay only knows contain and no mirror
+  if ((clip.fit && clip.fit !== 'contain') || clip.flipX || clip.flipY) return true
   const m = clip.mask
   if (m && [m.left, m.top, m.right, m.bottom].some((a) => animActive(a))) return true
   if ((clip.maskShapes?.length ?? 0) > 0 || clip.maskShape) return true

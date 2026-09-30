@@ -15,6 +15,7 @@ import { useEditor } from '@/state/store'
 import { evalAnim } from './anim'
 import { framePixels } from './snapshot'
 import { logInfo } from './log'
+import { fitSize } from '@/gl/compositor'
 
 /** The limits, named. Each is a rule a reviewer would apply by eye. */
 export const CHECK_LIMITS = {
@@ -153,11 +154,14 @@ export function boxContrast(img: ImageData, box: [number, number, number, number
 function projectBox(clip: Clip, project: Project, box: [number, number, number, number], rel: number): [number, number, number, number] {
   const fw = clip.fragmentMeta?.width ?? project.width
   const fh = clip.fragmentMeta?.height ?? project.height
-  const fit = Math.min(project.width / fw, project.height / fh)
-  const s = evalAnim(clip.transform.scale, rel) * fit
+  // the compositor's own fit (F4: contain / cover / stretch) and flips
+  const [w, h] = fitSize({ srcWidth: fw, srcHeight: fh, fit: clip.fit, scale: evalAnim(clip.transform.scale, rel) }, project.width, project.height)
+  const sx = w / fw, sy = h / fh
   const cx = project.width / 2 + evalAnim(clip.transform.x, rel)
   const cy = project.height / 2 + evalAnim(clip.transform.y, rel)
-  return [cx + (box[0] - fw / 2) * s, cy + (box[1] - fh / 2) * s, box[2] * s, box[3] * s]
+  const bx = clip.flipX ? fw - box[0] - box[2] : box[0]
+  const by = clip.flipY ? fh - box[1] - box[3] : box[1]
+  return [cx + (bx - fw / 2) * sx, cy + (by - fh / 2) * sy, box[2] * sx, box[3] * sy]
 }
 
 // ---------------------------------------------------------------- camera
