@@ -57,6 +57,8 @@ export class Mp4FrameSource {
   private ctsShift = 0
   private sampleScale = 0
   private scratch: Uint8Array | null = null
+  /** number of the last sample queued since the last jump — see ingestSamples */
+  private lastSample = -1
 
   /** 0.5 for colour-over-matte intermediates — see normalizeColor. */
   private heightScale = 1
@@ -101,6 +103,14 @@ export class Mp4FrameSource {
   private ingestSamples(file: MP4File, samples: Sample[]) {
     if (this.fatal) return
     for (const s of samples) {
+      // Every sample goes to the decoder ONCE, in decode order. After a seek,
+      // mp4box re-extracts the samples it still holds AND extracts them again
+      // from the re-pump: init()'s jump(0) fed I0…P20 then I0 again whenever
+      // the head pump had swept the file before isConfigSupported answered,
+      // and that IDR flushed P20 out ahead of its B-frames — frames 17–19
+      // exported as frame 20 in some runs only (card J10).
+      if (s.number <= this.lastSample) continue
+      this.lastSample = s.number
       this.sampleScale = s.timescale
       const chunk = new EncodedVideoChunk({
         type: s.is_sync ? 'key' : 'delta',
@@ -376,6 +386,7 @@ export class Mp4FrameSource {
     this.pendingChunks = []
     this.gopBuffer = []
     this.skipTargetUs = null
+    this.lastSample = -1
     this.current?.close()
     this.current = null
     this.ahead?.close()

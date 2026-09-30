@@ -117,6 +117,10 @@ mixes audio and muxes/transcodes per preset.
   `check-stream-colour.mjs` wants ffmpeg (J9: an H.264/HEVC stream's colour
   description read from the SPS VUI and the colr box, mapped to the matrix
   the preview's `<video>` uses — the export re-wraps its frames by it);
+  `check-decode-determinism.mjs` wants ffmpeg (J10: the real
+  `Mp4FrameSource` under node with a reordering fake decoder — every sample
+  of a B-frame intermediate is fed once, in decode order, and frame k comes
+  back at every k, however the file's bytes and the config check interleave);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -926,6 +930,16 @@ mixes audio and muxes/transcodes per preset.
     every H.264 row, SD and HD, untagged / matrix-only / full / colr-only /
     VUI-only, is pixel-identical preview vs export. Test:
     `node scripts/check-stream-colour.mjs` (ffmpeg).
+  * EVERY SAMPLE IS FED ONCE (J10): after `jump()` mp4box re-extracts the
+    samples it still holds AND extracts them again from the re-pump. When
+    init's head pump had swept a small faststart file before
+    `isConfigSupported` answered, the decoder got I0…P20 then I0 again; the
+    IDR bumped P20 out ahead of its B-frames and frames 17–19 exported as
+    frame 20 — in some runs only (H8: 3 of 6). `ingestSamples` drops any
+    sample number not above the last one queued since the jump. Measured:
+    10 exports of a reversed + frame-run project, frame hashes identical
+    (before: frame 9 differed in 3 of 4), stage times unchanged. Test:
+    `node scripts/check-decode-determinism.mjs`.
   * MOOV AT THE END (any file not written with faststart) is picked up by
     fetching the file's tail (`pumpTail`) instead of dropping to element
     seeks.
