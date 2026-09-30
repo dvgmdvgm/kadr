@@ -167,7 +167,8 @@ const invalid = {
   kadr_marker: [{}, { t: 1, kind: 'section' }, { t: 1, kind: 'pause', end: 0.5 }, { t: 1, end: 2 }, { t: 1, kind: 'scene', end: 2 }, { t: 1, kind: 'shot' }],
   kadr_undo: [{}, { steps: 0 }, { steps: 1.5 }, { steps: 51 }],
   kadr_silences: [{ start: 1 }, { apply: 'some' }, { thresholdDb: 0 }],
-  kadr_scenes: [{ start: 1 }, { threshold: 0 }, { clipId: 'x', start: 0, end: 1 }]
+  kadr_scenes: [{ start: 1 }, { threshold: 0 }, { clipId: 'x', start: 0, end: 1 }],
+  kadr_duck: [{}, { musicClipIds: [] }, { musicClipIds: ['m'], depthDb: 0 }, { musicClipIds: ['m'], speechTrackIds: ['a'], speechClipIds: ['v'] }]
 }
 check('every tool has invalid samples here', TOOLS.every((t) => invalid[t.name]?.length))
 fresh()

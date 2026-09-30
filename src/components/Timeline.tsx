@@ -15,6 +15,7 @@ const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
 /** «Радиус прилипания», in seconds at this zoom */
 const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
 import { useT, tr, trf, type TKey } from '@/i18n'
+import { duckHere, duckTargets } from '@/engine/duck'
 import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, type Silence } from '@/engine/silences'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
@@ -1034,6 +1035,11 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
               </button>
             )
           })()}
+          {duckTargets(menu.clipId!).includes(menu.clipId!) && (
+            <button data-act="clip-duck" onClick={() => { void duckHere(menu.clipId!); onClose() }}>
+              {t('actDuck')}
+            </button>
+          )}
           <button
             className="danger"
             onClick={() => {

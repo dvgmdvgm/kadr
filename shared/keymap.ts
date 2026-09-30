@@ -90,6 +90,7 @@ export const ACTIONS = [
   { id: 'edit.closeGaps', labelKey: 'actCloseGaps', context: g, defaultKeys: [] },
   { id: 'tools.silences', labelKey: 'actFindSilences', context: g, defaultKeys: [] },
   { id: 'tools.scenes', labelKey: 'actFindScenes', context: g, defaultKeys: [] },
+  { id: 'tools.duck', labelKey: 'actDuck', context: g, defaultKeys: [] },
   { id: 'edit.removeSilences', labelKey: 'actRemoveSilences', context: g, defaultKeys: [] }
 ] as const satisfies readonly ActionSpec[]
 

@@ -94,6 +94,11 @@ mixes audio and muxes/transcodes per preset.
   cuts within a frame, mapped through inPoint and speed to 'scene' markers
   as ONE undo step, snap targets that survive a load; kadr_scenes refuses
   bad input before the page);
+  `check-duck.mjs` wants ffmpeg (I7: on a generated voice + music pair the
+  music's gain keys follow the speech spans with attack and release, an
+  existing gain is multiplied, ONE undo step; the exported music dips
+  12 ± 1 dB in speech and is back in the gaps; a 10-minute ducked bed mixes
+  in under 3 s; kadr_duck refuses bad input before the page);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -206,7 +211,10 @@ mixes audio and muxes/transcodes per preset.
   (segment-local timeline seconds, piecewise linear — eased and smooth spans
   in ≤ 32 pieces, `shared/gainKeys.ts`), and `segmentChain` applies them
   after atempo as one `volume='<expr>':eval=frame` in 10 ms steps — so the
-  graph and the premix both get it. A gain that never changes stays a
+  graph and the premix both get it. The expression picks its piece through a
+  balanced tree of `if(lt(t,…))` (ffmpeg evaluates only the taken branch):
+  as a flat sum of pieces a ducked 10-minute bed (~600 keys) took 4.9 s to
+  mix, as a tree 0.4 s. A gain that never changes stays a
   scalar and mixes bit-identically. Test: `node scripts/check-gain-keys.mjs`.
   TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
   carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
@@ -351,6 +359,12 @@ mixes audio and muxes/transcodes per preset.
   thin lines like beats, snapped under «Маркерам» — replacing the scene
   markers of that stretch in ONE undo step; also the palette's «Найти
   склейки в видео»; test `node scripts/check-scenes.mjs`) /
+  kadr_duck (I7, `src/engine/duck.ts`: speech = the `audio:envelope` of the
+  other tracks (or the named ones) above −35 dB of its peak plus transcript
+  words; the music clips get gain keys — −12 dB, 0.3 s attack before speech,
+  0.5 s release after, recoveries under 0.5 s merged — MULTIPLIED into the
+  gain they had, ONE undo step labelled so; also the clip menu and the
+  palette's «Приглушить музыку под речью»; test `node scripts/check-duck.mjs`) /
   kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /
   kadr_fragment_create / kadr_typecheck / kadr_check / kadr_fragment_media /
   kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /

@@ -50,18 +50,29 @@ export function gainKeys(a: Anim, from: number, to: number, at: (t: number) => n
 
 const num = (x: number) => String(+x.toFixed(6))
 
-/** ffmpeg expression of the curve in `t` (seconds): flat before and after, straight in between */
+/**
+ * ffmpeg expression of the curve in `t` (seconds): flat before and after,
+ * straight in between. The pieces are picked by a balanced tree of `if(lt(t,…))`
+ * — ffmpeg evaluates only the taken branch, so a step costs log(pieces), not
+ * pieces: a ducked 10-minute bed (≈600 keys) as a flat sum took 4.9 s to mix.
+ */
 export function gainExpr(keys: GainKey[]): string {
   const first = keys[0]
   const last = keys[keys.length - 1]
-  const terms = [`lt(t,${num(first.t)})*${num(first.v)}`]
+  // each piece holds from `from` until the next one's `from`
+  const pieces = [{ from: -Infinity, expr: num(first.v) }]
   for (let i = 0; i < keys.length - 1; i++) {
     const a = keys[i]
     const b = keys[i + 1]
     if (b.t - a.t < 1e-9) continue // a step: the next piece starts at the new value
     const slope = (b.v - a.v) / (b.t - a.t)
-    terms.push(`gte(t,${num(a.t)})*lt(t,${num(b.t)})*(${num(a.v)}+(${num(slope)})*(t-${num(a.t)}))`)
+    pieces.push({ from: a.t, expr: `(${num(a.v)}+(${num(slope)})*(t-${num(a.t)}))` })
   }
-  terms.push(`gte(t,${num(last.t)})*${num(last.v)}`)
-  return terms.join('+')
+  pieces.push({ from: last.t, expr: num(last.v) })
+  const tree = (lo: number, hi: number): string => {
+    if (hi - lo === 1) return pieces[lo].expr
+    const mid = (lo + hi) >> 1
+    return `if(lt(t,${num(pieces[mid].from)}),${tree(lo, mid)},${tree(mid, hi)})`
+  }
+  return tree(0, pieces.length)
 }

@@ -15,6 +15,7 @@ import { contextTargetOpen, sendContext } from './contextLine'
 import { applySilences, findSilencesHere, useSilences } from './silences'
 import { useBeatsUi } from './beats'
 import { findScenesHere } from './scenes'
+import { duckHere, duckTargets } from './duck'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
 import { useCaptionsUi } from '../components/CaptionsDialog'
@@ -94,6 +95,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   },
   'tools.silences': { run: () => void findSilencesHere() },
   'tools.scenes': { run: () => void findScenesHere() },
+  'tools.duck': { enabled: () => duckTargets().length > 0, why: 'whyNoAudioSel', run: () => void duckHere() },
   'edit.removeSilences': {
     enabled: () => useSilences.getState().items.some((x) => x.state === 'confirmed'), why: 'whyNoSilences',
     run: () => { applySilences('confirmed') }

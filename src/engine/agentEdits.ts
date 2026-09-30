@@ -14,6 +14,7 @@ import { toFrame } from './timelineMath'
 import { upsertKf } from '@/components/animUtils'
 import { applySilences, findSilences, type FindSilencesArgs } from './silences'
 import { findScenes, type FindScenesArgs } from './scenes'
+import { autoDuck, type AutoDuckArgs } from './duck'
 
 const st = () => useEditor.getState()
 
@@ -154,6 +155,14 @@ export async function silences(a: FindSilencesArgs & { apply?: 'confirmed' | 'al
   }
   const found = await findSilences(a)
   return { proposals: found.map(({ id, start, end }) => ({ id, start, end })), seconds: +found.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+}
+
+/** kadr_duck: gain keys on the music that dip under speech — one undo step. */
+export async function duck(a: AutoDuckArgs) {
+  const before = st().past.length
+  const r = await autoDuck(a)
+  if (st().past.length !== before + 1) throw new Error('duck: not exactly one undo step')
+  return { ...r, keys: r.clipIds.map((id) => findClip(st().project, id)!.clip.gain.keyframes?.length ?? 0) }
 }
 
 /** kadr_scenes: hard cuts of the video as 'scene' markers (replacing the old

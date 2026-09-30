@@ -126,6 +126,19 @@ const TOOLS = [
     }
   },
   {
+    name: 'kadr_duck',
+    fn: 'duck',
+    helper: true,
+    ms: 30 * 60_000,
+    description: 'Duck music under speech: gain keyframes on musicClipIds (twins too) that fall depthDb (default -12) while someone speaks — attack s before speech (0.3), release s after (0.5); recoveries shorter than 0.5 s stay down. Speech = the loudness of speechTrackIds OR speechClipIds (default: every track the music is not on) above thresholdDb below its loudest point (-35), plus transcript words. MULTIPLIES the gain the clips already have (running it twice ducks twice; kadr_undo reverts). One undo step. Returns the speech spans (project s) and the keys per clip.',
+    input: {
+      musicClipIds: z.array(id).min(1), speechTrackIds: z.array(id).min(1).optional(), speechClipIds: z.array(id).min(1).optional(),
+      depthDb: z.number().min(-60).max(-1).optional(), attack: z.number().min(0).max(5).optional(), release: z.number().min(0).max(5).optional(),
+      thresholdDb: z.number().min(-90).max(-1).optional()
+    },
+    check: (a) => { if (a.speechTrackIds && a.speechClipIds) return 'pass either speechTrackIds or speechClipIds' }
+  },
+  {
     name: 'kadr_undo',
     fn: 'undo',
     description: 'Undo the last `steps` undo steps (each kadr_* edit tool is exactly one). Returns their labels.',
