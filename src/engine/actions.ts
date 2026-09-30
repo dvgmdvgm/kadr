@@ -79,6 +79,9 @@ const HANDLERS: Record<ActionId, Handler> = {
       }).catch((err) => logError('буфер обмена', 'вставить не удалось', err))
     }
   },
+  'edit.pasteInsert': {
+    enabled: (s) => s.clipboard.length > 0, why: 'whyNoClipboard', run: (s) => s.pasteAtPlayhead(true)
+  },
   'edit.link': { enabled: (s) => s.selection.length > 0, why: 'whyNoClips', run: (s) => s.toggleLinkSelection() },
   'marker.add': { run: (s) => s.addMarker(s.playhead) },
   'playhead.prevFrame': { run: (s) => s.setPlayhead(s.playhead - 1 / s.project.fps) },

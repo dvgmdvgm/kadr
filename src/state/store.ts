@@ -310,6 +310,102 @@ function freedSpans(gone: Clip[], kept: Clip[]): Array<[number, number]> {
 
 /** Lift a range off every unlocked track: clips inside go, clips across it
     are trimmed or split. Leaves the hole (extractRange closes it). */
+/** trimClip's edit on a cloned project: the clip and its unlocked twins
+    (returned); null when the clip is missing or on a locked track. */
+function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: number) {
+  const first = findClip(p, clipId)
+  if (!first || first.track.locked) return null
+  // linked partners trim together
+  const targets = withLinked(p, [clipId])
+    .map((id) => findClip(p, id))
+    .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)
+  for (const f of targets) {
+    const c = f.clip
+    const speed = c.speed || 1
+    const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
+    if (edge === 'in') {
+      const end = c.start + c.duration
+      let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
+      let delta = ns - c.start
+      // can't reveal media before the source start: the first frame inside it
+      if (c.inPoint + delta * speed < 0) {
+        ns = toFrame(c.start - c.inPoint / speed, p.fps, Math.ceil)
+        delta = ns - c.start
+      }
+      c.inPoint = Math.max(0, c.inPoint + delta * speed)
+      c.start = ns
+      c.duration = end - ns
+      shiftClipAnims(c, -delta) // keyframes stay glued to the content
+    } else {
+      let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
+      if (asset && asset.kind !== 'image') {
+        // edge trim never reveals more than the source (unless already looping)
+        const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
+        if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
+      }
+      c.duration = nd
+    }
+  }
+  return targets
+}
+
+/** Cut `c` at `t` in place and push the right half onto `track`; halves of a
+    linked pair stay linked pairwise through `rightLinks` (linkId → new one). */
+function splitClipAt(track: Track, c: Clip, t: number, rightLinks: Map<string, string>): Clip {
+  const offset = t - c.start
+  let linkId: string | undefined
+  if (c.linkId) {
+    if (!rightLinks.has(c.linkId)) rightLinks.set(c.linkId, uid())
+    linkId = rightLinks.get(c.linkId)
+  }
+  const right: Clip = {
+    ...clone(c),
+    id: uid(),
+    start: t,
+    duration: c.duration - offset,
+    inPoint: c.inPoint + offset * (c.speed || 1),
+    fadeIn: 0,
+    linkId
+  }
+  shiftClipAnims(right, -offset)
+  c.duration = offset
+  c.fadeOut = 0
+  track.clips.push(right)
+  return right
+}
+
+/** `trackIds` plus the unlocked tracks of the twins of every clip that ends
+    right of `t` on them — a ripple there must take the other half of each
+    A/V pair along, or the pair desyncs. */
+function rippleTracks(p: Project, trackIds: Iterable<string>, t: number): string[] {
+  const ids = new Set(trackIds)
+  for (let grew = true; grew;) {
+    grew = false
+    const links = new Set(p.tracks.filter((tr) => ids.has(tr.id))
+      .flatMap((tr) => tr.clips.filter((c) => c.linkId && c.start + c.duration > t + 1e-6).map((c) => c.linkId)))
+    for (const tr of p.tracks) {
+      if (tr.locked || ids.has(tr.id) || !tr.clips.some((c) => c.linkId && links.has(c.linkId))) continue
+      ids.add(tr.id)
+      grew = true
+    }
+  }
+  return [...ids]
+}
+
+/** Make room for `len` at `t` on the receiving tracks (and their twins'):
+    a clip across t is split, everything from t on moves right. */
+function openGap(p: Project, t: number, len: number, trackIds: Iterable<string>, skip: Set<string>) {
+  const ids = rippleTracks(p, trackIds, t)
+  const rightLinks = new Map<string, string>()
+  for (const tr of p.tracks) {
+    if (!ids.includes(tr.id)) continue
+    for (const c of [...tr.clips]) {
+      if (!skip.has(c.id) && c.start < t - 1e-6 && c.start + c.duration > t + 1e-6) splitClipAt(tr, c, t, rightLinks)
+    }
+  }
+  shiftAfter(p, t, len, ids, skip)
+}
+
 function liftRange(p: Project, r: { start: number; end: number }) {
   for (const tr of p.tracks) {
     if (tr.locked) continue
@@ -737,10 +833,12 @@ interface EditorState {
   moveTrack(trackId: string, toIndex: number): void
   updateTrack(trackId: string, patch: Partial<Track>): void
 
-  insertClipFromAsset(assetId: string, trackId: string | null, at: number): void
+  insertClipFromAsset(assetId: string, trackId: string | null, at: number, ripple?: boolean): void
   /** Place several assets back-to-back starting at `at` (one undo entry);
-      audio assets go to an audio track regardless of the drop lane. */
-  insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number): void
+      audio assets go to an audio track regardless of the drop lane. `ripple`
+      (a Shift-drop) inserts: what is right of `at` on the receiving tracks and
+      their twins' moves right by the inserted length, a clip across `at` is split. */
+  insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number, ripple?: boolean): void
   insertTextClip(at: number): void
   /** Add a track-independent timeline marker (auto-numbered); returns id. */
   addMarker(time: number): string
@@ -798,6 +896,12 @@ interface EditorState {
   /** Batch-update clip positions (group drag), optionally across tracks. */
   setClipStarts(entries: { id: string; start: number; trackId?: string }[]): void
   trimClip(clipId: string, edge: 'in' | 'out', time: number): void
+  /** trimClip that moves what follows (Shift+drag of an edge): 'out' puts the
+      end at `time`; 'in' takes `time − start` off the head (negative gives it
+      back) and KEEPS the start. Everything right of the old end on the clip's
+      and its twins' tracks moves by the length change. No history (the gesture
+      pushes once, like trimClip). */
+  rippleTrim(clipId: string, edge: 'in' | 'out', time: number): void
   splitAtPlayhead(): void
   deleteSelection(): void
   /** Delete clips (default: the selection) with their linked twins and close
@@ -813,7 +917,8 @@ interface EditorState {
   /** Delete a range (default: the current one) on every unlocked track and
       close it everywhere; markers right of it follow — one undo step. */
   extractRange(range?: { start: number; end: number }): void
-  pasteAtPlayhead(): void
+  /** `ripple` (Ctrl+Shift+V) inserts, like a Shift-drop. */
+  pasteAtPlayhead(ripple?: boolean): void
 
   select(ids: string[]): void
   toggleSelect(id: string): void
@@ -1496,10 +1601,10 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p }
     }),
 
-  insertClipFromAsset: (assetId, trackId, at) =>
-    get().insertClipsFromAssets([assetId], trackId, at),
+  insertClipFromAsset: (assetId, trackId, at, ripple) =>
+    get().insertClipsFromAssets([assetId], trackId, at, ripple),
 
-  insertClipsFromAssets: (assetIds, trackId, at) => {
+  insertClipsFromAssets: (assetIds, trackId, at, ripple) => {
     const s = get()
     const found = assetIds
       .map((id) => s.project.assets.find((a) => a.id === id))
@@ -1554,6 +1659,11 @@ export const useEditor = create<EditorState>((set, get) => ({
         cursor += duration // next dropped file starts where this one ends
       }
       if (!ids.length) return st
+      if (ripple) {
+        const t0 = Math.max(0, toFrame(at, p.fps))
+        const mine = new Set(ids)
+        openGap(p, t0, cursor - t0, p.tracks.filter((t) => t.clips.some((c) => mine.has(c.id))).map((t) => t.id), mine)
+      }
       return { project: p, selection: ids }
     })
   },
@@ -1729,39 +1839,26 @@ export const useEditor = create<EditorState>((set, get) => ({
   trimClip: (clipId, edge, time) =>
     set((s) => {
       const p = cloneProject(s.project)
-      const first = findClip(p, clipId)
-      if (!first || first.track.locked) return s
-      // linked partners trim together
-      const targets = withLinked(p, [clipId])
-        .map((id) => findClip(p, id))
-        .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)
-      for (const f of targets) {
-        const c = f.clip
-        const speed = c.speed || 1
-        const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
-        if (edge === 'in') {
-          const end = c.start + c.duration
-          let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
-          let delta = ns - c.start
-          // can't reveal media before the source start: the first frame inside it
-          if (c.inPoint + delta * speed < 0) {
-            ns = toFrame(c.start - c.inPoint / speed, p.fps, Math.ceil)
-            delta = ns - c.start
-          }
-          c.inPoint = Math.max(0, c.inPoint + delta * speed)
-          c.start = ns
-          c.duration = end - ns
-          shiftClipAnims(c, -delta) // keyframes stay glued to the content
-        } else {
-          let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
-          if (asset && asset.kind !== 'image') {
-            // edge trim never reveals more than the source (unless already looping)
-            const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
-            if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
-          }
-          c.duration = nd
-        }
+      return trimInPlace(p, clipId, edge, time) ? { project: p } : s
+    }),
+
+  rippleTrim: (clipId, edge, time) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const c0 = findClip(p, clipId)?.clip
+      if (!c0) return s
+      const start = c0.start
+      const end = c0.start + c0.duration
+      const targets = trimInPlace(p, clipId, edge, time)
+      if (!targets) return s
+      let dt = c0.start + c0.duration - end
+      if (edge === 'in') {
+        // the head came off the source; the clip keeps its place, the tail closes up
+        dt = start - c0.start
+        for (const f of targets) f.clip.start += dt
       }
+      shiftAfter(p, end, dt, rippleTracks(p, targets.map((f) => f.track.id), end),
+        new Set(targets.map((f) => f.clip.id)))
       return { project: p }
     }),
 
@@ -1785,28 +1882,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const rightLinks = new Map<string, string>()
       for (const orig of targets) {
         const f = findClip(p, orig.id)
-        if (!f) continue
-        const c = f.clip
-        const offset = t - c.start
-        let rightLink: string | undefined
-        if (c.linkId) {
-          if (!rightLinks.has(c.linkId)) rightLinks.set(c.linkId, uid())
-          rightLink = rightLinks.get(c.linkId)
-        }
-        const right: Clip = {
-          ...clone(c),
-          id: uid(),
-          start: t,
-          duration: c.duration - offset,
-          inPoint: c.inPoint + offset * (c.speed || 1),
-          fadeIn: 0,
-          linkId: rightLink
-        }
-        shiftClipAnims(right, -offset)
-        c.duration = offset
-        c.fadeOut = 0
-        f.track.clips.push(right)
-        newIds.push(right.id)
+        if (f) newIds.push(splitClipAt(f.track, f.clip, t, rightLinks).id)
       }
       return { project: p, selection: newIds }
     })
@@ -1935,7 +2011,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     })
   },
 
-  pasteAtPlayhead: () => {
+  pasteAtPlayhead: (ripple) => {
     const s = get()
     if (!s.clipboard.length) return
     s.pushHistory('hPaste')
@@ -1964,6 +2040,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         }
         track.clips.push(clip)
         ids.push(clip.id)
+      }
+      if (ripple && ids.length) {
+        const mine = new Set(ids)
+        const placed = p.tracks.flatMap((t) => t.clips.filter((c) => mine.has(c.id)))
+        const t0 = Math.min(...placed.map((c) => c.start))
+        openGap(p, t0, Math.max(...placed.map((c) => c.start + c.duration)) - t0,
+          p.tracks.filter((t) => t.clips.some((c) => mine.has(c.id))).map((t) => t.id), mine)
       }
       return { project: p, selection: ids }
     })

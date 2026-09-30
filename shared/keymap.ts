@@ -37,6 +37,7 @@ export const ACTIONS = [
   { id: 'edit.redo', labelKey: 'redoShort', context: g, defaultKeys: [k('KeyZ', { ctrl: true, shift: true }), k('KeyY', ctrl)], prevent: true },
   { id: 'edit.copy', labelKey: 'actCopy', context: g, defaultKeys: [k('KeyC', ctrl)] },
   { id: 'edit.paste', labelKey: 'actPaste', context: g, defaultKeys: [k('KeyV', ctrl)] },
+  { id: 'edit.pasteInsert', labelKey: 'actPasteInsert', context: g, defaultKeys: [k('KeyV', { ctrl: true, shift: true })] },
   { id: 'edit.link', labelKey: 'actLink', context: g, defaultKeys: [k('KeyU')] },
   { id: 'marker.add', labelKey: 'actMarker', context: g, defaultKeys: [k('KeyM')] },
   { id: 'playhead.prevFrame', labelKey: 'actPrevFrame', context: g, defaultKeys: [k('ArrowLeft')], prevent: true },

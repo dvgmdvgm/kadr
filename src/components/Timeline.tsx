@@ -454,7 +454,7 @@ export function Timeline({ height }: { height: number }) {
     const assetId = e.dataTransfer.getData('kadr/asset')
     if (assetId) {
       e.preventDefault()
-      useEditor.getState().insertClipFromAsset(assetId, null, time)
+      useEditor.getState().insertClipFromAsset(assetId, null, time, e.shiftKey) // Shift inserts
       return
     }
     const payload = dropPayload(e)
@@ -1348,7 +1348,7 @@ function TrackRow({
     const assetId = e.dataTransfer.getData('kadr/asset')
     if (assetId) {
       e.preventDefault()
-      useEditor.getState().insertClipFromAsset(assetId, track.id, time)
+      useEditor.getState().insertClipFromAsset(assetId, track.id, time, e.shiftKey) // Shift inserts
       return
     }
     // files (or browser image URLs / raw image data) dropped from outside:
@@ -1907,6 +1907,8 @@ const ClipView = memo(function ClipView({
   // live ×N readout during a Ctrl speed drag; highlighted when snapped
   const [speedBadge, setSpeedBadge] =
     useState<{ x: number; y: number; speed: number; snapped: boolean } | null>(null)
+  // ripple glyph + the length change beside the cursor during a Shift edge drag
+  const [rippleBadge, setRippleBadge] = useState<{ x: number; y: number; dt: number } | null>(null)
 
   const w = clip.duration * zoom
   const speed = clip.speed || 1
@@ -1964,6 +1966,16 @@ const ClipView = memo(function ClipView({
     // a locked A/V twin is left out: the store would refuse to move it, and
     // half a pair that follows the drag is worse than a pair that does not
     const linkedIds = unlocked(st.project, withLinked(st.project, [clip.id]))
+    if (e.shiftKey && w > 24) {
+      // Shift on an EDGE is ripple trim; Shift on the body stays span select
+      const rect = e.currentTarget.getBoundingClientRect()
+      const lx = e.clientX - rect.left
+      const zone = setting<number>('mouse.edgeZone')
+      if (lx < zone || lx > rect.width - zone) {
+        startRippleTrim(e, lx < zone ? 'in' : 'out')
+        return
+      }
+    }
     if (e.shiftKey) {
       // Explorer's Shift+click: from the FIRST clip of the current selection
       // to this one — the tracks between them, over the time they cover
@@ -2185,6 +2197,34 @@ const ClipView = memo(function ClipView({
     })
   }
 
+  // ------------------------------------------------------ ripple trim drag
+  // Shift+drag of an edge: the clip's length changes and everything after it
+  // on its track and its twin's follows (rippleTrim). The in edge keeps its
+  // place — the head comes off the source and the tail closes up.
+  const startRippleTrim = (e: React.PointerEvent<HTMLDivElement>, edge: 'in' | 'out') => {
+    e.stopPropagation()
+    e.preventDefault()
+    const st = useEditor.getState()
+    if (!selected) st.select(unlocked(st.project, withLinked(st.project, [clip.id])))
+    st.pushHistory('hRippleTrim')
+    const origEnd = clip.start + clip.duration
+    const origDur = clip.duration
+    const origIn = clip.inPoint
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      const dt = dx / s.zoom
+      if (edge === 'out') s.rippleTrim(clip.id, 'out', snapTime(origEnd + dt, points, s.zoom))
+      else {
+        // the start never moves, so ask for what is still to come off the head
+        const cur = findClip(s.project, clip.id)?.clip
+        if (cur) s.rippleTrim(clip.id, 'in', cur.start + dt - (cur.inPoint - origIn) / speed)
+      }
+      const now = findClip(useEditor.getState().project, clip.id)?.clip
+      setRippleBadge({ x: ev.clientX, y: ev.clientY, dt: (now?.duration ?? origDur) - origDur })
+    }, () => setRippleBadge(null))
+  }
+
   // ---------------------------------------------------- extend/speed drag
   // Works from BOTH clip ends. Right: the start stays put (resize = loop-
   // extend, Ctrl = speed). Left: the RIGHT edge stays anchored (resize =
@@ -2194,9 +2234,13 @@ const ClipView = memo(function ClipView({
     if (track.locked || e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
+    const speedMode = speedModifier(e) && !!asset && asset.kind !== 'image'
+    if (e.shiftKey && !speedMode) {
+      startRippleTrim(e, edge === 'left' ? 'in' : 'out')
+      return
+    }
     const st = useEditor.getState()
     if (!selected) st.select([clip.id])
-    const speedMode = speedModifier(e) && !!asset && asset.kind !== 'image'
     const leftTrim = edge === 'left' && !speedMode
     st.pushHistory(speedMode ? 'hSpeed' : leftTrim ? 'hTrim' : 'hResize')
     const origStart = clip.start
@@ -2456,6 +2500,12 @@ const ClipView = memo(function ClipView({
           style={{ left: speedBadge.x + 14, top: speedBadge.y - 30 }}
         >
           ×{speedBadge.speed.toFixed(2)}
+        </div>,
+        document.body
+      )}
+      {rippleBadge && createPortal(
+        <div className="speed-badge" style={{ left: rippleBadge.x + 14, top: rippleBadge.y - 30 }}>
+          <Icon name="wave" size={13} /> {rippleBadge.dt >= 0 ? '+' : '−'}{Math.abs(rippleBadge.dt).toFixed(2)}
         </div>,
         document.body
       )}
