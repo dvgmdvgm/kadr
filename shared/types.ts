@@ -3,6 +3,7 @@
 
 import type { ClipGrade } from './colour'
 import type { BlendMode } from './blend'
+import type { ClipKey } from './key'
 import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
@@ -225,6 +226,8 @@ export interface Clip {
   lut?: ClipLut
   /** J3: how the clip mixes with what is under it (shared/blend.ts); absent = normal */
   blend?: BlendMode
+  /** J4: chroma or luma key (shared/key.ts), before the grade; absent = none */
+  key?: ClipKey
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string

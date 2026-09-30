@@ -137,6 +137,11 @@ mixes audio and muxes/transcodes per preset.
   two layers as drawn alone — opaque, at 0.6 opacity, over a transparent
   background, with a blur effect — and a normal draw bit-identical after a
   blend pass ran);
+  `check-key.mjs` wants the installed electron (J4: a generated green screen
+  keyed through the REAL Compositor, read back over black and over white,
+  within 1/255 of `shared/key.ts`'s reference — chroma with and without
+  spill, luma, the key before the grade, × a mask, × an alpha-packed matte;
+  the backing keys to alpha 0, the edge is soft, spill 1 leaves no green);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -884,6 +889,17 @@ mixes audio and muxes/transcodes per preset.
   edge effect the clip is drawn into an empty overlay, so its mode has nothing
   to mix with and it draws as normal. A blended fragment goes through pixel
   capture.
+  KEY (J4, `Clip.key` {mode chroma|luma, colour, tolerance, softness, spill:
+  Anim}, `shared/key.ts`): YCbCr BT.709 on the encoded straight colour —
+  chroma keys by CbCr distance (ffmpeg chromakey's similarity scale), luma
+  by |Y − Y(key)|; alpha ramps from tolerance to tolerance + softness. Spill
+  takes out the chroma pointing at the key's hue, luma kept (a fringe goes
+  grey; a foreground colour of that hue loses it too). It runs FIRST in the
+  clip shader — after an alpha-packed source is unpacked, before the grade —
+  and multiplies the source's alpha and the masks'. A keyed fragment goes
+  through pixel capture. 4:2:0 footage carries chroma at half resolution, so
+  its key edge is two pixels wide and blocky on hard edges: raise softness,
+  or key a 4:4:4 source.
   `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.

@@ -9,6 +9,7 @@ import { PACK_GAP, packHeight } from '@shared/streamColour'
 import { GRADE_GLSL } from '@shared/colour'
 import { LUT_GLSL, type CubeLut } from '@shared/lut'
 import { BLEND_FS, blendIndex, type BlendMode } from '@shared/blend'
+import { KEY_GLSL, type KeyDraw } from '@shared/key'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -39,6 +40,7 @@ uniform vec4 uShapeRect[MAX_SHAPES];   // cx, cy, halfW, halfH in UV
 uniform vec3 uShapeFeather[MAX_SHAPES];// featherIn, featherOut, invert flag
 uniform float uAspect;                 // layer width/height (aspect-correct distances)
 out vec4 outColor;
+${KEY_GLSL}
 ${GRADE_GLSL}
 ${LUT_GLSL}
 
@@ -68,6 +70,9 @@ void main() {
     c = vec4(c.b, c.g, c.r, c.a);          // offscreen captures arrive BGRA…
     if (c.a > 0.0001) c.rgb /= c.a;        // …premultiplied; pipeline wants straight
   }
+  // J4: the key reads the source as decoded (packed alpha already unpacked),
+  // before the grade; its alpha multiplies the source's and, below, the masks'
+  if (uKeyOn != 0) { highp vec4 k = kadrKey(c.rgb); c = vec4(k.rgb, c.a * k.a); }
   // J1: the primary grade, on straight colour before opacity (highp inside)
   if (uGradeOn == 1) c.rgb = kadrGrade(c.rgb);
   // J2: the clip's LUT, after the grade, on straight colour
@@ -247,6 +252,8 @@ export interface LayerDraw {
   grade?: number[]
   /** J2: the clip's LUT (shared/lut.ts) and its intensity 0…1; absent = none */
   lut?: { table: CubeLut; mix: number }
+  /** J4: the clip's key (shared/key.ts `keyAt`); absent = none */
+  key?: KeyDraw
 }
 
 export interface ShapeUniform {
@@ -335,6 +342,7 @@ export class Compositor {
   private uAspect: WebGLUniformLocation
   private uGradeOn: WebGLUniformLocation
   private uGrade: WebGLUniformLocation
+  private uKey: Record<'on' | 'rgb' | 'params', WebGLUniformLocation>
   private uLut: Record<'on' | 'min' | 'scale' | 'size' | 'mix', WebGLUniformLocation>
   /** J2: one texture per parsed LUT — a reload of the file is a new object, hence a new texture */
   private luts = new Map<CubeLut, WebGLTexture>()
@@ -384,6 +392,7 @@ export class Compositor {
     this.uGradeOn = gl.getUniformLocation(prog, 'uGradeOn')!
     this.uGrade = gl.getUniformLocation(prog, 'uGrade[0]')!
     const u = (n: string) => gl.getUniformLocation(prog, n)!
+    this.uKey = { on: u('uKeyOn'), rgb: u('uKeyRgb'), params: u('uKeyParams') }
     this.uLut = { on: u('uLutOn'), min: u('uLutMin'), scale: u('uLutScale'), size: u('uLutSize'), mix: u('uLutMix') }
 
     this.vbo = gl.createBuffer()!
@@ -542,6 +551,11 @@ export class Compositor {
     gl.uniform1f(this.uOpacity, l.opacity)
     gl.uniform1i(this.uGradeOn, l.grade ? 1 : 0)
     if (l.grade) gl.uniform1fv(this.uGrade, l.grade)
+    gl.uniform1i(this.uKey.on, l.key ? l.key.mode : 0)
+    if (l.key) {
+      gl.uniform3fv(this.uKey.rgb, l.key.rgb)
+      gl.uniform3f(this.uKey.params, l.key.tolerance, l.key.softness, l.key.spill)
+    }
     this.bindLut(l.lut)
     const c = l.crop ?? [0, 0, 0, 0]
     gl.uniform4f(this.uCrop, c[0], c[1], c[2], c[3])

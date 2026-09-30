@@ -7,6 +7,7 @@ import { playsProxy } from '@shared/proxyChoice'
 import { packSourceHeight } from '@shared/streamColour'
 import { gradeAt } from '@shared/colour'
 import { blendOf } from '@shared/blend'
+import { keyAt } from '@shared/key'
 import { lutFor } from './lut'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
@@ -604,6 +605,7 @@ function drawClipLayer(
             invert: ms.invert
           }))
         : undefined,
+      key: keyAt(clip.key, rel, evalAnim),
       grade: gradeAt(clip.grade, rel, evalAnim),
       lut: lutAt(clip, rel)
     }

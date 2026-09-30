@@ -31,6 +31,7 @@ import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
 import { blendOf } from '@shared/blend'
+import { hexRgb } from '@shared/key'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -230,6 +231,17 @@ export function sanitizeProject(p: Project): Project {
       }
       // J3: normal is the implicit default; an unknown mode is dropped
       if (c.blend !== undefined && !blendOf(c.blend)) delete c.blend
+      // J4: a key needs a mode; a bad colour falls back to green / black
+      if (c.key !== undefined) {
+        const k = c.key
+        if (!k || (k.mode !== 'chroma' && k.mode !== 'luma')) delete c.key
+        else {
+          if (!hexRgb(k.colour)) k.colour = k.mode === 'chroma' ? '#00ff00' : '#000000'
+          k.tolerance = anim(k.tolerance, 0.1)
+          k.softness = anim(k.softness, 0.1)
+          k.spill = anim(k.spill, 0)
+        }
+      }
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
@@ -270,6 +282,7 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
     c.grade = g as ClipGrade
   }
   if (c.lut) c.lut = { ...c.lut, intensity: fn(c.lut.intensity) }
+  if (c.key) c.key = { ...c.key, tolerance: fn(c.key.tolerance), softness: fn(c.key.softness), spill: fn(c.key.spill) }
   if (c.mask) {
     c.mask = {
       left: fn(c.mask.left), top: fn(c.mask.top),
