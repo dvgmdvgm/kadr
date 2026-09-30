@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ExportPreset, ExportProgress } from '@shared/types'
 import {
-  PRESETS, presetName, videoCodecLabel, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
+  PRESETS, presetName, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
   saveExportPreset, renameExportPreset, deleteExportPreset
 } from '@/presets'
 import { fileNameFrom, withOutput } from '@shared/exportPresets'
-import { X264_PRESETS, VIDEO_ENCODERS, type OutputFit, type VideoEncoder } from '@shared/rawEncode'
+import {
+  X264_PRESETS, VIDEO_ENCODERS, VIDEO_CODECS, OPTIONAL_ENCODERS, withCodec, videoCodecOf, pickEncoder,
+  type OutputFit, type VideoEncoder, type VideoCodec
+} from '@shared/rawEncode'
 import { effective, type SettingKey } from '@shared/settings'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
@@ -39,6 +42,7 @@ export function ExportDialog() {
   const quality: 'abr' | 'crf' = effective('export.quality', snap).value === 'crf' ? 'crf' : 'abr'
   const crf = Number(effective('export.crf', snap).value)
   const x264Preset = String(effective('export.x264Preset', snap).value)
+  const codecSel = String(effective('export.codec', snap).value) as VideoCodec | 'preset'
   // G5: the encoder the user chose, and the hardware ones that open here (null = still probing)
   const chosenEncoder = String(effective('export.videoEncoder', snap).value) as VideoEncoder
   const [hwEncoders, setHwEncoders] = useState<string[] | null>(null)
@@ -72,14 +76,25 @@ export function ExportDialog() {
   const running = status.kind === 'running'
   const presets = [...userPresets, ...PRESETS]
   const preset = presets.find((p) => p.id === presetId) ?? PRESETS[0]
-  // rate control is x264's (G3): VP9 and MP3 keep their preset as it is
-  const x264 = preset.ffmpegVideo === 'copy' && !preset.audioOnly
-  const shaped = preset.audioOnly ? preset : withOutput(preset, out)
-  const works = (e: VideoEncoder) => e === 'x264' || !!hwEncoders?.includes(`h264_${e}`)
-  // one chosen on another machine (or not probed yet) encodes on x264 — the select says so
-  const videoEncoder: VideoEncoder = works(chosenEncoder) ? chosenEncoder : 'x264'
+  // G6: the codec laid over the preset — container and audio follow it
+  const coded = withCodec(preset, codecSel === 'preset' ? '' : codecSel)
+  const vcodec = videoCodecOf(coded)
+  const spec = VIDEO_CODECS[vcodec]
+  // rate control: H.264, HEVC, AV1 (CRF / the GPU's CQ) and VP9; ProRes and PNG have none, MP3 no video
+  const rated = !preset.audioOnly && (!!spec.hw || vcodec === 'vp9')
+  // Chromium's fast encoder writes H.264 only; every other codec takes ffmpeg
+  const fast = fastEncoder && vcodec === 'h264'
+  const shaped = preset.audioOnly ? preset : withOutput(coded, out)
+  // the CPU encoder of this codec in this ffmpeg (HEVC needs libx265, AV1 SVT-AV1 or libaom)
+  const cpuEnc = spec.cpu.find((n) => !(OPTIONAL_ENCODERS as readonly string[]).includes(n) || !!hwEncoders?.includes(n))
+  const works = (e: VideoEncoder) => e === 'x264' ? !hwEncoders || !!cpuEnc : !!hwEncoders?.includes(`${vcodec}_${e}`)
+  // one chosen on another machine (or not probed yet) encodes on the CPU — the select says so
+  const videoEncoder: VideoEncoder = spec.hw && works(chosenEncoder) ? chosenEncoder : 'x264'
   const hw = videoEncoder !== 'x264'
-  const job: ExportPreset = x264 ? { ...shaped, rateControl: quality, crf, x264Preset, videoEncoder } : shaped
+  const job: ExportPreset = rated ? { ...shaped, rateControl: quality, crf, x264Preset, videoEncoder } : shaped
+  const crfMax = vcodec === 'vp9' || vcodec === 'av1' ? 63 : 51
+  // a codec with no encoder in this ffmpeg (HEVC without libx265 and without a GPU) is shown, not offered
+  const codecMissing = (c: VideoCodec) => !!hwEncoders && !pickEncoder(c, 'x264', hwEncoders)
   const own = isUserPreset(preset)
   const fileName = fileNameFrom(setting<string>('export.fileName'),
     { project: project.name, preset: presetName(preset), date: new Date() })
@@ -89,8 +104,9 @@ export function ExportDialog() {
 
   function choose(id: string) {
     put('export.preset', id)
-    // a preset IS a size, rate and bitrate: choosing one drops the dialog's own
+    // a preset IS a codec, size, rate and bitrate: choosing one drops the dialog's own
     resetOutput()
+    put('export.codec', null)
     const p = allPresets().find((x) => x.id === id)
     // a user preset carries its render options
     if (p && isUserPreset(p)) {
@@ -116,7 +132,7 @@ export function ExportDialog() {
 
   async function begin() {
     const s = useEditor.getState()
-    const ext = preset.container
+    const ext = job.container
     const out = await window.kadr.exportDialog(fileName, ext)
     if (!out) return
     s.setPlaying(false)
@@ -127,7 +143,7 @@ export function ExportDialog() {
       out,
       (p) => setStatus({ kind: 'running', phase: p.phase, progress: p.progress }),
       s.range,
-      { motionBlur, frameBlending, encoder: fastEncoder ? 'webcodecs' : 'x264' }
+      { motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264' }
     )
     handle.current = h
     h.done.catch((err) => {
@@ -260,6 +276,20 @@ export function ExportDialog() {
       ) : (
         <>
           <div className="insp-field">
+            <span>{t('exCodec')}</span>
+            <select aria-label={t('exVCodec')} value={vcodec} disabled={running}
+                    onChange={(e) => put('export.codec', e.target.value)}>
+              {(Object.keys(VIDEO_CODECS) as VideoCodec[]).map((c) => (
+                <option key={c} value={c} disabled={codecMissing(c)}>
+                  {t(`vc${c}`)}{codecMissing(c) ? ` — ${t('encMissing')}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          {spec.alpha && (vcodec !== 'vp9' || project.background === 'transparent') && (
+            <div className="dim">{t(project.background === 'transparent' ? 'exAlphaOn' : 'exAlphaOff')}</div>
+          )}
+          <div className="insp-field">
             <span>{t('exSize')}</span>
             <span className="export-size">
               {numIn('export.width', width, t('exWidth'), 16, 8192, 2)}×{numIn('export.height', height, t('exHeight'), 16, 8192, 2)}
@@ -285,9 +315,8 @@ export function ExportDialog() {
             <span>{t('exFps')}</span>
             <span className="export-size">{numIn('export.fps', fps, t('exFps'), 1, 240, 'any')} {t('fpsUnit')}{asProject(job.fps)}</span>
           </div>
-          {/* the fast encoder is Chromium's: it takes no x264 rate control */}
-          {value(t('exCodec'), videoCodecLabel(fastEncoder ? shaped : job))}
-          {!(x264 && quality === 'crf' && !fastEncoder) && (
+          {/* the fast encoder is Chromium's: it takes no rate control; ProRes and PNG have no bitrate */}
+          {rated && (quality !== 'crf' || fast) && (
             <div className="insp-field">
               <span>{t('exBitrate')}</span>
               <span className="export-size">
@@ -295,43 +324,46 @@ export function ExportDialog() {
               </span>
             </div>
           )}
-          {x264 && (
+          {rated && (
             <>
-              <div className="insp-field">
+              {spec.hw && <div className="insp-field">
                 <span>{t('exEncoder')}</span>
-                <select aria-label={t('exEncoder')} value={videoEncoder} disabled={running || fastEncoder}
-                        title={fastEncoder ? t('fastEncoderHint') : undefined}
+                <select aria-label={t('exEncoder')} value={videoEncoder} disabled={running || fast}
+                        title={fast ? t('fastEncoderHint') : undefined}
                         onChange={(e) => put('export.videoEncoder', e.target.value)}>
                   {VIDEO_ENCODERS.map((e) => (
                     <option key={e} value={e} disabled={!works(e)}>
-                      {t(`enc${e}`)}{hwEncoders && !works(e) ? ` — ${t('encMissing')}` : ''}
+                      {e === 'x264' && vcodec !== 'h264'
+                        // the CPU row names the encoder this codec runs on there: x265, SVT-AV1 or libaom
+                        ? `${t('encCpu')} — ${(cpuEnc ?? '').replace(/^lib/, '')}`
+                        : t(`enc${e}`)}{hwEncoders && !works(e) ? ` — ${t('encMissing')}` : ''}
                     </option>
                   ))}
                 </select>
-              </div>
+              </div>}
               <div className="insp-field">
                 <span>{t('exQuality')}</span>
-                <select aria-label={t('exQuality')} value={quality} disabled={running || fastEncoder}
-                        title={fastEncoder ? t('fastEncoderHint') : undefined}
+                <select aria-label={t('exQuality')} value={quality} disabled={running || fast}
+                        title={fast ? t('fastEncoderHint') : undefined}
                         onChange={(e) => put('export.quality', e.target.value)}>
                   <option value="abr">{t('exQualityAbr')}</option>
                   <option value="crf">{t(hw ? 'exQualityCq' : 'exQualityCrf')}</option>
                 </select>
               </div>
               {quality === 'crf' && (
-                <div className="insp-field" title={t(hw ? 'exCqHint' : 'exCrfHint')}>
+                <div className="insp-field" title={t(hw ? 'exCqHint' : crfMax > 51 ? 'exCrfHint63' : 'exCrfHint')}>
                   <span>{t(hw ? 'exCq' : 'exCrf')}</span>
-                  <input type="number" aria-label={t(hw ? 'exCq' : 'exCrf')} min={0} max={51} step={1} value={crf}
-                         disabled={running || fastEncoder}
+                  <input type="number" aria-label={t(hw ? 'exCq' : 'exCrf')} min={0} max={crfMax} step={1} value={Math.min(crf, crfMax)}
+                         disabled={running || fast}
                          onChange={(e) => {
                            const n = Math.round(Number(e.target.value))
-                           if (e.target.value !== '' && n >= 0 && n <= 51) put('export.crf', n)
+                           if (e.target.value !== '' && n >= 0 && n <= crfMax) put('export.crf', n)
                          }} />
                 </div>
               )}
-              {!hw && <div className="insp-field">
+              {!hw && (vcodec === 'h264' || vcodec === 'hevc') && <div className="insp-field">
                 <span>{t('exSpeed')}</span>
-                <select aria-label={t('exSpeed')} value={x264Preset} disabled={running || fastEncoder}
+                <select aria-label={t('exSpeed')} value={x264Preset} disabled={running || fast}
                         onChange={(e) => put('export.x264Preset', e.target.value)}>
                   {X264_PRESETS.map((p) => <option key={p} value={p}>{t(`x264${p}`)}</option>)}
                 </select>
@@ -356,11 +388,11 @@ export function ExportDialog() {
             />
             {t('frameBlending')}
           </label>
-          <label className="anim-check export-mb" title={t('fastEncoderHint')}>
+          <label className="anim-check export-mb" title={t(vcodec === 'h264' ? 'fastEncoderHint' : 'exFastH264')}>
             <input
               type="checkbox"
-              checked={fastEncoder}
-              disabled={running}
+              checked={fast}
+              disabled={running || vcodec !== 'h264'}
               onChange={(e) => put('export.fastEncoder', e.target.checked)}
             />
             {t('fastEncoder')}
@@ -369,7 +401,9 @@ export function ExportDialog() {
       )}
 
       <div className="insp-section">{t('exAudio')}</div>
-      {value(t('exCodec'), audioCodecLabel(preset))}
+      {vcodec === 'png' && !preset.audioOnly
+        ? <div className="dim">{t('exSeqNoAudio')}</div>
+        : value(t('exCodec'), audioCodecLabel(job))}
 
       <div className="insp-section">{t('exRange')}</div>
       {value(t('duration'), range
@@ -378,8 +412,9 @@ export function ExportDialog() {
       {!range && <div className="dim">{t('rangeHint')}</div>}
 
       <div className="insp-section">{t('exFile')}</div>
-      {value(t('exFormat'), `${preset.container.toUpperCase()} (.${preset.container})`)}
-      {value(t('exName'), `${fileName}.${preset.container}`)}
+      {value(t('exFormat'), `${job.container.toUpperCase()} (.${job.container})`)}
+      {/* a PNG sequence is numbered beside the chosen name (shared/rawEncode.ts seqPattern) */}
+      {value(t('exName'), job.container === 'png' ? `${fileName}_000001.png …` : `${fileName}.${job.container}`)}
       <div className="dim">{t('exAskPath')}</div>
     </Modal>
   )

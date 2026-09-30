@@ -7,7 +7,7 @@ import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
   ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders
 } from './ffmpeg'
-import { rawCodec } from '@shared/rawEncode'
+import { rawCodec, rawTempExt, seqPattern } from '@shared/rawEncode'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
@@ -938,8 +938,12 @@ function registerIpc() {
 
   ipcMain.handle('export:begin', async (_e, job: ExportJob) => {
     await cleanupExport()
-    const videoTemp = join(tempDir(), `kadr-export-${Date.now()}.mp4`)
-    const fh = job.preset.audioOnly ? null : await fs.open(videoTemp, 'w')
+    // a PNG sequence is written where the user asked (numbered) and never muxed
+    const videoTemp = job.preset.container === 'png'
+      ? seqPattern(job.outputPath)
+      : join(tempDir(), `kadr-export-${Date.now()}.${rawTempExt(rawCodec(job.preset))}`)
+    // the fast encoder's chunks land here; a PNG sequence has no single file to open
+    const fh = job.preset.audioOnly || job.preset.container === 'png' ? null : await fs.open(videoTemp, 'w')
     exportState = {
       job, videoTemp, fh, muxer: null, raw: null, rawEncoded: false,
       rawWss: null, rawChain: Promise.resolve(), rawErr: null
@@ -955,7 +959,7 @@ function registerIpc() {
   // returns a local WebSocket port for the frame stream (0 = use IPC)
   ipcMain.handle('export:raw-begin', async (
     _e, width: number, height: number, fps: number,
-    outWidth?: number, outHeight?: number
+    outWidth?: number, outHeight?: number, alpha?: boolean
   ) => {
     if (!exportState) throw new Error('no export in progress')
     const st = exportState
@@ -969,6 +973,7 @@ function registerIpc() {
       codec: rawCodec(preset),
       bitrate: preset.videoBitrate, fit: preset.fit,
       rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
+      videoCodec: preset.videoCodec, alpha,
       out: st.videoTemp
     })
     try {
@@ -1031,6 +1036,12 @@ function registerIpc() {
     const st = exportState
     await st.fh?.close()
     st.fh = null
+    if (st.job.preset.container === 'png') {
+      // the frames ARE the export: done, and kept
+      sendProgress({ phase: 'done', progress: 1 })
+      await cleanupExport(true)
+      return
+    }
     st.muxer = new ExportMuxer()
     try {
       // raw path already produced the final video stream — never re-encode it

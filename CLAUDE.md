@@ -25,7 +25,9 @@ mixes audio and muxes/transcodes per preset.
   `check-rate-control.mjs` (x264 ABR/CRF args), `check-encoders.mjs`
   (hardware encoder listing and args; with ffmpeg it probes them for real);
   `check-output-geometry.mjs` wants ffmpeg (fit/fill/stretch on output, a
-  changed fps keeps the duration);
+  changed fps keeps the duration); `check-alpha-export.mjs` wants ffmpeg
+  (codec choice, and a premultiplied title over transparency read back from
+  ProRes 4444, VP9 alpha and PNG: alpha 0 outside, no dark fringe);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
@@ -704,7 +706,26 @@ mixes audio and muxes/transcodes per preset.
   electron/ffmpeg.ts trusts a one-frame test encode, not the `-encoders`
   listing (a listed encoder with no driver fails only at encode time); once
   per launch, in parallel. One chosen elsewhere that does not open here
-  encodes on x264 with a warning. Test `check-encoders.mjs`; a size other than the project's is fit (bars), fill
+  encodes on x264 with a warning. Test `check-encoders.mjs`.
+  CODECS AND ALPHA (G6, `VIDEO_CODECS` in shared/rawEncode.ts): the dialog's
+  codec (`export.codec`, laid over the preset by `withCodec` — container and
+  audio follow it) is H.264, HEVC (libx265 or `hevc_<gpu>`, tagged hvc1),
+  AV1 (SVT-AV1, else libaom, or `av1_<gpu>`), VP9, ProRes 422 HQ / 4444
+  (prores_ks, .mov, PCM audio) or a PNG sequence (`name_000001.png`, written
+  straight to its folder, no audio, no mux). `pickEncoder` decides per
+  machine: libx265/SVT/libaom are detected like the GPU encoders, since the
+  gyan.dev essentials build has no SVT. Anything but H.264 takes the raw
+  path (Chromium's fast encoder writes H.264 only), and the raw temp file is
+  a container that holds the codec (`rawTempExt`: mov/webm/mp4). VP9 and AV1
+  count quality 0–63, the rest 0–51. A project background of `'transparent'`
+  (H2 makes it selectable) on an alpha codec builds the export compositor
+  with `alpha: true` and clears to (0,0,0,0); the drawing buffer is then
+  PREMULTIPLIED (the blend is SRC_ALPHA over the clear), so the raw args
+  unpremultiply in planar RGB (`format=gbrap,unpremultiply=inplace=1`) before
+  `yuva444p10le` / `yuva420p` / `rgba` — fed as straight alpha, every
+  antialiased edge would go grey. VP9's alpha is a lossy stream of its own:
+  expect a faint black halo at alpha < 25 % (≤ 7/255 over mid-grey
+  measured); ProRes 4444 and PNG are clean. A size other than the project's is fit (bars), fill
   (crop) or stretch (`ExportPreset.fit`, `outputRect` for the fast
   encoder's blit), and frames are sampled at the OUTPUT fps (the preload spawns ffmpeg and receives readPixels
   frames BY REFERENCE — contextIsolation is off exactly for this; every

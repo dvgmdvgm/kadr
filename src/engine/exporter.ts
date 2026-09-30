@@ -18,7 +18,9 @@ import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
 import { registerLibFonts } from './fonts'
 import { logInfo, logWarn } from './log'
-import { rawEncodeArgs, outputRect, exportFrameCount, rawCodec } from '@shared/rawEncode'
+import {
+  rawEncodeArgs, outputRect, exportFrameCount, rawCodec, videoCodecOf, pickEncoder, seqPattern, VIDEO_CODECS
+} from '@shared/rawEncode'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
@@ -115,13 +117,24 @@ export function startExport(
     const duration = span.end - span.start
     if (duration <= 0) throw new Error('empty project')
 
-    // a hardware encoder chosen elsewhere (a user preset from another machine,
-    // kadr_export) that does not open here encodes on x264 instead of failing
-    if (!preset.audioOnly && rawCodec(preset).startsWith('h264_') &&
-        !(await window.kadr.hwEncoders()).includes(rawCodec(preset))) {
-      logWarn(tr('lgExport'), trf('lmHwMissing', { enc: rawCodec(preset) }))
-      preset = { ...preset, videoEncoder: 'x264' }
+    // which encoder runs the codec HERE (G6): a hardware one chosen elsewhere (a
+    // user preset from another machine, kadr_export) that does not open here
+    // gives way to the CPU one instead of failing; HEVC/AV1 need a build that has one
+    const vcodec = videoCodecOf(preset)
+    if (!preset.audioOnly) {
+      const enc = pickEncoder(vcodec, preset.videoEncoder, await window.kadr.hwEncoders())
+      if (!enc) throw new Error(trf('lmNoEncoder', { codec: tr(`vc${vcodec}`) }))
+      const fam = preset.videoEncoder
+      if (fam && fam !== 'x264' && VIDEO_CODECS[vcodec].hw && enc !== `${vcodec}_${fam}`) {
+        logWarn(tr('lgExport'), trf('lmHwMissing', { enc: `${vcodec}_${fam}`, alt: enc }))
+      }
+      // H.264 stays 'copy' + a family (rawCodec); every other codec names its encoder
+      preset = vcodec === 'h264'
+        ? { ...preset, videoEncoder: enc === 'libx264' ? 'x264' : fam }
+        : { ...preset, ffmpegVideo: enc }
     }
+    // G6: a transparent background on an alpha codec keeps the framebuffer's coverage
+    const alpha = project.background === 'transparent' && !!VIDEO_CODECS[vcodec].alpha && !preset.audioOnly
 
     await window.kadr.exportBegin({
       projectName: project.name,
@@ -150,7 +163,7 @@ export function startExport(
     const canvas = document.createElement('canvas')
     canvas.width = rw
     canvas.height = rh
-    const comp = new Compositor(canvas)
+    const comp = new Compositor(canvas, { alpha })
     comp.setSize(rw, rh)
     const pool = new MediaPool()
     // clip end times for the passed-clip cleanup below (the project is
@@ -174,7 +187,8 @@ export function startExport(
     // synchronously, so the loop keeps decoding/drawing the next frames
     // while up to RAW_AHEAD transfers are still in flight (ffmpeg encodes
     // in its own process in parallel anyway).
-    const useRaw = opts?.encoder !== 'webcodecs'
+    // Chromium's encoder writes H.264 only: every other codec takes the raw path
+    const useRaw = opts?.encoder !== 'webcodecs' || vcodec !== 'h264'
     const rawBuf = useRaw ? new Uint8Array(rw * rh * 4) : null
     const RAW_AHEAD = 3
     const rawInFlight: Promise<void>[] = []
@@ -211,7 +225,10 @@ export function startExport(
         const enc = {
           width: rw, height: rh, outWidth: width, outHeight: height,
           fps, codec, bitrate: preset.videoBitrate, fit: preset.fit,
-          rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset
+          rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
+          videoCodec: vcodec, alpha,
+          // a PNG sequence goes straight to its folder, numbered; nothing to mux
+          ...(vcodec === 'png' && { out: seqPattern(outputPath) })
         }
         logInfo(tr('lgExport'), rawEncodeArgs({ ...enc, out: 'pipe' }).join(' '))
         rawDirect = await window.kadr.rawEncodeStart(enc)
@@ -221,7 +238,7 @@ export function startExport(
         rawDirect = null
       }
       if (!rawDirect) {
-        const wsPort = await window.kadr.exportRawBegin(rw, rh, fps, width, height)
+        const wsPort = await window.kadr.exportRawBegin(rw, rh, fps, width, height, alpha)
         if (wsPort > 0) {
           rawWs = await new Promise<WebSocket | null>((res) => {
             const s = new WebSocket(`ws://127.0.0.1:${wsPort}`)

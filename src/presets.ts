@@ -8,15 +8,8 @@ import { saveUserStore } from './engine/userStore'
 const NAME_KEY: Record<string, TKey> = { source: 'presetSource', webm: 'presetWebm', mp3: 'presetMp3' }
 export const presetName = (p: ExportPreset): string => (NAME_KEY[p.id] ? tr(NAME_KEY[p.id]) : p.name)
 
-const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3' }
-/** the export dialog's read-only codec lines: «H.264 · 10 Mbit/s», «AAC · 192 kbit/s» */
-const HW_LABEL = { nvenc: 'NVENC', qsv: 'Quick Sync', amf: 'AMF' } as const
-/** «H.264 · CRF 18», «H.264 · NVENC · CQ 18»: a hardware encoder's quality is its own CQ, not CRF */
-export const videoCodecLabel = (p: ExportPreset): string => {
-  const hw = p.ffmpegVideo === 'copy' && p.videoEncoder && p.videoEncoder !== 'x264' ? HW_LABEL[p.videoEncoder] : ''
-  return `${p.ffmpegVideo === 'libvpx-vp9' ? 'VP9' : 'H.264'}${hw ? ` · ${hw}` : ''} · ${p.rateControl === 'crf'
-    ? `${hw ? 'CQ' : 'CRF'} ${p.crf ?? 18}` : `${+(p.videoBitrate / 1e6).toFixed(1)} ${tr('mbpsUnit')}`}`
-}
+const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3', pcm_s16le: 'PCM' }
+/** the export dialog's read-only audio line: «AAC · 192 kbit/s» (the video codec is a select since G6) */
 export const audioCodecLabel = (p: ExportPreset): string =>
   `${AUDIO_CODEC[p.audioCodec] ?? p.audioCodec} · ${parseInt(p.audioBitrate)} ${tr('kbpsUnit')}`
 

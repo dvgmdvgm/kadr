@@ -53,7 +53,7 @@ const TABLE = [
   ['libx264', 'crf', '-c:v libx264 -preset faster -crf 20 -pix_fmt yuv420p'],
   ['h264_nvenc', 'abr', '-c:v h264_nvenc -preset p5 -tune hq -rc vbr -b:v 10000000 -maxrate 16000000 -bufsize 30000000 -profile:v high -pix_fmt yuv420p'],
   ['h264_nvenc', 'crf', '-c:v h264_nvenc -preset p5 -tune hq -rc vbr -cq 20 -b:v 0 -profile:v high -pix_fmt yuv420p'],
-  ['hevc_nvenc', 'crf', '-c:v hevc_nvenc -preset p5 -tune hq -rc vbr -cq 20 -b:v 0 -pix_fmt yuv420p'],
+  ['hevc_nvenc', 'crf', '-c:v hevc_nvenc -preset p5 -tune hq -rc vbr -cq 20 -b:v 0 -tag:v hvc1 -pix_fmt yuv420p'],
   ['h264_qsv', 'abr', '-c:v h264_qsv -preset medium -b:v 10000000 -maxrate 16000000 -bufsize 30000000 -profile:v high -pix_fmt nv12'],
   ['h264_qsv', 'crf', '-c:v h264_qsv -preset medium -global_quality 20 -profile:v high -pix_fmt nv12'],
   ['h264_amf', 'abr', '-c:v h264_amf -quality quality -rc vbr_peak -b:v 10000000 -maxrate 16000000 -bufsize 30000000 -profile:v high -pix_fmt yuv420p'],

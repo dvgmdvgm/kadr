@@ -11,7 +11,7 @@ import { useT, type TKey } from '@/i18n'
 import { useSettings } from '@/state/store'
 import { TRANSITIONS } from '@/gl/transitions'
 import { PRESETS, presetName, allPresets } from '@/presets'
-import { X264_PRESETS, VIDEO_ENCODERS } from '@shared/rawEncode'
+import { X264_PRESETS, VIDEO_ENCODERS, VIDEO_CODECS } from '@shared/rawEncode'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
 import { KeysSection, KeysHeadActions } from './KeysSection'
@@ -473,6 +473,10 @@ function Export({ t }: { t: T }) {
       </Row>
       <Row label={t('setFastEnc')} keys={['export.fastEncoder']} shown={t('setOff')}>
         <Check k="export.fastEncoder" label={t('setFastEnc')} />
+      </Row>
+      <Row label={t('exVCodec')} keys={['export.codec']} shown={t('vcpreset')}>
+        <Choice k="export.codec" label={t('exVCodec')} width={240}
+                options={['preset', ...Object.keys(VIDEO_CODECS)].map((c) => [c, t(`vc${c}` as TKey)])} />
       </Row>
       <Row label={t('exQuality')} keys={['export.quality']} shown={t('exQualityAbr')}>
         <Choice k="export.quality" label={t('exQuality')} width={240}

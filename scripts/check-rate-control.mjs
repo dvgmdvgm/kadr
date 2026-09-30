@@ -41,9 +41,11 @@ check('x264 preset choice reaches -preset',
 check('an unknown x264 preset falls back to faster',
   after(rawEncodeArgs({ ...base, x264Preset: 'bogus; rm' }), '-preset') === 'faster')
 
-// VP9 keeps its ABR: CRF 18 means something else on libvpx's 0–63 scale
-const vp9 = rawEncodeArgs({ ...base, codec: 'libvpx-vp9', rateControl: 'crf', crf: 18 })
-check('vp9 ignores crf and keeps -b:v', vp9.includes('-b:v') && !vp9.includes('-crf'), x264(vp9))
+// VP9 (G6): constant quality on libvpx's own 0–63 scale needs -b:v 0; ABR stays as it was
+const vp9 = rawEncodeArgs({ ...base, codec: 'libvpx-vp9', rateControl: 'crf', crf: 40 })
+check('vp9 in the quality mode is -crf N -b:v 0', after(vp9, '-crf') === '40' && after(vp9, '-b:v') === '0', x264(vp9))
+check('vp9 ABR keeps its plain -b:v',
+  after(rawEncodeArgs({ ...base, codec: 'libvpx-vp9' }), '-b:v') === '10000000')
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')
 process.exit(fails ? 1 : 0)

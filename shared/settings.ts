@@ -109,10 +109,15 @@ export const SETTINGS = {
   'export.fastEncoder': { type: 'boolean', default: false, section: 'export' },
   /** x264 rate control (shared/rawEncode.ts): the preset's bitrate, or constant quality (decision 3) */
   'export.quality': { type: 'enum', options: ['abr', 'crf'], default: 'abr', section: 'export' },
-  'export.crf': { type: 'number', min: 0, max: 51, default: 18, section: 'export' },
+  'export.crf': { type: 'number', min: 0, max: 63, default: 18, section: 'export' },
   'export.x264Preset': { type: 'enum', options: ['faster', 'fast', 'medium', 'slow'], default: 'faster', section: 'export' },
   /** H.264 on x264 or a hardware encoder (G5; shared/rawEncode.ts rawCodec) — one missing here falls back to x264 */
   'export.videoEncoder': { type: 'enum', options: ['x264', 'nvenc', 'qsv', 'amf'], default: 'x264', section: 'export' },
+  /** the codec laid over the preset (G6; shared/rawEncode.ts withCodec) — container and audio follow it */
+  'export.codec': {
+    type: 'enum', options: ['preset', 'h264', 'hevc', 'av1', 'vp9', 'prores422', 'prores4444', 'png'],
+    default: 'preset', section: 'export'
+  },
   /** the dialog's own output size, fps and bitrate (Mbit/s) over the preset's; 0 = the preset's (G4) */
   'export.width': { type: 'number', min: 0, max: 8192, default: 0, section: 'export' },
   'export.height': { type: 'number', min: 0, max: 8192, default: 0, section: 'export' },

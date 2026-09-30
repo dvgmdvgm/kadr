@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { KadrApi, ExportProgress } from '@shared/types'
-import { rawEncodeArgs } from '@shared/rawEncode'
+import { rawEncodeArgs, rawTempExt } from '@shared/rawEncode'
 import { running, type SettingsSnapshot } from '@shared/settings'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
@@ -23,7 +23,8 @@ const api: KadrApi = {
   rawEncodeStart: (o) => {
     // the settings' ffmpeg (as at launch, env first) and export temp folder
     const snap: SettingsSnapshot = ipcRenderer.sendSync('settings:get')
-    const out = join(String(running('storage.tempDir', snap) || tmpdir()), `kadr-export-raw-${Date.now()}.mp4`)
+    // a container that holds the codec; a PNG sequence brings its own numbered path
+    const out = o.out ?? join(String(running('storage.tempDir', snap) || tmpdir()), `kadr-export-raw-${Date.now()}.${rawTempExt(o.codec)}`)
     const child = spawn(String(running('tools.ffmpeg', snap)), rawEncodeArgs({ ...o, out }), {
       stdio: ['pipe', 'ignore', 'pipe']
     })
@@ -154,8 +155,8 @@ const api: KadrApi = {
   hwEncoders: () => ipcRenderer.invoke('encoders:list'),
   exportBegin: (job) => ipcRenderer.invoke('export:begin', job),
   exportVideoChunk: (data, position) => ipcRenderer.invoke('export:video-chunk', data, position),
-  exportRawBegin: (width, height, fps, outWidth, outHeight) =>
-    ipcRenderer.invoke('export:raw-begin', width, height, fps, outWidth, outHeight),
+  exportRawBegin: (width, height, fps, outWidth, outHeight, alpha) =>
+    ipcRenderer.invoke('export:raw-begin', width, height, fps, outWidth, outHeight, alpha),
   exportRawFrame: (data) => ipcRenderer.invoke('export:raw-frame', data),
   exportRawEnd: () => ipcRenderer.invoke('export:raw-end'),
   exportUseVideo: (path) => ipcRenderer.invoke('export:use-video', path),

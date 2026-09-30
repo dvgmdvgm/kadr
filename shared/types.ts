@@ -4,6 +4,7 @@
 import type { RelinkWanted } from './relinkMatch'
 import type { GainKey } from './gainKeys'
 import type { SettingsSnapshot, SettingValue } from './settings'
+import type { RawEncodeOpts } from './rawEncode'
 
 export type AssetKind = 'video' | 'audio' | 'image'
 
@@ -986,7 +987,7 @@ export interface TtsResult {
 export interface ExportPreset {
   id: string
   name: string
-  container: 'mp4' | 'webm' | 'mkv' | 'mp3'
+  container: 'mp4' | 'webm' | 'mkv' | 'mov' | 'png' | 'mp3'
   /** WebCodecs codec string for the renderer-side encoder */
   codec: string
   /** ffmpeg vcodec for the final pass; 'copy' keeps the WebCodecs stream */
@@ -1006,6 +1007,8 @@ export interface ExportPreset {
   videoEncoder?: 'x264' | 'nvenc' | 'qsv' | 'amf'
   /** a size other than the project's: fit (bars, default) · fill (crop) · stretch */
   fit?: 'fit' | 'fill' | 'stretch'
+  /** G6: the codec (shared/rawEncode.ts VIDEO_CODECS); absent = what ffmpegVideo says (H.264 or VP9) */
+  videoCodec?: 'h264' | 'hevc' | 'av1' | 'vp9' | 'prores422' | 'prores4444' | 'png'
 }
 
 export interface ExportJob {
@@ -1315,11 +1318,7 @@ export interface KadrApi {
       passed BY REFERENCE — zero copies until the kernel pipe. rawEncodeStart
       resolves with the temp file the encoder writes; exportUseVideo hands it
       to the muxer stage. */
-  rawEncodeStart(o: {
-    width: number; height: number; outWidth?: number; outHeight?: number
-    fps: number; codec: string; bitrate: number
-    rateControl?: 'abr' | 'crf'; crf?: number; x264Preset?: string
-  }): Promise<string>
+  rawEncodeStart(o: Omit<RawEncodeOpts, 'out'> & { /** default: a temp file the muxer adopts */ out?: string }): Promise<string>
   /** resolves when ffmpeg's stdin accepted the memory — only then reuse it */
   rawEncodeFrame(view: Uint8Array): Promise<void>
   rawEncodeEnd(): Promise<void>
@@ -1329,7 +1328,7 @@ export interface KadrApi {
   /** main-process fallback raw encode: frames over WS (port > 0) or IPC */
   exportRawBegin(
     width: number, height: number, fps: number,
-    outWidth?: number, outHeight?: number
+    outWidth?: number, outHeight?: number, alpha?: boolean
   ): Promise<number>
   exportRawFrame(data: ArrayBuffer): Promise<void>
   exportRawEnd(): Promise<void>

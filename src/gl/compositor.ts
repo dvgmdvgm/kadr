@@ -323,10 +323,12 @@ export class Compositor {
   private pw = 0
   private ph = 0
 
-  constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  /** `alpha`: the drawing buffer keeps coverage (an alpha export, G6) — readPixels
+      then returns PREMULTIPLIED RGBA; the preview's canvas stays opaque */
+  constructor(canvas: HTMLCanvasElement | OffscreenCanvas, opts?: { alpha?: boolean }) {
     this.canvas = canvas
     const gl = canvas.getContext('webgl2', {
-      alpha: false,
+      alpha: !!opts?.alpha,
       antialias: false,
       preserveDrawingBuffer: true
       // NOT desynchronized: on Windows it renders into the front buffer, and
@@ -358,7 +360,7 @@ export class Compositor {
 
     gl.enable(gl.BLEND)
     // separate alpha factors so layers accumulate correct coverage in the
-    // transition FBOs (the canvas itself is alpha:false and doesn't care)
+    // transition FBOs and, on an alpha export, in the drawing buffer itself (premultiplied)
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.useProgram(prog)
     gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0)
@@ -445,8 +447,12 @@ export class Compositor {
     this.frame++
     this.curFbo = this.target
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target)
-    const [r, g, b] = hexToRgb(background)
-    gl.clearColor(r, g, b, 1)
+    // 'transparent' (G6; H2 makes it selectable): the layers build their own coverage
+    if (background === 'transparent') gl.clearColor(0, 0, 0, 0)
+    else {
+      const [r, g, b] = hexToRgb(background)
+      gl.clearColor(r, g, b, 1)
+    }
     gl.clear(gl.COLOR_BUFFER_BIT)
   }
 
