@@ -1,13 +1,13 @@
 // Subtitle utilities: SRT parse/serialize and the transcription flow shared
 // by the UI dialog and the kadr MCP tool (window.kadrEditor.transcribe).
 import type {
-  Project, Track, SubCue, TextDoc, TranscribeResult, TranscribeSegment, AudioSegment
+  Project, Track, Clip, SubCue, TextDoc, TranscribeResult, TranscribeSegment, AudioSegment
 } from '@shared/types'
 import { useEditor, uid } from '@/state/store'
 import { dirOf, baseOf } from '@shared/paths'
 import { audioFollowsSpeed } from '@shared/audioSpeed'
 import { gainKeys as gainKeysOf } from '@shared/gainKeys'
-import { overlapFades, trackHeard } from './player'
+import { overlapFades, trackHeard, panAt } from './player'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
 import { docWords, glueWords } from './words'
@@ -199,6 +199,7 @@ export function collectRangeAudio(
         const tail = clip.duration - (local + segDur)
         const foLocal = tail < fadeOut ? Math.min(fadeOut - tail, segDur) : 0
         const gainKeys = gainKeysOf(clip.gain, local, local + segDur, (t) => evalAnim(clip.gain, t))
+        const pan = segmentPan(clip, track, local, local + segDur)
         segs.push({
           path: asset.path,
           inPoint: clip.inPoint + srcOff,
@@ -206,6 +207,7 @@ export function collectRangeAudio(
           start: clip.start + local - start,
           gain: (gainKeys ? 1 : evalAnim(clip.gain, local)) * track.gain,
           ...(gainKeys ? { gainKeys } : {}),
+          ...pan,
           speed,
           fadeIn: fiLocal,
           fadeOut: foLocal,
@@ -217,6 +219,21 @@ export function collectRangeAudio(
     }
   }
   return segs
+}
+
+/**
+ * K4: the pan of clip-local [from, to] — the clip's keys (clip-local) and the
+ * track's (project time) sampled with the preview's own panAt, merged into one
+ * curve; a pan that never leaves centre carries nothing.
+ */
+function segmentPan(clip: Clip, track: Track, from: number, to: number): Pick<AudioSegment, 'pan' | 'panKeys'> {
+  const at = (t: number) => evalAnim(clip.pan, t) + evalAnim(track.pan, clip.start + t) // unclamped: the filter clamps
+  const trackLocal = track.pan && { ...track.pan, keyframes: track.pan.keyframes?.map((k) => ({ ...k, time: k.time - clip.start })) }
+  const lists = [clip.pan && gainKeysOf(clip.pan, from, to, at, -Infinity), trackLocal && gainKeysOf(trackLocal, from, to, at, -Infinity)]
+    .filter((l): l is NonNullable<typeof l> => !!l)
+  if (lists.length) return { panKeys: lists.flat().sort((a, b) => a.t - b.t) }
+  const p = panAt(clip, track, clip.start + from)
+  return p ? { pan: p } : {}
 }
 
 /** Tracks that contribute at least one audible segment to [start, end). */

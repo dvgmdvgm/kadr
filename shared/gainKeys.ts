@@ -19,14 +19,15 @@ const MIN_PIECE = 0.02
  * The gain curve over clip-local [from, to] as points relative to `from`, or
  * null when the gain does not change there (the caller keeps a plain scalar,
  * which mixes bit-identically to a clip that never had keyframes).
+ * `min` is the floor the preview clamps to (gain 0; K4's pan clamps later).
  * `at` is the evaluator the preview uses (evalAnim) — the easing maths lives
  * in one place; straight segments stay exact, eased/smooth ones are sampled.
  */
-export function gainKeys(a: Anim, from: number, to: number, at: (t: number) => number): GainKey[] | null {
+export function gainKeys(a: Anim, from: number, to: number, at: (t: number) => number, min = 0): GainKey[] | null {
   const kfs = a.keyframes
   if (!kfs?.length) return null
   const pts: GainKey[] = []
-  const push = (t: number, v: number) => pts.push({ t: t - from, v: Math.max(0, v) }) // the preview clamps at 0 too
+  const push = (t: number, v: number) => pts.push({ t: t - from, v: Math.max(min, v) }) // the preview clamps gain at 0 too (K4's pan passes −∞)
   const inside = (t: number) => t > from && t < to
   push(from, at(from))
   for (let i = 0; i < kfs.length; i++) {

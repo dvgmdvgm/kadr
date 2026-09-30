@@ -1,5 +1,6 @@
 // ffmpeg/ffprobe helpers running in the main process.
 import { masterLimiterChain, MASTER_LIMIT, TP_AIM, TP_CEILING } from '@shared/audioMaster'
+import { panFilter, panEvalFilter } from '@shared/pan'
 import { execFile, spawn, ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import { promises as fsp } from 'fs'
@@ -862,7 +863,9 @@ function segmentChain(s: AudioSegment): string[] {
     ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}${curveArg(s.fadeInCurve)}`] : []),
     ...(s.fadeOut > 0.001
       ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}${curveArg(s.fadeOutCurve)}`]
-      : [])
+      : []),
+    // K4: pan after the upmix (aformat above), as the preview's panner does (shared/pan.ts)
+    ...(s.panKeys?.length ? ['asetpts=N/SR/TB', panEvalFilter(s.panKeys)] : s.pan ? [panFilter(s.pan)] : [])
   ]
 }
 
@@ -1055,7 +1058,9 @@ export class ExportMuxer {
       // exports (shared/audioMaster.ts) — a plain sum of a loud master and a
       // few hits used to reach the encoder at +10 dBFS and be hard-clipped.
       // Analysis mixdowns (job.master === false) stay untouched.
-      const master = job.master === false ? [] : masterLimiterChain(fit.limit, fit.gainDb)
+      // K4: the master fader sits in front of the limiter; a loudness target sets the level itself
+      const faderDb = target === null ? 20 * Math.log10(Math.max(1e-5, job.masterGain ?? 1)) : 0
+      const master = job.master === false ? [] : masterLimiterChain(fit.limit, fit.gainDb + faderDb)
       const tail = master.length ? ',' + master.join(',') : ''
       if (segs.length === 1) {
         filters.push(`${labels[0]}anull${tail}[aout]`)

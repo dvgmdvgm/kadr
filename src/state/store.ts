@@ -131,6 +131,8 @@ export function sanitizeProject(p: Project): Project {
   }
   // a hex, or 'transparent' (H2's «Прозрачный», honoured by the compositor and the alpha export)
   if (typeof p.background !== 'string') p.background = '#000000'
+  // K4: the master fader is optional (absent = 1); junk is dropped, never clamped into a level
+  if (p.masterGain !== undefined && !(Number.isFinite(p.masterGain) && p.masterGain >= 0)) delete p.masterGain
   if (!Number.isFinite(p.width) || p.width <= 0) p.width = 1920
   if (!Number.isFinite(p.height) || p.height <= 0) p.height = 1080
   if (!Number.isFinite(p.fps) || p.fps <= 0) p.fps = 30
@@ -209,6 +211,8 @@ export function sanitizeProject(p: Project): Project {
   }
   for (const track of p.tracks) {
     if (!Number.isFinite(track.gain)) track.gain = 1
+    // K4: centre is the implicit default; a pan that is there is an Anim
+    if (track.pan !== undefined) track.pan = anim(track.pan, 0)
     label(track)
     if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
@@ -281,6 +285,7 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
     z: tr.z ? fn(tr.z) : undefined
   }
   c.gain = fn(c.gain)
+  if (c.pan) c.pan = fn(c.pan)
   if (c.grade) {
     const g: Partial<ClipGrade> = { ...c.grade }
     for (const k of GRADE_KEYS) if (g[k]) g[k] = fn(g[k]!)

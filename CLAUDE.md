@@ -41,7 +41,10 @@ mixes audio and muxes/transcodes per preset.
   within 0.5 dB in the preview's gain maths and in a mixdown);
   `check-lufs.mjs` wants ffmpeg (K3: the preview's loudness meter DSP within
   0.3 LU / 0.3 dB of ebur128 — integrated through both gates, momentary,
-  short-term, true peak at 48 and 44.1 kHz); `check-eta.mjs` (G8: the export's fps / time left from
+  short-term, true peak at 48 and 44.1 kHz); `check-pan.mjs` wants ffmpeg
+  and the installed electron (K4: the real StereoPannerNode and the export
+  chain against the one pan law — static, keyframed, mono, hard left silent
+  in R — and master −6 dB lowering the export by 6 ± 0.1 dB); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
@@ -271,6 +274,20 @@ mixes audio and muxes/transcodes per preset.
   clip like the default transition, so new overlaps hold their loudness where
   a linear pair dips ~3 dB. The curve is picked from the fade handle's
   right-click menu. Test: `node scripts/check-fade-curves.mjs`.
+  PAN AND THE MASTER FADER (K4, `shared/pan.ts`): `Clip.pan` (clip-local keys)
+  plus `Track.pan` (project-time keys), −1…1 as Anims, summed and clamped
+  (`panAt`); absent = centre and no filter at all, so an old project mixes
+  bit-identically. ONE LAW: the preview's StereoPannerNode (element → gain →
+  pan → master, `PANNER_OPTIONS` upmixing mono first) and the export's
+  `segmentChain`, which replays that node's stereo algorithm as a `pan=`
+  matrix after the upmix, or per sample as `aeval` when the pan moves — so the
+  premix gets it too. `Project.masterGain` (linear, absent = 1) is the master
+  GainNode in the preview and a `volume` in front of the export's limiter;
+  analysis mixdowns and a loudness target (which sets the level itself)
+  ignore it. KNOWN, older than K4: WebAudio upmixes a MONO source at unity,
+  ffmpeg's aformat at −3 dB a side, so a mono clip previews 3.01 dB above its
+  export; neither side knows a source's channel count yet. Test:
+  `node scripts/check-pan.mjs`.
   TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
   carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
   scheduler roughly QUADRATICALLY in N: that mix ran at a quarter of realtime —

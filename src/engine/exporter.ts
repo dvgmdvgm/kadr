@@ -152,6 +152,7 @@ export function startExport(
       fps,
       duration,
       audioSegments: collectRangeAudio(project, span.start, span.end),
+      ...(project.masterGain !== undefined ? { masterGain: project.masterGain } : {}),
       extras: await rangeExtras(project, span.start, span.end, opts?.extras)
     })
 

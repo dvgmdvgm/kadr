@@ -212,6 +212,8 @@ export interface Clip {
   fadeInCurve?: FadeCurve
   fadeOutCurve?: FadeCurve
   gain: Anim // audio gain 0..2
+  /** K4: stereo pan −1 (left) … 1 (right), added to the track's (shared/pan.ts); absent = centre */
+  pan?: Anim
   muted: boolean
   transform: ClipTransform
   /** absent = contain (preview and export alike) */
@@ -278,6 +280,8 @@ export interface Track {
   color?: number
   /** audio: volume 0..2; video: whole-track opacity 0..1 */
   gain: number
+  /** K4: stereo pan −1…1, keys in project seconds, added to each clip's; absent = centre */
+  pan?: Anim
   /** video tracks: animated whole-track transform */
   motion?: Transform3D
   clips: Clip[]
@@ -339,6 +343,8 @@ export interface Project {
   defects?: AudioDefect[]
   /** Claude Code session ids of the chats held about this project */
   claudeChats?: string[]
+  /** K4: the master fader, linear gain before the limiter (preview and export); absent = 1 */
+  masterGain?: number
   /** their transcripts (jsonl) — present ONLY in the file on disk: main embeds
    *  them on save and takes them out on open (electron/chats.ts) */
   claudeTranscripts?: Record<string, string>
@@ -1082,6 +1088,9 @@ export interface ExportJob {
    * false for analysis mixdowns, which must see the mix unaltered.
    */
   master?: boolean
+  /** K4: the project's master fader (linear, before the limiter; ignored when `master` is false
+   *  or a loudness target sets the level); absent = 1 */
+  masterGain?: number
   /** G7: title, chapters, subtitles (shared/exportExtras.ts), already in export time */
   extras?: import('./exportExtras').ExportExtras
 }
@@ -1097,6 +1106,10 @@ export interface AudioSegment {
   gain: number
   /** keyframed clip gain, multiplied over `gain` (shared/gainKeys.ts); absent = flat */
   gainKeys?: GainKey[]
+  /** K4: clip + track pan, −1…1 (shared/pan.ts); absent = centre */
+  pan?: number
+  /** K4: a pan that moves, as points like gainKeys (unclamped; the filter clamps) */
+  panKeys?: GainKey[]
   speed: number
   /** local fade windows in timeline seconds */
   fadeIn: number

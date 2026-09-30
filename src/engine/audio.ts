@@ -1,5 +1,6 @@
 // Shared WebAudio graph for the live preview: every media element is routed
-// element → per-clip gain (allows >100% volume) → master → limiter → analyser
+// element → per-clip gain (allows >100% volume) → pan (K4, shared/pan.ts) →
+// master (the project's fader) → limiter → analyser
 // → output, and the analyser also feeds the loudness meter (K3,
 // shared/loudness.ts: LUFS M/S/I and true peak of what reaches the speakers). The limiter is the export's own (shared/previewLimiter.ts, an
 // AudioWorklet), so a hot mix clips in neither; `useSettings.previewLimiter`
@@ -8,6 +9,7 @@ import { useSettings } from '../state/store'
 import { logWarn } from './log'
 import { tr } from '../i18n'
 import type { Loudness } from '@shared/loudness'
+import { PANNER_OPTIONS, clampPan } from '@shared/pan'
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
@@ -22,6 +24,10 @@ let reading: Loudness = SILENT
 let limiterModule = ''
 export function wirePreviewLimiter(url: string) { limiterModule = url }
 const gains = new WeakMap<HTMLMediaElement, GainNode>()
+const pans = new WeakMap<HTMLMediaElement, StereoPannerNode>()
+/** the project's master fader, and whether silencePreview holds it at 0 */
+let masterLevel = 1
+let silenced = false
 const sources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
 /** elements routed into the graph right now (see audioStats) */
 let routed = 0
@@ -30,6 +36,7 @@ export function ensureAudio(): AudioContext {
   if (!ctx) {
     ctx = new AudioContext()
     master = ctx.createGain()
+    master.gain.value = masterLevel
     analyser = ctx.createAnalyser()
     analyser.fftSize = 512
     analyser.smoothingTimeConstant = 0.75
@@ -81,9 +88,10 @@ export function attachAudio(el: HTMLMediaElement) {
   try {
     const src = c.createMediaElementSource(el)
     const gain = c.createGain()
-    src.connect(gain)
-    gain.connect(master!)
+    const pan = new StereoPannerNode(c, PANNER_OPTIONS)
+    src.connect(gain).connect(pan).connect(master!)
     gains.set(el, gain)
+    pans.set(el, pan)
     sources.set(el, src)
     routed++
   } catch { /* already attached to another context */ }
@@ -102,7 +110,9 @@ export function detachAudio(el: HTMLMediaElement) {
   if (!g) return
   try { sources.get(el)?.disconnect() } catch { /* already */ }
   try { g.disconnect() } catch { /* already */ }
+  try { pans.get(el)?.disconnect() } catch { /* already */ }
   gains.delete(el)
+  pans.delete(el)
   sources.delete(el)
   routed--
 }
@@ -113,6 +123,20 @@ export function setElementGain(el: HTMLMediaElement, v: number) {
   // a non-finite value throws inside WebAudio and kills the caller's rAF
   // loop — no gain glitch is worth losing playback for the whole session
   if (g) g.gain.value = Number.isFinite(v) ? Math.max(0, v) : 0
+}
+
+/** K4: the element's pan, −1…1 (shared/pan.ts) */
+export function setElementPan(el: HTMLMediaElement, p: number) {
+  const n = pans.get(el)
+  if (n && n.pan.value !== clampPan(p)) n.pan.value = clampPan(p)
+}
+
+/** K4: the project's master fader (linear), in front of the limiter as in the export */
+export function setMasterGain(v: number) {
+  const g = Number.isFinite(v) ? Math.max(0, v) : 1
+  if (g === masterLevel || !master) { masterLevel = g; return }
+  masterLevel = g
+  if (!silenced) master.gain.value = g
 }
 
 export function isRouted(el: HTMLMediaElement): boolean {
@@ -167,5 +191,6 @@ export function resetLoudness() {
 /** Measurements and tests: the graph runs as usual, nothing reaches the speakers. */
 export function silencePreview(on: boolean) {
   ensureAudio()
-  master!.gain.value = on ? 0 : 1
+  silenced = on
+  master!.gain.value = on ? 0 : masterLevel
 }

@@ -13,7 +13,8 @@ import { evalAnim } from './anim'
 import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
-import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
+import { attachAudio, detachAudio, setElementGain, setElementPan, setMasterGain, isRouted, resumeAudio } from './audio'
+import { clampPan } from '@shared/pan'
 import { logError } from './log'
 import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
 import { tr } from '../i18n'
@@ -52,6 +53,12 @@ export function sourceFrameRate(clip: Clip, asset: MediaAsset, fps: number): num
     Not in reverse, not while paused, and never for a freeze frame. */
 export function elementRuns(clip: Clip, playing: boolean, rate: number): boolean {
   return playing && rate > 0 && clip.freezeAt === undefined
+}
+
+/** K4: a clip's pan at timeline time t — its own (clip-local keys) plus its
+    track's (project-time keys), clamped; the export's segments carry the same */
+export function panAt(clip: Pick<Clip, 'pan' | 'start'>, track: Pick<Track, 'pan'>, t: number): number {
+  return clampPan(evalAnim(clip.pan, t - clip.start) + evalAnim(track.pan, t))
 }
 
 type Fades = { fadeIn: number; fadeOut: number; inCurve?: FadeCurve; outCurve?: FadeCurve }
@@ -901,6 +908,7 @@ export class Player {
     }
 
     this.syncMedia(project, t, playing, rate)
+    setMasterGain(project.masterGain ?? 1)
 
     // paused with nothing changed: idle at ~4 fps instead of a full 60 fps
     // composite (texture re-uploads of every visible video are not free) —
@@ -956,6 +964,7 @@ export class Player {
       this.pool.setVolume(el, Math.max(0,
         evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip))
       ))
+      setElementPan(el, panAt(clip, track, t))
       // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
       // is muted (shared/audioSpeed.ts), the element free-runs at the clamped
       // rate and the resync below keeps it on the master clock with seeks
