@@ -2,20 +2,20 @@
 // the editor's terminal panel, wired to the live project through a local
 // HTTP bridge (main ⇄ renderer eval) that the MCP stdio server
 // (mcp-bridge.cjs, spawned by claude itself) talks to.
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { createServer, type Server } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { execFile } from 'child_process'
 import { promises as fs } from 'fs'
 import { join, isAbsolute } from 'path'
-import { tmpdir } from 'os'
 import type { IPty } from 'node-pty'
 import { ensureInStore, listChats } from './chats'
 import { claudeArgs, removeManagedSkills, splitArgs } from './claudeArgs'
 import type { SettingsStore } from './settings'
 import type { ClaudeStatus } from '../shared/types'
 import { WIN_PROCESS_QUERY, parseWinProcs, pickWinOrphans } from './orphanSweep'
-import { WORKSPACE } from './fragments'
+import { workspace } from './fragments'
+import { cacheDir, tempDir } from './appSettings'
 import { turnTracker } from '../shared/agentTurn'
 
 // The session inherits this process's environment MINUS the markers of any
@@ -83,15 +83,15 @@ export async function sweepStaleSessions(): Promise<number> {
   const marks = [
     join(app.getPath('userData'), 'kadr-mcp.json'),
     join(app.getAppPath(), 'electron', 'mcp-bridge.cjs'),
-    join(tmpdir(), 'kadr-export'), // raw encoder + muxer temp files
-    join(app.getPath('userData'), 'proxies'),
+    join(tempDir(), 'kadr-export'), // raw encoder + muxer temp files
+    cacheDir('proxies'),
     join(app.getPath('userData'), 'reversed'),
-    join(app.getPath('userData'), 'decoded'),
-    join(app.getPath('userData'), 'fragment-renders'),
+    cacheDir('decoded'),
+    cacheDir('fragment-renders'),
     join(app.getAppPath(), 'scripts', 'transcribe.py'),
     join(app.getAppPath(), 'scripts', 'ttsqc_run.py')
   ]
-  if (process.platform === 'win32') return sweepWin32([...marks, app.getPath('userData'), WORKSPACE])
+  if (process.platform === 'win32') return sweepWin32([...marks, app.getPath('userData'), workspace()])
   let entries: string[]
   try { entries = await fs.readdir('/proc') } catch { return 0 } // non-Linux
   const statOf = async (pid: number) => {
@@ -522,6 +522,8 @@ function closeSession(): Promise<void> {
 export function registerClaudeIpc(getWin: () => BrowserWindow | null, store: SettingsStore) {
   settings = store
   ipcMain.handle('claude:status', () => claudeStatus())
+  // the settings row's «Показать файл» next to a legacy `args` warning
+  ipcMain.on('claude:reveal-env', () => shell.showItemInFolder(join(app.getPath('userData'), 'claude-env.json')))
   // skills load per session through --plugin-dir; drop copies older versions put in ~/.claude/skills
   void removeManagedSkills(join(app.getPath('home'), '.claude', 'skills'))
     .then((r) => { if (r.length) console.log(`[claude] removed global skill copies: ${r.join(', ')}`) })

@@ -1,4 +1,5 @@
 import { app, ipcMain } from 'electron'
+import { cacheDir } from './appSettings'
 import { promises as fs, statfsSync } from 'fs'
 import { join, basename, resolve, sep } from 'path'
 import { mediaCacheKey, proxySuffix, decodedSuffix, projectKey } from './cacheKeys'
@@ -32,9 +33,9 @@ interface GroupDef {
 }
 
 const GROUPS: GroupDef[] = [
-  { id: 'proxies', dir: () => join(app.getPath('userData'), 'proxies'), rebuildable: true, match: 'key' },
-  { id: 'decoded', dir: () => join(app.getPath('userData'), 'decoded'), rebuildable: true, match: 'key' },
-  { id: 'fragments', dir: () => join(app.getPath('userData'), 'fragment-renders'), rebuildable: true, match: 'prefix' },
+  { id: 'proxies', dir: () => cacheDir('proxies'), rebuildable: true, match: 'key' },
+  { id: 'decoded', dir: () => cacheDir('decoded'), rebuildable: true, match: 'key' },
+  { id: 'fragments', dir: () => cacheDir('fragment-renders'), rebuildable: true, match: 'prefix' },
   { id: 'ttsqcCache', dir: homeCache, rebuildable: true, match: 'none' },
   { id: 'reversed', dir: () => join(app.getPath('userData'), 'reversed'), rebuildable: false, match: 'path' },
   { id: 'imported', dir: () => join(app.getPath('userData'), 'imported'), rebuildable: false, match: 'path' },
@@ -96,7 +97,7 @@ async function keysOf(k: Known): Promise<Set<string>> {
   // packs their alpha. Without this pass those files belong to nobody, and the
   // largest group on disk reads as pure garbage when much of it is in use.
   if (k.fragmentIds.length) {
-    const dir = join(app.getPath('userData'), 'fragment-renders')
+    const dir = cacheDir('fragment-renders')
     let names: string[] = []
     try { names = await fs.readdir(dir) } catch { /* nothing rendered yet */ }
     for (const name of names) {

@@ -153,6 +153,9 @@ export function previewPoolStats() {
   return { pools: pools.size, elements, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift) }
 }
 
+/** «Прокси при воспроизведении» (proxy.ts keeps it in step with the setting) */
+export const previewPrefs = { proxies: true }
+
 export class MediaPool {
   private items = new Map<string, HTMLVideoElement | HTMLImageElement>()
   private srcs = new Map<string, string>()
@@ -181,8 +184,10 @@ export class MediaPool {
     const override = this.overrides.get(clipId)
     // the original is used for source quality (snapshots) unless it cannot be
     // shown right: undecodable (HEVC) or HDR (the proxy is the tone-mapped one)
+    // with proxies switched off, only a source that cannot be shown right still plays its proxy
+    const needsProxy = !chromiumCanDecode(asset.codec) || !!asset.hdr
     const useProxy = !override && this.opts.proxy && !!asset.proxyPath &&
-      (!this.sourceQuality || !chromiumCanDecode(asset.codec) || !!asset.hdr)
+      (needsProxy || (previewPrefs.proxies && !this.sourceQuality))
     const url = window.kadr.fileUrl(override ?? (useProxy ? asset.proxyPath! : asset.path))
     if (!el) {
       if (asset.kind === 'image') {

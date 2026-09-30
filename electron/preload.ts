@@ -1,9 +1,10 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { KadrApi, ExportProgress } from '@shared/types'
 import { rawEncodeArgs } from '@shared/rawEncode'
+import { running, type SettingsSnapshot } from '@shared/settings'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
 // (sandbox is off), so raw frames go straight from JS memory into its stdin
@@ -20,8 +21,10 @@ const MEDIA_TOKEN: string = ipcRenderer.sendSync('media:token')
 
 const api: KadrApi = {
   rawEncodeStart: (o) => {
-    const out = join(tmpdir(), `kadr-export-raw-${Date.now()}.mp4`)
-    const child = spawn(process.env.KADR_FFMPEG || 'ffmpeg', rawEncodeArgs({ ...o, out }), {
+    // the settings' ffmpeg (as at launch, env first) and export temp folder
+    const snap: SettingsSnapshot = ipcRenderer.sendSync('settings:get')
+    const out = join(String(running('storage.tempDir', snap) || tmpdir()), `kadr-export-raw-${Date.now()}.mp4`)
+    const child = spawn(String(running('tools.ffmpeg', snap)), rawEncodeArgs({ ...o, out }), {
       stdio: ['pipe', 'ignore', 'pipe']
     })
     rawEnc = child
@@ -119,6 +122,9 @@ const api: KadrApi = {
   writeUserStore: (name, data) => ipcRenderer.invoke('store:write', name, data),
   settingsGet: () => ipcRenderer.sendSync('settings:get'),
   settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
+  probeTool: (key, value) => ipcRenderer.invoke('settings:probe-tool', key, value),
+  relaunch: () => ipcRenderer.send('app:relaunch'),
+  setZoom: (factor) => webFrame.setZoomFactor(factor),
 
   reverseMedia: (path, start, duration, info) =>
     ipcRenderer.invoke('media:reverse', path, start, duration, info),
@@ -249,6 +255,7 @@ const api: KadrApi = {
   claudeResize: (cols, rows) => ipcRenderer.send('claude:resize', cols, rows),
   claudeClose: () => ipcRenderer.invoke('claude:close'),
   claudeStatus: () => ipcRenderer.invoke('claude:status'),
+  revealClaudeEnv: () => ipcRenderer.send('claude:reveal-env'),
   onClaudeData: (cb) => {
     const handler = (_e: unknown, data: string) => cb(data)
     ipcRenderer.on('claude:data', handler)

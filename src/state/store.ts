@@ -28,8 +28,12 @@ export const defaultTextStyle = (): TextStyle => ({
 
 export const newClipDefaults = (): Pick<
   Clip,
-  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut'
+  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut' | 'transitionIn'
 > => ({
+  // «Переход по умолчанию»: stamped into the clip (duration 0 = the overlap blend), so the
+  // project renders the same everywhere; crossfade is what a clip without one gets anyway
+  ...(setting('editing.transition') !== 'crossfade'
+    ? { transitionIn: { type: String(setting('editing.transition')), duration: 0 } } : {}),
   speed: 1,
   gain: { value: 1 },
   muted: false,
@@ -51,19 +55,29 @@ export const newClipDefaults = (): Pick<
   effects: []
 })
 
+/** a new project from the «Новые проекты» settings (the open project keeps its own) */
+/** «Затухание звука на краях клипа»: a new clip on an audio track fades in and out */
+const audioFade = () => {
+  const f = setting<number>('editing.fade')
+  return { fadeIn: f, fadeOut: f }
+}
+
 export function newProject(): Project {
+  const nv = setting<number>('newProject.videoTracks')
+  const na = setting<number>('newProject.audioTracks')
+  const track = (kind: TrackKind, name: string): Track => ({ id: uid(), kind, name, muted: false, locked: false, gain: 1, clips: [] })
   return {
     version: 1,
     id: uid(),
     name: 'Untitled',
-    width: 1920,
-    height: 1080,
-    fps: 30,
-    background: '#000000',
+    width: setting<number>('newProject.width'),
+    height: setting<number>('newProject.height'),
+    fps: setting<number>('newProject.fps'),
+    background: setting<string>('newProject.background'),
+    // V2, V1 over A1: tracks[0] is the top video track
     tracks: [
-      { id: uid(), kind: 'video', name: 'V2', muted: false, locked: false, gain: 1, clips: [] },
-      { id: uid(), kind: 'video', name: 'V1', muted: false, locked: false, gain: 1, clips: [] },
-      { id: uid(), kind: 'audio', name: 'A1', muted: false, locked: false, gain: 1, clips: [] }
+      ...Array.from({ length: nv }, (_, i) => track('video', `V${nv - i}`)),
+      ...Array.from({ length: na }, (_, i) => track('audio', `A${i + 1}`))
     ],
     assets: []
   }
@@ -354,6 +368,10 @@ function bootSettings(): SettingsSnapshot {
     .catch((err) => logWarn(tr('logStore'), `${tr('storeWriteFail')}: settings.json`, err))
   return { ...snap, user }
 }
+
+/** a setting's value now (shared/settings.ts) — for code outside React */
+export const setting = <T extends SettingValue = SettingValue>(key: SettingKey): T =>
+  useSettings.getState().effective(key).value as T
 
 export const useSettings = create<SettingsState>((set, get) => ({
   ...settingFields(bootSettings()),
@@ -1396,7 +1414,7 @@ export const useEditor = create<EditorState>((set, get) => ({
           track = p.tracks.find((t) => t.kind === wantKind && !t.locked)
         }
         if (!track) continue
-        const duration = asset.kind === 'image' ? 5 : asset.duration
+        const duration = asset.kind === 'image' ? setting<number>('editing.stillDuration') : asset.duration
         const clip: Clip = {
           id: uid(),
           assetId: asset.id,
@@ -1405,7 +1423,8 @@ export const useEditor = create<EditorState>((set, get) => ({
           duration,
           inPoint: 0,
           label: asset.name,
-          ...newClipDefaults()
+          ...newClipDefaults(),
+          ...(wantKind === 'audio' ? audioFade() : {})
         }
         track.clips.push(clip)
         ids.push(clip.id)
@@ -1418,6 +1437,7 @@ export const useEditor = create<EditorState>((set, get) => ({
             clip.muted = true // sound comes from the audio-track twin
             const audioClip: Clip = {
               ...clone(clip),
+              ...audioFade(),
               id: uid(),
               muted: false,
               linkId
@@ -1487,7 +1507,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         const key = e.edge === 'in' ? 'transitionIn' : 'transitionOut'
         const prev = f.clip[key]
         // a previous overlap-style transition (duration 0) is not a tip length
-        const keep = prev && prev.duration > 0.001 ? prev.duration : 0.5
+        const keep = prev && prev.duration > 0.001 ? prev.duration : setting<number>('editing.edgeDuration')
         f.clip[key] = e.type
           ? { type: e.type, duration: Math.max(0.05, e.duration ?? keep) }
           : undefined
@@ -1536,7 +1556,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         text: 'Текст',
         textStyle: defaultTextStyle(),
         start: Math.max(0, at),
-        duration: 4,
+        duration: setting<number>('editing.textDuration'),
         inPoint: 0,
         label: 'Text',
         ...newClipDefaults()
@@ -1640,7 +1660,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   splitAtPlayhead: () => {
     const s = get()
     const t = s.playhead
-    const selIds = s.selection.length ? withLinked(s.project, s.selection) : []
+    // «Разрез захватывает»: the selection (every track without one), or every unlocked track
+    const selIds = s.selection.length && setting('editing.splitScope') === 'selection' ? withLinked(s.project, s.selection) : []
     const targets = s.project.tracks.flatMap((tr) =>
       tr.locked ? [] : tr.clips.filter((c) =>
         (selIds.length === 0 || selIds.includes(c.id)) &&

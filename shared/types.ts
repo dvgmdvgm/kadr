@@ -285,6 +285,17 @@ export interface ClaudeStatus {
   legacyArgs: string[] | null
 }
 
+/** «Проверить» next to a tool path (IPC `settings:probe-tool`) */
+export interface ToolCheck {
+  ok: boolean
+  /** what ran */
+  cmd: string
+  /** the version line, trimmed; or why it did not run */
+  line: string
+  /** the untrimmed first line (a title) */
+  full?: string
+}
+
 // ---------------------------------------------------------------------------
 // Pose presets: a named snapshot of one keyframe's worth of mask/transform
 // values, stored app-wide (userData JSON), shared across projects.
@@ -1194,6 +1205,12 @@ export interface KadrApi {
   /** main's settings (shared/settings.ts): a synchronous copy for the boot, and a patch (null = default) */
   settingsGet(): SettingsSnapshot
   settingsSet(patch: Partial<Record<string, SettingValue | null>>): Promise<SettingsSnapshot>
+  /** run a tool path (empty = the one found automatically) and report its version line */
+  probeTool(key: string, value: string): Promise<ToolCheck>
+  /** quit and start again (the caller asked about unsaved work first) */
+  relaunch(): void
+  /** the page's zoom factor (the interface scale) */
+  setZoom(factor: number): void
 
   /** Render (or reuse) a reversed copy of a source range; resolves with the file path. */
   reverseMedia(
@@ -1381,6 +1398,8 @@ export interface KadrApi {
   claudeClose(): Promise<void>
   /** auth status of the configured CLI (spends no tokens) and the legacy args replace */
   claudeStatus(): Promise<ClaudeStatus>
+  /** show userData/claude-env.json in the file manager */
+  revealClaudeEnv(): void
   onClaudeData(cb: (data: string) => void): () => void
   onClaudeExit(cb: (code: number) => void): () => void
 }

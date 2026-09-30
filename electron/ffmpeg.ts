@@ -12,8 +12,16 @@ import { gainExpr } from '@shared/gainKeys'
 
 const execFileP = promisify(execFile)
 
-export const FFMPEG = process.env.KADR_FFMPEG || 'ffmpeg'
-export const FFPROBE = process.env.KADR_FFPROBE || 'ffprobe'
+export let FFMPEG = process.env.KADR_FFMPEG || 'ffmpeg'
+export let FFPROBE = process.env.KADR_FFPROBE || 'ffprobe'
+/** where the export's own temp files go (premix, filter script) */
+let TMP_DIR = ''
+/** main hands over the settings (electron/appSettings.ts); node checks keep the env defaults */
+export function configureFfmpeg(o: { ffmpeg: string; ffprobe: string; tmp: string }) {
+  FFMPEG = o.ffmpeg
+  FFPROBE = o.ffprobe
+  TMP_DIR = o.tmp
+}
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i
 
@@ -811,7 +819,7 @@ export class ExportMuxer {
     // big timelines: sum the clips ourselves, then mux that one stream
     let premix: string | null = null
     if (segs.length > PREMIX_THRESHOLD) {
-      premix = join(tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
+      premix = join(TMP_DIR || tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
       try {
         await premixSegments(segs, job.duration, premix,
           (done, total) => onProgress({ phase: 'mux', progress: 0.5 * (done / total) }),
@@ -867,7 +875,7 @@ export class ExportMuxer {
           `${labels.join('')}amix=inputs=${segs.length}:dropout_transition=0,volume=${segs.length}${tail}[aout]`
         )
       }
-      filterScript = join(tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
+      filterScript = join(TMP_DIR || tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
       await fsp.writeFile(filterScript, filters.join(';\n'))
       args.push('-filter_complex_script', filterScript)
     }

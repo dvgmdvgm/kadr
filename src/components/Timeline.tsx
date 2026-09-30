@@ -4,8 +4,16 @@ import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
 import type { AudioDefect, Clip, MediaAsset, TimelineMarker, Track } from '@shared/types'
 import {
-  useEditor, useSettings, projectDuration, snapPoints, findClip, withLinked, MAX_ZOOM
+  useEditor, useSettings, projectDuration, snapPoints, findClip, withLinked, MAX_ZOOM, setting
 } from '@/state/store'
+
+/** «Скорость клипа — перетаскивание с»: the modifier that turns an edge drag into a speed change */
+const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
+  const m = setting('mouse.speedModifier')
+  return m === 'ctrl' ? e.ctrlKey : m === 'alt' ? e.altKey : e.ctrlKey || e.altKey
+}
+/** «Радиус прилипания», in seconds at this zoom */
+const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
 import { useT, type TKey } from '@/i18n'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
@@ -85,7 +93,7 @@ function tickLabel(t: number): string {
 }
 
 function snapTime(t: number, points: number[], zoom: number): number {
-  const threshold = 10 / zoom
+  const threshold = snapRadius(zoom)
   let best = t
   let bestD = threshold
   for (const p of points) {
@@ -392,13 +400,14 @@ export function Timeline({ height }: { height: number }) {
       else gestureTimer = setTimeout(commit, 150)
     }
     const onWheel = (e: WheelEvent) => {
-      // plain wheel (and Ctrl+wheel) zooms around the cursor; Shift+wheel pans
-      if (e.shiftKey) return
+      // «Колесо на таймлайне»: the wheel (and Ctrl+wheel) zooms around the cursor and Shift pans,
+      // or the wheel scrolls and Ctrl zooms
+      if (setting('mouse.wheel') === 'scroll' ? !e.ctrlKey : e.shiftKey) return
       // the gain/opacity slider row has its own precise ±1% wheel
       if ((e.target as HTMLElement).closest?.('.track-gain-row')) return
       e.preventDefault()
       const cur = gestureRef.current?.nz ?? useEditor.getState().zoom
-      zoomGestureRef.current?.(cur * Math.exp(-e.deltaY * 0.0015), e.clientX)
+      zoomGestureRef.current?.(cur * Math.exp(-e.deltaY * 0.0015 * setting<number>('mouse.zoomSpeed')), e.clientX)
     }
     // anything else on the timeline sees the committed zoom: a click during
     // the stretch would otherwise land where the picture is not
@@ -733,7 +742,7 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           {[0.3, 0.5, 1].map((d) => (
             <button
               key={d}
-              className={Math.abs((edgeCur?.duration ?? 0.5) - d) < 0.01 ? 'dur-on' : ''}
+              className={Math.abs((edgeCur?.duration ?? setting<number>('editing.edgeDuration')) - d) < 0.01 ? 'dur-on' : ''}
               onClick={() => {
                 if (edgeCur) apply(edgeCur.type, d)
                 onClose()
@@ -1956,7 +1965,7 @@ const ClipView = memo(function ClipView({
       )
       return
     }
-    if ((e.ctrlKey || e.altKey) && w > 24 && asset && asset.kind !== 'image') {
+    if (speedModifier(e) && w > 24 && asset && asset.kind !== 'image') {
       // Ctrl/Alt+drag near EITHER edge = speed (Vegas-style time stretch) —
       // the same gesture as the extend handles, but forgiving about where
       // exactly the clip is grabbed
@@ -2023,7 +2032,8 @@ const ClipView = memo(function ClipView({
 
     const rect = e.currentTarget.getBoundingClientRect()
     const lx = e.clientX - rect.left
-    const mode: DragMode = lx < 8 && w > 24 ? 'in' : lx > rect.width - 8 && w > 24 ? 'out' : 'move'
+    const zone = setting<number>('mouse.edgeZone')
+    const mode: DragMode = lx < zone && w > 24 ? 'in' : lx > rect.width - zone && w > 24 ? 'out' : 'move'
     const grabTime = clip.start + lx / st.zoom
     st.pushHistory(mode === 'move' ? 'hMove' : 'hTrim')
 
@@ -2176,7 +2186,7 @@ const ClipView = memo(function ClipView({
     e.preventDefault()
     const st = useEditor.getState()
     if (!selected) st.select([clip.id])
-    const speedMode = (e.ctrlKey || e.altKey) && !!asset && asset.kind !== 'image'
+    const speedMode = speedModifier(e) && !!asset && asset.kind !== 'image'
     const leftTrim = edge === 'left' && !speedMode
     st.pushHistory(speedMode ? 'hSpeed' : leftTrim ? 'hTrim' : 'hResize')
     const origStart = clip.start
@@ -2227,9 +2237,9 @@ const ClipView = memo(function ClipView({
       } else {
         let nd = Math.max(0.05, origDur + dt)
         // sticky zone at the natural (source) length
-        if (isFinite(natural) && Math.abs(nd - natural) < 10 / s.zoom) nd = natural
+        if (isFinite(natural) && Math.abs(nd - natural) < snapRadius(s.zoom)) nd = natural
         const snapped = snapTime(origStart + nd, points, s.zoom) - origStart
-        if (snapped > 0.05 && Math.abs(snapped - nd) < 10 / s.zoom) nd = snapped
+        if (snapped > 0.05 && Math.abs(snapped - nd) < snapRadius(s.zoom)) nd = snapped
         s.setClipDuration(clip.id, nd) // linked partner follows
       }
     }, () => setSpeedBadge(null))

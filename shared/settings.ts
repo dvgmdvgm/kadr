@@ -8,7 +8,9 @@
 // the source); `legacy` is the localStorage key the value was migrated from.
 
 export type SettingValue = boolean | number | string
-export type SettingSection = 'general' | 'editing' | 'playback' | 'tools' | 'claude'
+export type SettingSection =
+  | 'general' | 'newProject' | 'editing' | 'mouse' | 'playback' | 'save' | 'export'
+  | 'storage' | 'tools' | 'speech' | 'claude'
 
 /** `claude.permissionMode`'s choices (electron/claudeArgs.ts re-checks them) */
 export const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan'] as const
@@ -28,6 +30,32 @@ export interface SettingDef {
 
 export const SETTINGS = {
   'general.lang': { type: 'enum', options: ['ru', 'en'], default: 'ru', section: 'general', legacy: 'kadr.lang' },
+  /** the page's zoom factor, % (webFrame.setZoomFactor) */
+  'general.uiScale': { type: 'number', min: 90, max: 150, default: 100, section: 'general' },
+  /** the two-note signal when a render finishes (src/engine/chime.ts) */
+  'general.chime': { type: 'boolean', default: true, section: 'general' },
+  /** % of the chime's own peak */
+  'general.chimeVolume': { type: 'number', min: 0, max: 100, default: 100, section: 'general' },
+  // copied into a project when it is created (store.ts newProject); the open project keeps its own
+  'newProject.width': { type: 'number', min: 16, max: 8192, default: 1920, section: 'newProject' },
+  'newProject.height': { type: 'number', min: 16, max: 8192, default: 1080, section: 'newProject' },
+  'newProject.fps': { type: 'number', min: 1, max: 240, default: 30, section: 'newProject' },
+  'newProject.background': { type: 'string', default: '#000000', section: 'newProject' },
+  'newProject.videoTracks': { type: 'number', min: 1, max: 10, default: 2, section: 'newProject' },
+  'newProject.audioTracks': { type: 'number', min: 0, max: 10, default: 1, section: 'newProject' },
+  /** seconds an image lands on the timeline for */
+  'editing.stillDuration': { type: 'number', min: 0.1, max: 3600, default: 5, section: 'editing' },
+  'editing.textDuration': { type: 'number', min: 0.1, max: 3600, default: 4, section: 'editing' },
+  /** the overlap blend a NEW clip carries (stamped into the clip, so the project looks the same everywhere) */
+  'editing.transition': { type: 'string', default: 'crossfade', section: 'editing' },
+  /** the first length of an edge (tip) transition, s */
+  'editing.edgeDuration': { type: 'number', min: 0.05, max: 10, default: 0.5, section: 'editing' },
+  /** fade-in/out of a new clip on an audio track, s */
+  'editing.fade': { type: 'number', min: 0, max: 10, default: 0, section: 'editing' },
+  /** snapping distance, screen px */
+  'editing.snapRadius': { type: 'number', min: 0, max: 50, default: 10, section: 'editing' },
+  /** S: 'selection' = the selection, or every track when nothing is selected; 'all' = every unlocked track */
+  'editing.splitScope': { type: 'enum', options: ['selection', 'all'], default: 'selection', section: 'editing' },
   /** uniform lane height for all tracks, px */
   'editing.trackHeight': { type: 'number', min: 32, max: 140, default: 56, section: 'editing', legacy: 'kadr.trackh' },
   /** clips, the range and markers snap to detected beats */
@@ -36,8 +64,51 @@ export const SETTINGS = {
   'editing.confirmDelete': { type: 'boolean', default: true, section: 'editing', legacy: 'kadr.confirmDelete' },
   /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export */
   'playback.previewLimiter': { type: 'boolean', default: true, section: 'playback', legacy: 'kadr.previewLimiter' },
+  /** the preview decodes the 540p proxy of a heavy source */
+  'playback.proxies': { type: 'boolean', default: true, section: 'playback' },
+  /** sources at or above this short side get a proxy, px */
+  'playback.proxyMinSide': { type: 'number', min: 240, max: 4320, default: 720, section: 'playback' },
+  // the timeline's mouse (Timeline.tsx)
+  /** 'zoom': the wheel zooms, Shift scrolls; 'scroll': the wheel scrolls, Ctrl zooms */
+  'mouse.wheel': { type: 'enum', options: ['zoom', 'scroll'], default: 'zoom', section: 'mouse' },
+  /** × the wheel's zoom step */
+  'mouse.zoomSpeed': { type: 'number', min: 0.25, max: 4, default: 1, section: 'mouse' },
+  /** the modifier that turns an edge drag into a speed change */
+  'mouse.speedModifier': { type: 'enum', options: ['ctrlOrAlt', 'ctrl', 'alt'], default: 'ctrlOrAlt', section: 'mouse' },
+  /** how close to a clip's edge a drag trims, px */
+  'mouse.edgeZone': { type: 'number', min: 2, max: 24, default: 8, section: 'mouse' },
+  // autosave and backups (src/engine/autosave.ts, electron/backups.ts)
+  /** minutes */
+  'save.interval': { type: 'number', min: 1, max: 60, default: 5, section: 'save' },
+  /** history moves between two backups */
+  'save.ops': { type: 'number', min: 1, max: 500, default: 25, section: 'save' },
+  'save.keep': { type: 'number', min: 1, max: 100, default: 10, section: 'save' },
+  /** MB per project */
+  'save.capMB': { type: 'number', min: 10, max: 100000, default: 500, section: 'save' },
+  // the export dialog's starting values (ExportDialog.tsx)
+  'export.preset': { type: 'string', default: 'yt1080', section: 'export' },
+  'export.motionBlur': { type: 'boolean', default: true, section: 'export' },
+  'export.frameBlending': { type: 'boolean', default: true, section: 'export' },
+  /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */
+  'storage.cacheRoot': { type: 'string', default: '', section: 'storage', restart: true },
+  /** decoded intermediates, GB */
+  'storage.decodedCapGB': { type: 'number', min: 1, max: 1000, default: 10, section: 'storage' },
+  /** the export's temp files; empty = the system temp folder */
+  'storage.tempDir': { type: 'string', default: '', section: 'storage' },
   'tools.ffmpeg': { type: 'string', default: 'ffmpeg', section: 'tools', restart: true, env: 'KADR_FFMPEG' },
   'tools.ffprobe': { type: 'string', default: 'ffprobe', section: 'tools', restart: true, env: 'KADR_FFPROBE' },
+  /** empty = found automatically (electron/speechPython.ts) */
+  'tools.speechPython': { type: 'string', default: '', section: 'tools', env: 'KADR_PYTHON' },
+  /** empty = the speech interpreter if it has torch, else python3.11 (electron/voice.ts) */
+  'tools.detectorPython': { type: 'string', default: '', section: 'tools', env: 'KADR_TTSQC_PYTHON' },
+  /** empty = ~/kadr-fragments */
+  'tools.fragmentsDir': { type: 'string', default: '', section: 'tools', restart: true, env: 'KADR_FRAGMENTS_DIR' },
+  'tools.fragmentsPort': { type: 'number', min: 1024, max: 65535, default: 5621, section: 'tools', restart: true, env: 'KADR_FRAGMENTS_PORT' },
+  // the transcribe and captions dialogs' starting values
+  'speech.model': { type: 'enum', options: ['large-v3', 'medium', 'base'], default: 'large-v3', section: 'speech' },
+  'speech.language': { type: 'enum', options: ['auto', 'ru', 'en'], default: 'auto', section: 'speech' },
+  /** 0 = whole phrases */
+  'speech.wordsPerCue': { type: 'number', min: 0, max: 4, default: 3, section: 'speech' },
   // the panel's claude (electron/claudeArgs.ts); each takes effect on the next panel open
   /** the CLI to run; wins over claude-env.json `command`; empty = `claude` */
   'claude.command': { type: 'string', default: '', section: 'claude', env: 'KADR_CLAUDE_CMD' },
@@ -56,7 +127,12 @@ export const SETTINGS = {
 export type SettingKey = keyof typeof SETTINGS
 export type SettingsDiff = Partial<Record<SettingKey, SettingValue>>
 /** what main hands the renderer: the file's diff and the env overrides */
-export interface SettingsSnapshot { user: SettingsDiff; env: SettingsDiff }
+export interface SettingsSnapshot {
+  user: SettingsDiff
+  env: SettingsDiff
+  /** the file as this run started: a `restart` setting keeps that value until the next launch */
+  boot?: SettingsDiff
+}
 export type SettingSource = 'default' | 'user' | 'env'
 
 const def = (key: string): SettingDef | undefined =>
@@ -119,3 +195,13 @@ export function effective(key: SettingKey, snap: SettingsSnapshot): { value: Set
   if (snap.user[key] !== undefined) return { value: snap.user[key]!, source: 'user' }
   return { value: SETTINGS[key].default, source: 'default' }
 }
+
+/** The value in force for this run: a `restart` setting is read as the file was at launch. */
+export function running(key: SettingKey, snap: SettingsSnapshot): SettingValue {
+  const d: SettingDef = SETTINGS[key]
+  return effective(key, d.restart && snap.boot ? { ...snap, user: snap.boot } : snap).value
+}
+
+/** A restart setting whose new value waits for the next launch. */
+export const awaitsRestart = (key: SettingKey, snap: SettingsSnapshot): boolean =>
+  running(key, snap) !== effective(key, snap).value

@@ -1,7 +1,12 @@
 // Render-done chime: a short, gentle two-note signal when an export
 // finishes, loud enough to hear from across the room. WebAudio only — no
 // asset files; Electron's autoplay policy allows it without a gesture.
+import { setting } from '@/state/store'
+
 export function playDoneChime() {
+  // «Общие» → the signal on/off and its volume (% of the peak below)
+  if (setting('general.chime') !== true) return
+  const vol = setting<number>('general.chimeVolume') / 100
   try {
     const ctx = new AudioContext()
     const t0 = ctx.currentTime + 0.02
@@ -17,8 +22,8 @@ export function playDoneChime() {
       osc.start(at)
       osc.stop(at + dur + 0.05)
     }
-    note(660, t0, 0.45, 0.22)
-    note(880, t0 + 0.18, 0.7, 0.22)
+    note(660, t0, 0.45, 0.22 * vol)
+    note(880, t0 + 0.18, 0.7, 0.22 * vol)
     setTimeout(() => void ctx.close(), 1600)
     ;(window as unknown as { __kadrChimeAt?: number }).__kadrChimeAt = Date.now()
   } catch { /* audio device busy/absent — silence is fine */ }

@@ -1,12 +1,11 @@
 import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard } from 'electron'
 import { join, dirname, basename } from 'path'
 import { promises as fs, createReadStream, statSync, existsSync, appendFileSync } from 'fs'
-import { tmpdir } from 'os'
 import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic
+  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg
 } from './ffmpeg'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
@@ -26,7 +25,9 @@ import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
 import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
 import { argvProject } from '@shared/argvProject'
-import { openSettings, type SettingsStore } from './settings'
+import type { SettingsStore } from './settings'
+import { appSettings, cacheDir, setting, tempDir } from './appSettings'
+import { probeTool } from './toolCheck'
 import type { ExportJob, Project } from '@shared/types'
 
 // Streamed local media under a privileged scheme so the renderer can play
@@ -291,11 +292,15 @@ function mediaResponse(filePath: string, rangeHeader: string | null): Response {
   })
 }
 
+// the ffmpeg module is electron-free (node checks bundle it): hand it the settings
+const syncFfmpeg = () => configureFfmpeg({ ffmpeg: setting('tools.ffmpeg'), ffprobe: setting('tools.ffprobe'), tmp: tempDir() })
+
 // read before any window exists (shared/settings.ts, the diff in userData/settings.json)
 let settings: SettingsStore
 
 app.whenReady().then(() => {
-  settings = openSettings(app.getPath('userData'))
+  settings = appSettings()
+  syncFfmpeg()
   protocol.handle('kadr', (request) => {
     const url = new URL(request.url)
     if (url.searchParams.get('t') !== MEDIA_TOKEN) {
@@ -395,7 +400,7 @@ const userStorePath = (name: string) =>
   join(app.getPath('userData'), `${name.replace(/[^a-z0-9-]/gi, '')}.json`)
 
 // preview proxies: keyed by source identity, built one at a time (weak CPU)
-const proxyDir = () => join(app.getPath('userData'), 'proxies')
+const proxyDir = () => cacheDir('proxies')
 let proxyChain: Promise<unknown> = Promise.resolve()
 
 async function requestProxy(
@@ -441,7 +446,7 @@ async function requestProxy(
 // full-res H.264 intermediates for sources Chromium cannot decode (export
 // reads these instead of the original video stream; audio still reads the
 // original). Same identity key and queue discipline as proxies.
-const decodedDir = () => join(app.getPath('userData'), 'decoded')
+const decodedDir = () => cacheDir('decoded')
 let decodedChain: Promise<unknown> = Promise.resolve()
 
 async function requestDecoded(
@@ -513,9 +518,9 @@ async function requestDecoded(
  * startup only — nothing can be reading these files yet — and drops the
  * least recently touched entries until the folder is back under the cap.
  */
-const DECODED_CACHE_CAP = 10e9
-
 async function pruneDecodedCache(): Promise<void> {
+  // «Хранилище и кэш» → the decoded cap (GB)
+  const DECODED_CACHE_CAP = setting<number>('storage.decodedCapGB') * 1e9
   try {
     const dir = decodedDir()
     const names = await fs.readdir(dir)
@@ -545,8 +550,7 @@ async function pruneDecodedCache(): Promise<void> {
  * Directories (the reverse worker's scratch `.tmp` dir) are left alone.
  */
 async function sweepPartFiles(): Promise<void> {
-  const dirs = ['decoded', 'proxies', 'reversed', 'fragment-renders']
-    .map((d) => join(app.getPath('userData'), d))
+  const dirs = [...['decoded', 'proxies', 'fragment-renders'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
   let dropped = 0
   for (const dir of dirs) {
     let names: string[]
@@ -692,7 +696,15 @@ function registerIpc() {
   ipcMain.on('media:token', (e) => { e.returnValue = MEDIA_TOKEN })
   // sync on purpose: the renderer's store is built from it before the first frame
   ipcMain.on('settings:get', (e) => { e.returnValue = settings.snapshot() })
-  ipcMain.handle('settings:set', (_e, patch) => settings.set(patch))
+  ipcMain.handle('settings:set', async (_e, patch) => { const s = await settings.set(patch); syncFfmpeg(); return s })
+  // «Проверить» next to a tool path: its version line, or why it did not answer
+  ipcMain.handle('settings:probe-tool', (_e, key: string, value: string) => probeTool(String(key), String(value ?? '')))
+  // «Перезапустить Kadr»: the page already asked about unsaved work
+  ipcMain.on('app:relaunch', () => {
+    app.relaunch()
+    closeAllowed = true
+    win?.close()
+  })
   ipcMain.on('app:close-guard', () => { closeGuard = true })
   // the launch's own .kadr — handed out once (StrictMode asks twice in dev)
   ipcMain.handle('app:argv-project', () => { const p = pendingOpen; pendingOpen = null; return p })
@@ -918,7 +930,7 @@ function registerIpc() {
 
   ipcMain.handle('export:begin', async (_e, job: ExportJob) => {
     await cleanupExport()
-    const videoTemp = join(tmpdir(), `kadr-export-${Date.now()}.mp4`)
+    const videoTemp = join(tempDir(), `kadr-export-${Date.now()}.mp4`)
     const fh = job.preset.audioOnly ? null : await fs.open(videoTemp, 'w')
     exportState = {
       job, videoTemp, fh, muxer: null, raw: null, rawEncoded: false,

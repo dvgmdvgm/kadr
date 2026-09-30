@@ -21,6 +21,7 @@ import type {
 import { spliceForward, toAnalysisTime, type SpliceUnitMap } from '@shared/voiceMap'
 import { FFMPEG, FFPROBE, audioCodecArgs } from './ffmpeg'
 import { speechPython } from './transcribe'
+import { setting } from './appSettings'
 import { pyLabel, detectorPython, type PyCmd } from './speechPython'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -35,8 +36,9 @@ const CACHE_DAYS = 14
 
 const driver = () => join(app.getAppPath(), 'scripts', 'ttsqc_run.py')
 let detector: Promise<PyCmd> | null = null
-async function pythonFor(want?: string): Promise<PyCmd> {
-  const set = (want && want.trim()) || process.env.KADR_TTSQC_PYTHON
+export async function pythonFor(want?: string): Promise<PyCmd> {
+  // «Инструменты» → Python for the voice-over check (env KADR_TTSQC_PYTHON wins)
+  const set = (want && want.trim()) || setting<string>('tools.detectorPython')
   if (set) return { command: set, args: [] }
   // probed once per launch (importing torch takes seconds)
   detector ??= detectorPython(process.env, speechPython, DEFAULT_PYTHON)

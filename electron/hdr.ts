@@ -8,7 +8,7 @@
 //
 // The conversion itself — a 3D LUT computed in closed form, since ffmpeg 4.3
 // here has no zscale — is in shared/hdr.ts (checked by scripts/check-hdr.mjs).
-import { app } from 'electron'
+import { cacheDir } from './appSettings'
 import { promises as fs, statSync } from 'fs'
 import { join } from 'path'
 import { execFile } from 'child_process'
@@ -42,7 +42,7 @@ const LUT_SIZE = 33
 
 /** The .cube file for a transfer (written once into userData/luts). */
 export async function hdrLut(kind: HdrKind): Promise<string> {
-  const dir = join(app.getPath('userData'), 'luts')
+  const dir = cacheDir('luts')
   const path = join(dir, `${kind}-to-sdr709-v${HDR_VERSION}.cube`)
   try { await fs.access(path); return path } catch { /* build it */ }
   await fs.mkdir(dir, { recursive: true })

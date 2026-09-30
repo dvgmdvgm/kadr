@@ -25,7 +25,7 @@ const FOCUSABLE =
  * dialogs had on their own.
  */
 export function Modal({
-  title, onClose, children, actions, className, wide, closeDisabled, titleIcon
+  title, onClose, children, actions, className, wide, closeDisabled, titleIcon, bare
 }: {
   title: string
   onClose: () => void
@@ -36,6 +36,8 @@ export function Modal({
   /** true while an operation must not be interrupted (an export in flight) */
   closeDisabled?: boolean
   titleIcon?: ReactNode
+  /** the children lay out the body themselves (a sidebar beside a `.modal-body`) */
+  bare?: boolean
 }) {
   const t = useT()
   const box = useRef<HTMLDivElement>(null)
@@ -106,7 +108,7 @@ export function Modal({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        {bare ? children : <div className="modal-body">{children}</div>}
         {actions && <div className="modal-foot"><div className="modal-actions">{actions}</div></div>}
       </div>
     </div>

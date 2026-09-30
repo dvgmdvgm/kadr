@@ -185,12 +185,6 @@ export function TtsSettingsDialog() {
       </label>
 
       <label className="insp-field">
-        <span>{t('ttsPython')}</span>
-        <input value={settings.ttsqcPython} placeholder="python3.11"
-               onChange={(e) => update({ ttsqcPython: e.target.value })} style={{ flex: 1 }} />
-      </label>
-      <div className="dim hint-inline">{t('ttsPythonHint')}</div>
-      <label className="insp-field">
         <span>{t('ttsProxy')}</span>
         <input value={settings.proxy} placeholder="http://127.0.0.1:1080"
                onChange={(e) => update({ proxy: e.target.value })} style={{ flex: 1 }} />

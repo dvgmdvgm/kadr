@@ -7,7 +7,7 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { atomicWrite } from './atomicWrite'
 import {
-  effective, envValues, healValue, sanitizeSettings, SETTINGS,
+  effective, envValues, healValue, running, sanitizeSettings, SETTINGS,
   type SettingKey, type SettingsDiff, type SettingsSnapshot, type SettingValue
 } from '@shared/settings'
 
@@ -29,13 +29,16 @@ export function openSettings(
     if (healed) warn(`${path}: ${healed} unreadable value(s) replaced by defaults`)
   }
   const envVals = envValues(env)
+  const boot = { ...user }
   let chain: Promise<unknown> = Promise.resolve()
 
-  const snapshot = (): SettingsSnapshot => ({ user: { ...user }, env: { ...envVals } })
+  const snapshot = (): SettingsSnapshot => ({ user: { ...user }, env: { ...envVals }, boot: { ...boot } })
 
   return {
     snapshot,
     effective: (key: SettingKey) => effective(key, snapshot()),
+    /** the value in force for this run (a restart setting as it was at launch) */
+    running: (key: SettingKey) => running(key, snapshot()),
     /** Merge a patch (null = back to the default); unknown keys and bad values are ignored. Writes serialize. */
     set(patch: SettingsPatch): Promise<SettingsSnapshot> {
       const next = { ...user }

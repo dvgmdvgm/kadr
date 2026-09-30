@@ -16,6 +16,7 @@ import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
 import { useCaptionsUi } from '../components/CaptionsDialog'
 import { useTextUi } from '../components/TextTools'
+import { useSettingsUi } from '../components/SettingsDialog'
 import { modalsOpen } from '../components/Modal'
 import { logError, logWarn } from './log'
 import { saveUserStore } from './userStore'
@@ -71,6 +72,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   'playhead.fwd1s': { run: (s) => s.setPlayhead(s.playhead + 1) },
   'playhead.start': { run: (s) => s.setPlayhead(0) },
   'edit.escape': { run: (s) => { if (s.animClipId) s.setAnimClip(null); else s.setRange(null) } },
+  'app.settings': { run: () => useSettingsUi.getState().setOpen(true) },
   'file.new': { run: () => appCommands.newProject() },
   'file.open': { run: () => appCommands.openProject() },
   'file.export': { run: (s) => s.setExportOpen(true) },

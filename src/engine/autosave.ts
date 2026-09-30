@@ -5,7 +5,7 @@
 // paused for a Claude session: every edit replaces the project object
 // wholesale (zustand), so a tick can never catch a half-applied change.
 import type { Project } from '@shared/types'
-import { useEditor } from '@/state/store'
+import { useEditor, setting } from '@/state/store'
 import { logWarn } from './log'
 
 /** Heavy activities flip these; autosave skips its tick while any is set. */
@@ -15,9 +15,8 @@ export const activity = {
   voiceCheck: false
 }
 
-const INTERVAL_MS = 5 * 60 * 1000
-/** undo steps between two backups (Kdenlive's rule); both values become settings in D5 */
-const OPS_PER_BACKUP = 25
+// «Сохранение и копии»: minutes between two ticks, and history moves between two backups (Kdenlive's rule)
+const intervalMs = () => setting<number>('save.interval') * 60 * 1000
 
 let lastSnapshot: Project | null = null
 let busy = false
@@ -41,11 +40,13 @@ async function tick() {
 }
 
 export function wireAutosave() {
-  setInterval(() => void tick(), INTERVAL_MS)
+  // re-armed after every tick, so a changed interval applies from the next one
+  const arm = () => setTimeout(() => { void tick(); arm() }, intervalMs())
+  arm()
   // every history move counts (push, undo, redo): `past` is a new array each time
   let ops = 0
   useEditor.subscribe((s, prev) => {
-    if (s.past !== prev.past && ++ops >= OPS_PER_BACKUP) { ops = 0; void tick() }
+    if (s.past !== prev.past && ++ops >= setting<number>('save.ops')) { ops = 0; void tick() }
   })
 }
 

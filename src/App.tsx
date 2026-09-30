@@ -17,6 +17,7 @@ import { TtsSettingsDialog, SpeakDialog, refreshTtsKey } from './components/TtsD
 import { DefectsDialog } from './components/DefectsDialog'
 import { DebugPanel } from './components/DebugPanel'
 import { StoragePanel } from './components/StoragePanel'
+import { SettingsDialog, useSettingsUi } from './components/SettingsDialog'
 import { RelinkDialog } from './components/RelinkDialog'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
@@ -238,6 +239,7 @@ export default function App() {
   const [claudeOpen, setClaudeOpen] = useState(false)
   const [debugOpen, setDebugOpen] = useState(false)
   const [storageOpen, setStorageOpen] = useState(false)
+  const settingsOpen = useSettingsUi((s) => s.open)
   const popWin = usePopout((s) => s.win)
   // the log button stays quiet until something actually fails
   const logUnseen = useLog((s) => s.unseen)
@@ -384,6 +386,15 @@ export default function App() {
           <Icon name="layers" />
         </button>
         <button
+          className={`icon-only log-btn${settingsOpen ? ' active' : ''}`}
+          data-act="settings"
+          title={t('setBtn')}
+          aria-label={t('setBtn')}
+          onClick={() => useSettingsUi.getState().setOpen(!settingsOpen)}
+        >
+          <Icon name="settings" />
+        </button>
+        <button
           className={`icon-only log-btn${logUnseen ? ' has-news' : ''}${debugOpen ? ' active' : ''}`}
           data-act="debug"
           title={t('logBtn')}
@@ -441,6 +452,10 @@ export default function App() {
       {claudeOpen && <ClaudePanel key={project.id} onClose={() => setClaudeOpen(false)} />}
       {debugOpen && <DebugPanel onClose={() => setDebugOpen(false)} />}
       {storageOpen && <StoragePanel onClose={() => setStorageOpen(false)} />}
+      <SettingsDialog
+        onOpenStorage={() => setStorageOpen(true)}
+        onRelaunch={() => void confirmDiscard().then((go) => go && window.kadr.relaunch())}
+      />
       {/* The preview renders into one host div for the whole session; popping
           it out moves that div into another window's document, and the portal
           container never changes identity — so the GL canvas, its context and

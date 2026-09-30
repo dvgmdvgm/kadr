@@ -1,4 +1,5 @@
 import { app, ipcMain, shell } from 'electron'
+import { setting } from './appSettings'
 import { promises as fs, readFileSync, writeFileSync, rmSync } from 'fs'
 import { join, resolve, sep } from 'path'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
@@ -48,7 +49,8 @@ export async function writeBackup(json: string, mainPath: string | null, project
     if (!name.endsWith('.kadr')) continue
     try { const st = await fs.stat(join(dir, name)); files.push({ name, size: st.size, mtime: st.mtimeMs }) } catch { /* gone */ }
   }
-  for (const f of backupsToPrune(files)) await fs.rm(join(dir, f.name), { force: true }).catch(() => {})
+  // «Сохранение и копии» → how many versions, how many MB
+  for (const f of backupsToPrune(files, setting<number>('save.keep'), setting<number>('save.capMB') * 1024 * 1024)) await fs.rm(join(dir, f.name), { force: true }).catch(() => {})
   return out
 }
 

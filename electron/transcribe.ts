@@ -9,15 +9,20 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { ExportMuxer, mixdownWav } from './ffmpeg'
 import { resolveSpeechPython, pyLabel, type SpeechPython } from './speechPython'
+import { setting } from './appSettings'
 import type { TranscribeRequest, TranscribeResult, TranscribeSegment } from '@shared/types'
 
 // resolved once per launch; a miss is not cached, so installing faster-whisper
 // needs no restart
+// «Инструменты» → Python for speech (env KADR_PYTHON wins); a changed value resolves afresh
 let resolved: Promise<SpeechPython> | null = null
+let resolvedFor = ''
 export function speechPython(): Promise<SpeechPython> {
-  if (!resolved) {
-    const r = resolveSpeechPython({ env: process.env, platform: process.platform, appPath: app.getAppPath() })
+  const want = setting<string>('tools.speechPython')
+  if (!resolved || resolvedFor !== want) {
+    const r = resolveSpeechPython({ env: { ...process.env, KADR_PYTHON: want }, platform: process.platform, appPath: app.getAppPath() })
     resolved = r
+    resolvedFor = want
     void r.then((v) => { if ('error' in v && resolved === r) resolved = null })
   }
   return resolved

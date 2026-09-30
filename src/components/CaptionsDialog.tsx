@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { create } from 'zustand'
-import { useEditor, projectDuration } from '@/state/store'
+import { useEditor, projectDuration, setting } from '@/state/store'
 import { autoCaptions, CAPTION_DEFAULTS, type CaptionStyle } from '@/engine/captions'
 import { useT } from '@/i18n'
 import { Icon } from './icons'
@@ -20,6 +20,13 @@ export function CaptionsDialog() {
   const [model, setModel] = useState('large-v3')
   const [language, setLanguage] = useState('auto')
   const [running, setRunning] = useState(false)
+  // «Распознавание речи» settings: each opening starts from them
+  useEffect(() => {
+    if (!open) return
+    setModel(setting<string>('speech.model'))
+    setLanguage(setting<string>('speech.language'))
+    setMaxWords(setting<number>('speech.wordsPerCue'))
+  }, [open])
   const [progress, setProgress] = useState(0)
   const [liveText, setLiveText] = useState('')
   const [error, setError] = useState('')

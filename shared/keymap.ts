@@ -44,6 +44,7 @@ export const ACTIONS = [
   { id: 'playhead.fwd1s', labelKey: 'actFwd1s', context: g, defaultKeys: [k('ArrowRight', { shift: true })], prevent: true },
   { id: 'playhead.start', labelKey: 'toStart', context: g, defaultKeys: [k('Home')], prevent: true },
   { id: 'edit.escape', labelKey: 'actEscape', context: g, defaultKeys: [k('Escape')] },
+  { id: 'app.settings', labelKey: 'setTitle', context: g, defaultKeys: [k('Comma', ctrl)], prevent: true },
   // no key yet — listed so the command palette can find them
   { id: 'file.new', labelKey: 'newProject', context: g, defaultKeys: [] },
   { id: 'file.open', labelKey: 'actOpen', context: g, defaultKeys: [] },

@@ -2,7 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App, { openProjectAt } from './App'
 import { runAction, useKeymap, setActionKeys } from './engine/actions'
-import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints } from './state/store'
+import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints, setting } from './state/store'
 import { PRESETS } from './presets'
 import { startExport } from './engine/exporter'
 import { evalAnim } from './engine/anim'
@@ -46,6 +46,16 @@ import { loadSoundLibrary, findSfx, addSound, setSoundMeta, sfxFamilies, SFX_FAM
 import { useSoundsUi } from './components/SoundsDialog'
 
 wireLog()   // first: everything below may want to report a failure
+// «Масштаб интерфейса»: the page's zoom factor, now and on every change
+{
+  let scale = 0
+  const applyScale = () => {
+    const v = setting<number>('general.uiScale')
+    if (v !== scale) { scale = v; window.kadr.setZoom?.(v / 100) }
+  }
+  applyScale()
+  useSettings.subscribe(applyScale)
+}
 wirePreviewLimiter(limiterUrl)
 wireProxies()
 wireFragmentCapture()
@@ -85,6 +95,8 @@ wireOffline()
   useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink,
   // the action registry: any action by id, the keymap diff, rebinding
   runAction, useKeymap, setActionKeys,
+  // the settings (shared/settings.ts): `settings.effective(key)`, `settings.set(key, value | null)`
+  settings: useSettings.getState(), setting,
   reverseClip, importFiles, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,

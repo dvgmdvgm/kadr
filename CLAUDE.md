@@ -20,6 +20,7 @@ mixes audio and muxes/transcodes per preset.
   `node scripts/check-envelope.mjs` (loudness envelope),
   `check-ttstext.mjs` (text splitting), `check-proxy.mjs` (proxy choice),
   `check-voicemap.mjs` (time remapping after a splice),
+  `check-settings-wiring.mjs` (every setting has a consumer and a row),
   `check-chats.mjs` (Claude chats round-tripping through the .kadr);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position);
@@ -459,7 +460,20 @@ mixes audio and muxes/transcodes per preset.
   once on boot and are removed only after main wrote them — localStorage
   loses writes on a hard kill (seen live), so it is never a second source of
   truth. Layout conveniences (`kadr.tlh`, `kadr.sidew`, …) stay there.
-  Test: `node scripts/check-settings.mjs`.
+  THE SCREEN is `src/components/SettingsDialog.tsx` (Ctrl+, / the gear; the
+  `app.settings` action), landed from canvas D: every row shows its source
+  (default / yours / the env variable, which locks it) and a `restart` row
+  keeps its launch value (`running`, `snapshot().boot`) until «Перезапустить
+  Kadr» (`app.relaunch()` after the unsaved-work question). Main reads the
+  store at USE time through `electron/appSettings.ts` (`setting`, `cacheDir`
+  for the rebuildable caches, `tempDir`) — module imports run before
+  KADR_USER_DATA is applied; `electron/ffmpeg.ts` stays electron-free (node
+  checks bundle it) and is handed its binaries by `configureFfmpeg`. The
+  renderer reads `setting(key)` from the store. A default transition is
+  STAMPED into each new clip (`transitionIn` of duration 0), never read at
+  render time, so a project looks the same on every machine.
+  Tests: `node scripts/check-settings.mjs`, `check-settings-wiring.mjs` (every
+  schema key has a consumer and a row).
 - `src/state/store.ts` — zustand store. Undo convention: callers invoke
   `pushHistory(labelKey)` once before a discrete edit; high-level actions
   push their own. `sanitizeProject` heals foreign/script-written projects

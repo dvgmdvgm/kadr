@@ -3,11 +3,10 @@
 // reading the original (WYSIWYG quality).
 import { create } from 'zustand'
 import type { MediaAsset } from '@shared/types'
-import { useEditor } from '@/state/store'
+import { useEditor, useSettings, setting } from '@/state/store'
+import { previewPrefs } from './player'
 import { chromiumCanDecode } from './codecs'
 
-/** sources at or above this short-side size get a preview proxy */
-const PROXY_MIN_SIDE = 720
 
 interface ProxyProgressState {
   /** asset id → 0..1 while a proxy is being generated */
@@ -23,7 +22,8 @@ export function wantsProxy(a: MediaAsset): boolean {
   if (!chromiumCanDecode(a.codec)) return true
   // an HDR source looks flat and wrong played as it is: its proxy is tone-mapped (electron/hdr.ts)
   if (a.hdr) return true
-  return Math.min(a.width, a.height) >= PROXY_MIN_SIDE
+  // «Прокси при воспроизведении» and its short-side threshold
+  return setting('playback.proxies') === true && Math.min(a.width, a.height) >= setting<number>('playback.proxyMinSide')
 }
 
 const inflight = new Set<string>()
@@ -93,6 +93,12 @@ let wired = false
 export function wireProxies() {
   if (wired) return
   wired = true
+  const sync = () => {
+    const on = setting('playback.proxies') === true
+    if (on !== previewPrefs.proxies) { previewPrefs.proxies = on; ensureProxies() }
+  }
+  sync()
+  useSettings.subscribe(sync)
   window.kadr.onProxyProgress(({ path, progress }) => {
     const a = useEditor.getState().project.assets.find((x) => x.path === path)
     if (a && inflight.has(a.id)) {

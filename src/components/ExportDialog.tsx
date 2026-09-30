@@ -3,7 +3,7 @@ import type { ExportProgress } from '@shared/types'
 import { PRESETS } from '@/presets'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
-import { useEditor } from '@/state/store'
+import { useEditor, setting } from '@/state/store'
 import { useT } from '@/i18n'
 import { Icon } from './icons'
 import { Modal } from './Modal'
@@ -24,6 +24,14 @@ export function ExportDialog() {
   const [motionBlur, setMotionBlur] = useState(true)
   const [frameBlending, setFrameBlending] = useState(true)
   const [fastEncoder, setFastEncoder] = useState(false)
+  // «Экспорт» settings: each opening starts from them
+  useEffect(() => {
+    if (!open) return
+    const p = setting<string>('export.preset')
+    setPresetId(PRESETS.some((x) => x.id === p) ? p : PRESETS[0].id)
+    setMotionBlur(setting('export.motionBlur') === true)
+    setFrameBlending(setting('export.frameBlending') === true)
+  }, [open])
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const handle = useRef<ExportHandle | null>(null)
 

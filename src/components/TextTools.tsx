@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import type { SubCue, TextDoc } from '@shared/types'
-import { useEditor } from '@/state/store'
+import { useEditor, setting } from '@/state/store'
 import {
   transcribeFlow, type TranscribeFlowOpts,
   parseSrt, cuesToSrt, srtTime, parseSrtTime, docTimeToProject
@@ -40,6 +40,13 @@ export function TranscribeDialog() {
   const [progress, setProgress] = useState(0)
   const [liveText, setLiveText] = useState('')
   const [error, setError] = useState('')
+  // «Распознавание речи» settings: each opening starts from them
+  useEffect(() => {
+    if (!target) return
+    setModel(setting<string>('speech.model'))
+    setLanguage(setting<string>('speech.language'))
+    setMaxWords(setting<number>('speech.wordsPerCue'))
+  }, [target])
 
   useEffect(() => {
     if (!running) return

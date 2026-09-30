@@ -6,7 +6,7 @@
 // only set it or ask whether one exists. Everything here is scriptable through
 // kadr_eval, so anything held here is effectively public to the page.
 import { create } from 'zustand'
-import { useEditor, uid } from '../state/store'
+import { useEditor, useSettings, uid } from '../state/store'
 import { dirOf, baseOf } from '@shared/paths'
 import { parseSrt } from './subtitles'
 import { saveUserStore } from './userStore'
@@ -114,6 +114,12 @@ export const useTtsSettings = create<TtsSettingsState>((set) => ({
     const fromFile = await window.kadr.readUserStore(TTS_FILE)
     if (fromFile && typeof fromFile === 'object') {
       const settings = sanitizeTtsSettings(fromFile)
+      // the detector's Python moved to the settings («Инструменты»); a value set here goes over once
+      if (settings.ttsqcPython) {
+        if (useSettings.getState().effective('tools.detectorPython').source === 'default') useSettings.getState().set('tools.detectorPython', settings.ttsqcPython)
+        settings.ttsqcPython = ''
+        persistTts(settings)
+      }
       useTtsSettings.setState({ settings })
       try {
         localStorage.setItem(TTS_LS_KEY, JSON.stringify(settings))
