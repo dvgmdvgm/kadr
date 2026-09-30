@@ -32,11 +32,11 @@ export function gainKeys(a: Anim, from: number, to: number, at: (t: number) => n
   for (let i = 0; i < kfs.length; i++) {
     const k = kfs[i]
     if (inside(k.time)) {
-      if (i > 0 && kfs[i - 1].easing === 'hold' && !a.smooth) push(k.time, kfs[i - 1].value) // the step
+      if (i > 0 && kfs[i - 1].easing === 'hold') push(k.time, kfs[i - 1].value) // the step
       push(k.time, at(k.time))
     }
     const k1 = kfs[i + 1]
-    if (!k1 || (k.easing === 'linear' && !a.smooth) || (k.easing === 'hold' && !a.smooth)) continue
+    if (!k1 || (k.easing === 'linear' && !a.smooth) || k.easing === 'hold') continue
     const span = k1.time - k.time
     const n = Math.min(MAX_PIECES, Math.max(1, Math.ceil(span / MIN_PIECE)))
     for (let j = 1; j < n; j++) {

@@ -16,6 +16,23 @@ export function upsertKf(a: Anim, time: number, value: number, easing: Easing = 
   return { ...a, keyframes: kfs }
 }
 
+const atAny = (t: number, times: number[]) => times.some((x) => Math.abs(x - t) < KF_EPS)
+
+/** Give every key at one of `times` this easing (it shapes the segment the key starts). */
+export function setKfEasing(a: Anim, times: number[], easing: Easing): Anim {
+  if (!a.keyframes?.some((k) => atAny(k.time, times))) return a
+  return { ...a, keyframes: a.keyframes.map((k) => (atAny(k.time, times) ? { ...k, easing } : k)) }
+}
+
+/** The easing of the first key found at `time`, for the menu's check mark. */
+export function kfEasingAt(anims: Anim[], time: number): Easing | undefined {
+  for (const a of anims) {
+    const k = a.keyframes?.find((kf) => Math.abs(kf.time - time) < KF_EPS)
+    if (k) return k.easing
+  }
+  return undefined
+}
+
 /**
  * Apply a new value. A parameter that already has keyframes always records a
  * state at the given time; `linked` controls whether static params start

@@ -25,7 +25,8 @@ export function evalAnim(a: Anim | number | undefined, t: number): number {
     if (t >= k0.time && t < k1.time) {
       const span = k1.time - k0.time
       let f = span > 0 ? (t - k0.time) / span : 0
-      if (a.smooth) {
+      // a key given its own easing keeps it on its segment, smooth or not
+      if (a.smooth && k0.easing === 'linear') {
         // parabolic feel: long build-up of speed, short crisp settle
         const isFirst = i === 0
         const isLast = i === kfs.length - 2

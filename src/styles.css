@@ -2588,6 +2588,7 @@ div.tr-error {
   z-index: 1;
 }
 .mini-kf.on { background: var(--c-on-solid); }
+.mini-kf.sel { outline: 2px solid var(--c-text); outline-offset: 1px; }
 .mini-ph {
   position: absolute;
   top: 0;

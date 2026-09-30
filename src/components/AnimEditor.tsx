@@ -3,13 +3,15 @@
 // borders, snapping to the frame and to other layers, and a zoomable
 // mini-timeline with draggable keyframe diamonds.
 import { useEffect, useRef, useState } from 'react'
-import type { Anim, Clip, Keyframe, MaskShape, MaskShapeType } from '@shared/types'
+import type { Anim, Clip, Easing, Keyframe, MaskShape, MaskShapeType } from '@shared/types'
 import { useEditor, findClip, usePosePresets, type PosePreset } from '@/state/store'
 import { evalAnim } from '@/engine/anim'
 import { videoLayersAt } from '@/engine/player'
 import { useT, type TKey } from '@/i18n'
 import { Icon, type IconName } from './icons'
 import { CtxMenu } from './CtxMenu'
+import { KfMenu, EASE_LABEL } from './KfMenu'
+import { kfEasingAt, setKfEasing } from './animUtils'
 
 const KF_EPS = 0.02
 
@@ -152,6 +154,9 @@ export function AnimEditor({ width }: { width: number }) {
   const [stageZoom, setStageZoom] = useState(DEFAULT_STAGE_ZOOM)
   const [selShape, setSelShape] = useState(0)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null)
+  // selected diamonds (one row at a time) and the diamond menu
+  const [kfSel, setKfSel] = useState<{ row: string; times: number[] }>({ row: '', times: [] })
+  const [kfMenu, setKfMenu] = useState<{ x: number; y: number; row: string; times: number[] } | null>(null)
   const [presetMenu, setPresetMenu] = useState<{ x: number; y: number } | null>(null)
   const [presetName, setPresetName] = useState('')
   const posePresets = usePosePresets((s) => s.presets)
@@ -171,6 +176,8 @@ export function AnimEditor({ width }: { width: number }) {
       setSelShape(0)
       setStageZoom(DEFAULT_STAGE_ZOOM)
       setPresetMenu(null)
+      setKfSel({ row: '', times: [] })
+      setKfMenu(null)
     }
   }, [clipId])
 
@@ -680,7 +687,7 @@ export function AnimEditor({ width }: { width: number }) {
   const rowT = kfTimes(transformDefs)
   const rowM = kfTimes(maskDefs)
 
-  const removeKfsAt = (defs: ParamDef[], time: number) => {
+  const removeKfsAt = (defs: ParamDef[], times: number[]) => {
     push('hKeyframe')
     const st = useEditor.getState()
     const f = findClip(st.project, clip.id)
@@ -690,15 +697,42 @@ export function AnimEditor({ width }: { width: number }) {
     for (const p of defs) {
       const a = p.get(c)
       if (!a.keyframes?.length) continue
-      const left = a.keyframes.filter((kf) => Math.abs(kf.time - time) >= KF_EPS)
+      const left = a.keyframes.filter((kf) => times.every((time) => Math.abs(kf.time - time) >= KF_EPS))
       const na = left.length
         ? { ...a, keyframes: left }
-        : { ...a, value: evalAnim(a, time), keyframes: undefined }
+        : { ...a, value: evalAnim(a, times[0]), keyframes: undefined }
       patch = { ...patch, ...p.patch(c, na) }
       c = { ...c, ...patch }
     }
     st.updateClip(clip.id, patch)
   }
+
+  const setEasingAt = (defs: ParamDef[], times: number[], easing: Easing) => {
+    push('hKeyframe')
+    const st = useEditor.getState()
+    const f = findClip(st.project, clip.id)
+    if (!f) return
+    let c = { ...f.clip }
+    let patch: Partial<Clip> = {}
+    for (const p of defs) {
+      const a = p.get(c)
+      const na = setKfEasing(a, times, easing)
+      if (na === a) continue
+      patch = { ...patch, ...p.patch(c, na) }
+      c = { ...c, ...patch }
+    }
+    st.updateClip(clip.id, patch)
+  }
+
+  /** Ctrl/Shift+click toggles a diamond in the selection; a plain press selects it alone */
+  const pickKf = (row: string, tt: number, add: boolean) =>
+    setKfSel((s) => {
+      if (!add || s.row !== row) return { row, times: [tt] }
+      const has = s.times.some((x) => Math.abs(x - tt) < KF_EPS)
+      return { row, times: has ? s.times.filter((x) => Math.abs(x - tt) >= KF_EPS) : [...s.times, tt] }
+    })
+  const closeKfMenu = () => setKfMenu(null)
+  const isSel = (row: string, tt: number) => kfSel.row === row && kfSel.times.some((x) => Math.abs(x - tt) < KF_EPS)
 
   const retimeKfs = (defs: ParamDef[], from: number, to: number) => {
     const st = useEditor.getState()
@@ -742,10 +776,12 @@ export function AnimEditor({ width }: { width: number }) {
     })
   }
 
-  const startKfDrag = (defs: ParamDef[], tt: number) => (e: React.PointerEvent) => {
+  const startKfDrag = (row: string, defs: ParamDef[], tt: number) => (e: React.PointerEvent) => {
     if (e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return pickKf(row, tt, true)
+    pickKf(row, tt, false)
     const lane = (e.currentTarget as HTMLElement).closest('.mini-lane') as HTMLElement
     let cur0 = tt
     let pushed = false
@@ -772,6 +808,7 @@ export function AnimEditor({ width }: { width: number }) {
       (moved) => {
         useEditor.getState().setKfMarker(null)
         if (!moved) useEditor.getState().setPlayhead(clip.start + tt)
+        else setKfSel({ row, times: [cur0] })
       }
     )
   }
@@ -1127,7 +1164,7 @@ export function AnimEditor({ width }: { width: number }) {
             title={t('kfDelete')}
             disabled={!(mode === 'transform' ? rowT : rowM).some((x) => Math.abs(x - rel) < KF_EPS)}
             aria-label={t('kfDelete')}
-            onClick={() => removeKfsAt(mode === 'transform' ? transformDefs : maskDefs, rel)}
+            onClick={() => removeKfsAt(mode === 'transform' ? transformDefs : maskDefs, [rel])}
           >
             <Icon name="diamondMinus" size={14} />
           </button>
@@ -1143,8 +1180,8 @@ export function AnimEditor({ width }: { width: number }) {
           </button>
         </div>
         {[
-          { label: t('modeTransform'), times: rowT, defs: transformDefs },
-          { label: t('modeMask'), times: rowM, defs: maskDefs }
+          { id: 'T', label: t('modeTransform'), times: rowT, defs: transformDefs },
+          { id: 'M', label: t('modeMask'), times: rowM, defs: maskDefs }
         ].map((row) => (
           <div className="mini-row" key={row.label}>
             <span className="mini-label">{row.label}</span>
@@ -1158,19 +1195,25 @@ export function AnimEditor({ width }: { width: number }) {
               />
               {row.times
                 .filter((tt) => miniPos(tt) >= -1 && miniPos(tt) <= 101)
-                .map((tt) => (
-                  <div
-                    key={tt}
-                    className={`mini-kf ${Math.abs(tt - rel) < KF_EPS ? 'on' : ''}`}
-                    style={{ left: `${miniPos(tt)}%` }}
-                    title={`${tt.toFixed(2)}s — ${t('kfDragHint')}`}
-                    onPointerDown={startKfDrag(row.defs, tt)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      removeKfsAt(row.defs, tt)
-                    }}
-                  />
-                ))}
+                .map((tt) => {
+                  const easing = kfEasingAt(row.defs.map((p) => p.get(clip)), tt) ?? 'linear'
+                  return (
+                    <div
+                      key={tt}
+                      className={`mini-kf ${Math.abs(tt - rel) < KF_EPS ? 'on' : ''} ${isSel(row.id, tt) ? 'sel' : ''}`}
+                      data-easing={easing}
+                      style={{ left: `${miniPos(tt)}%` }}
+                      title={`${tt.toFixed(2)}s · ${t(EASE_LABEL[easing])} — ${t('kfDragHint')}`}
+                      onPointerDown={startKfDrag(row.id, row.defs, tt)}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        const times = isSel(row.id, tt) ? kfSel.times : [tt]
+                        if (times.length === 1) setKfSel({ row: row.id, times })
+                        setKfMenu({ x: e.clientX, y: e.clientY, row: row.id, times })
+                      }}
+                    />
+                  )
+                })}
               {miniPos(rel) >= 0 && miniPos(rel) <= 100 && (
                 <div className="mini-ph" style={{ left: `${miniPos(rel)}%` }} />
               )}
@@ -1179,6 +1222,18 @@ export function AnimEditor({ width }: { width: number }) {
         ))}
       </div>
       <div className="anim-hint dim">{t('vegasHint2')}</div>
+      {kfMenu && (() => {
+        const defs = kfMenu.row === 'T' ? transformDefs : maskDefs
+        return (
+          <KfMenu
+            x={kfMenu.x} y={kfMenu.y} count={kfMenu.times.length}
+            current={kfEasingAt(defs.map((p) => p.get(clip)), kfMenu.times[0])}
+            onDelete={() => { removeKfsAt(defs, kfMenu.times); setKfSel({ row: '', times: [] }) }}
+            onEasing={(e) => setEasingAt(defs, kfMenu.times, e)}
+            onClose={closeKfMenu}
+          />
+        )
+      })()}
     </div>
   )
 }

@@ -2,11 +2,12 @@
 // Keyframe times are absolute project seconds; the same auto-keyframe and
 // link-to-timeline semantics as the clip editor.
 import { useEffect, useRef, useState } from 'react'
-import type { Anim, Transform3D } from '@shared/types'
+import type { Anim, Easing, Transform3D } from '@shared/types'
 import { useEditor, projectDuration } from '@/state/store'
-import { KF_EPS, applyValue, evalAnim, resetValue, snap1, windowDrag } from './animUtils'
+import { KF_EPS, applyValue, evalAnim, kfEasingAt, resetValue, setKfEasing, snap1, windowDrag } from './animUtils'
 import { useT, type TKey } from '@/i18n'
 import { Icon } from './icons'
+import { KfMenu, EASE_LABEL } from './KfMenu'
 
 const defAnim = (v: number): Anim => ({ value: v })
 
@@ -48,12 +49,17 @@ export function TrackMotionEditor({ width }: { width: number }) {
   const miniRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState({ t0: 0, t1: 1 })
+  // selected diamonds and the diamond menu
+  const [kfSel, setKfSel] = useState<number[]>([])
+  const [kfMenu, setKfMenu] = useState<{ x: number; y: number; times: number[] } | null>(null)
   const trackId = track?.id
 
   useEffect(() => {
     setView({ t0: -duration * 0.04, t1: duration * 1.04 })
     setLinked(false)
     setStageZoom(0.6)
+    setKfSel([])
+    setKfMenu(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackId])
 
@@ -156,19 +162,28 @@ export function TrackMotionEditor({ width }: { width: number }) {
     return times.sort((a, b) => a - b)
   })()
 
-  const removeKfsAt = (time: number) => {
+  const removeKfsAt = (times: number[]) => {
     push('hKeyframe')
     const patch: Partial<Transform3D> = {}
     for (const p of M_PARAMS) {
       const a = motion[p.key]
       if (!a.keyframes?.length) continue
-      const left = a.keyframes.filter((kf) => Math.abs(kf.time - time) >= KF_EPS)
+      const left = a.keyframes.filter((kf) => times.every((time) => Math.abs(kf.time - time) >= KF_EPS))
       patch[p.key] = left.length
         ? { ...a, keyframes: left }
-        : { ...a, value: evalAnim(a, time), keyframes: undefined }
+        : { ...a, value: evalAnim(a, times[0]), keyframes: undefined }
     }
     writeMotion(patch)
   }
+
+  const setEasingAt = (times: number[], easing: Easing) => {
+    push('hKeyframe')
+    const patch: Partial<Transform3D> = {}
+    for (const p of M_PARAMS) patch[p.key] = setKfEasing(motion[p.key], times, easing)
+    writeMotion(patch)
+  }
+  const selHas = (tt: number) => kfSel.some((x) => Math.abs(x - tt) < KF_EPS)
+  const motionAnims = M_PARAMS.map((p) => motion[p.key])
 
   const retimeKfs = (from: number, to: number) => {
     const patch: Partial<Transform3D> = {}
@@ -413,7 +428,7 @@ export function TrackMotionEditor({ width }: { width: number }) {
             <Icon name="chevronLeft" size={14} />
           </button>
           <button title={t('kfDelete')} aria-label={t('kfDelete')} disabled={!onKf}
-                  onClick={() => removeKfsAt(rel)}>
+                  onClick={() => removeKfsAt([rel])}>
             <Icon name="diamondMinus" size={14} />
           </button>
           <button title={t('kfNext')} aria-label={t('kfNext')} onClick={() => jump(1)}>
@@ -448,13 +463,19 @@ export function TrackMotionEditor({ width }: { width: number }) {
               .map((tt) => (
                 <div
                   key={tt}
-                  className={`mini-kf ${Math.abs(tt - rel) < KF_EPS ? 'on' : ''}`}
+                  className={`mini-kf ${Math.abs(tt - rel) < KF_EPS ? 'on' : ''} ${selHas(tt) ? 'sel' : ''}`}
+                  data-easing={kfEasingAt(motionAnims, tt) ?? 'linear'}
                   style={{ left: `${pos(tt)}%` }}
-                  title={`${tt.toFixed(2)}s — ${t('kfDragHint')}`}
+                  title={`${tt.toFixed(2)}s · ${t(EASE_LABEL[kfEasingAt(motionAnims, tt) ?? 'linear'])} — ${t('kfDragHint')}`}
                   onPointerDown={(e) => {
                     if (e.button !== 0) return
                     e.stopPropagation()
                     e.preventDefault()
+                    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+                      setKfSel(selHas(tt) ? kfSel.filter((x) => Math.abs(x - tt) >= KF_EPS) : [...kfSel, tt])
+                      return
+                    }
+                    setKfSel([tt])
                     const lane = (e.currentTarget as HTMLElement).closest('.mini-lane') as HTMLElement
                     let cur0 = tt
                     let pushed = false
@@ -481,12 +502,15 @@ export function TrackMotionEditor({ width }: { width: number }) {
                       (moved) => {
                         useEditor.getState().setKfMarker(null)
                         if (!moved) useEditor.getState().setPlayhead(tt)
+                        else setKfSel([cur0])
                       }
                     )
                   }}
                   onContextMenu={(e) => {
                     e.preventDefault()
-                    removeKfsAt(tt)
+                    const times = selHas(tt) ? kfSel : [tt]
+                    if (times.length === 1) setKfSel(times)
+                    setKfMenu({ x: e.clientX, y: e.clientY, times })
                   }}
                 />
               ))}
@@ -497,6 +521,15 @@ export function TrackMotionEditor({ width }: { width: number }) {
         </div>
       </div>
       <div className="anim-hint dim">{t('motionHint')}</div>
+      {kfMenu && (
+        <KfMenu
+          x={kfMenu.x} y={kfMenu.y} count={kfMenu.times.length}
+          current={kfEasingAt(motionAnims, kfMenu.times[0])}
+          onDelete={() => { removeKfsAt(kfMenu.times); setKfSel([]) }}
+          onEasing={(e) => setEasingAt(kfMenu.times, e)}
+          onClose={() => setKfMenu(null)}
+        />
+      )}
     </div>
   )
 }
