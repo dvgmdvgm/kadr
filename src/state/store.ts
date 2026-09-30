@@ -7,12 +7,19 @@ import { isMusicMarker } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
+import { toFrame } from '../engine/timelineMath'
 import {
   SETTINGS, effective, fromLegacy, healValue,
   type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
 } from '@shared/settings'
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
+
+/** The end of a clip that starts at `start` (already on a frame), quantised
+    from the RAW end and at least one frame after the start. Edits quantise
+    starts and ends, never the speed or the in-point (card E1). */
+const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) => number) =>
+  Math.max(toFrame(end, fps, snap), toFrame(start + 1 / fps, fps))
 
 export const defaultTextStyle = (): TextStyle => ({
   fontFamily: 'sans-serif',
@@ -1161,12 +1168,14 @@ export const useEditor = create<EditorState>((set, get) => ({
     }))
   },
 
-  insertFragmentClip: (fragmentId, meta, start, duration) => {
+  insertFragmentClip: (fragmentId, meta, at, rawDuration) => {
     const clipId = uid()
     get().pushHistory('hInsert')
     set((s) => {
       const p = cloneProject(s.project)
-      const end = start + duration
+      const start = Math.max(0, toFrame(at, p.fps))
+      const end = frameEnd(p.fps, start, start + rawDuration)
+      const duration = end - start
       // The topmost unlocked video track with the slot free — but never one
       // UNDER a track that already shows something in that span: a caption put
       // on a free track below the footage is covered by it (and goes through
@@ -1188,7 +1197,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         kind: 'remotion',
         fragmentId,
         fragmentMeta: meta,
-        start: Math.max(0, start),
+        start,
         duration,
         inPoint: 0,
         label: meta.name,
@@ -1225,7 +1234,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const p = cloneProject(s.project)
       p.markers ??= []
       const n = p.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
-      p.markers.push({ id, time: Math.max(0, time), label: String(n) })
+      p.markers.push({ id, time: Math.max(0, toFrame(time, p.fps)), label: String(n) })
       return { project: p }
     })
     return id
@@ -1236,7 +1245,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const m0 = s.project.markers?.find((x) => x.id === id)
       if (!m0) return {}
       const p = cloneProject(s.project)
-      p.markers!.find((x) => x.id === id)!.time = Math.max(0, time)
+      p.markers!.find((x) => x.id === id)!.time = Math.max(0, toFrame(time, p.fps))
       return { project: p }
     }),
 
@@ -1405,7 +1414,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     s.pushHistory('hInsert')
     set((st) => {
       const p = cloneProject(st.project)
-      let cursor = Math.max(0, at)
+      let cursor = Math.max(0, toFrame(at, p.fps))
       const ids: string[] = []
       for (const asset of found) {
         const wantKind: TrackKind = asset.kind === 'audio' ? 'audio' : 'video'
@@ -1414,7 +1423,9 @@ export const useEditor = create<EditorState>((set, get) => ({
           track = p.tracks.find((t) => t.kind === wantKind && !t.locked)
         }
         if (!track) continue
-        const duration = asset.kind === 'image' ? setting<number>('editing.stillDuration') : asset.duration
+        const raw = asset.kind === 'image' ? setting<number>('editing.stillDuration') : asset.duration
+        // the last whole frame of the source, never past it
+        const duration = frameEnd(p.fps, cursor, cursor + raw, Math.floor) - cursor
         const clip: Clip = {
           id: uid(),
           assetId: asset.id,
@@ -1468,8 +1479,10 @@ export const useEditor = create<EditorState>((set, get) => ({
           const oldSpeed = c.speed || 1
           rescaleClipAnims(c, oldSpeed / speed)
           c.speed = speed
-          c.duration = duration
-          if (start !== undefined) c.start = Math.max(0, start)
+          // the speed stays exact; the end is quantised from the raw end
+          const s0 = start !== undefined ? Math.max(0, start) : c.start
+          if (start !== undefined) c.start = Math.max(0, toFrame(s0, p.fps))
+          c.duration = frameEnd(p.fps, c.start, s0 + duration) - c.start
         }
       }
       return { project: p }
@@ -1481,7 +1494,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       for (const f of withLinked(p, [clipId])
         .map((id) => findClip(p, id))
         .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
-        f.clip.duration = Math.max(0.05, duration)
+        f.clip.duration = frameEnd(p.fps, f.clip.start, f.clip.start + Math.max(0.05, duration)) - f.clip.start
       }
       return { project: p }
     }),
@@ -1550,13 +1563,14 @@ export const useEditor = create<EditorState>((set, get) => ({
       const p = cloneProject(st.project)
       const track = p.tracks.find((t) => t.kind === 'video' && !t.locked)
       if (!track) return st
+      const start = Math.max(0, toFrame(at, p.fps))
       const clip: Clip = {
         id: uid(),
         kind: 'text',
         text: 'Текст',
         textStyle: defaultTextStyle(),
-        start: Math.max(0, at),
-        duration: setting<number>('editing.textDuration'),
+        start,
+        duration: frameEnd(p.fps, start, start + setting<number>('editing.textDuration')) - start,
         inPoint: 0,
         label: 'Text',
         ...newClipDefaults()
@@ -1593,7 +1607,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       for (const e of entries) {
         const f = findClip(p, e.id)
         if (!f || f.track.locked) continue
-        f.clip.start = Math.max(0, e.start)
+        f.clip.start = Math.max(0, toFrame(e.start, p.fps))
         if (e.trackId && e.trackId !== f.track.id) {
           const dst = p.tracks.find((t) => t.id === e.trackId)
           if (dst && dst.kind === f.track.kind && !dst.locked) {
@@ -1613,7 +1627,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (!f || !dst || dst.locked) return s
       if (dst.kind !== f.track.kind) return s
       f.track.clips = f.track.clips.filter((c) => c.id !== clipId)
-      f.clip.start = Math.max(0, start)
+      f.clip.start = Math.max(0, toFrame(start, p.fps))
       dst.clips.push(f.clip)
       return { project: p }
     }),
@@ -1633,23 +1647,23 @@ export const useEditor = create<EditorState>((set, get) => ({
         const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
         if (edge === 'in') {
           const end = c.start + c.duration
-          let ns = Math.min(Math.max(0, time), end - 0.05)
+          let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
           let delta = ns - c.start
-          // can't reveal media before the source start
+          // can't reveal media before the source start: the first frame inside it
           if (c.inPoint + delta * speed < 0) {
-            delta = -c.inPoint / speed
-            ns = c.start + delta
+            ns = toFrame(c.start - c.inPoint / speed, p.fps, Math.ceil)
+            delta = ns - c.start
           }
-          c.inPoint += delta * speed
+          c.inPoint = Math.max(0, c.inPoint + delta * speed)
           c.start = ns
           c.duration = end - ns
           shiftClipAnims(c, -delta) // keyframes stay glued to the content
         } else {
-          let nd = Math.max(0.05, time - c.start)
+          let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
           if (asset && asset.kind !== 'image') {
             // edge trim never reveals more than the source (unless already looping)
             const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
-            if (nd > maxOut) nd = maxOut
+            if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
           }
           c.duration = nd
         }
@@ -1659,7 +1673,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   splitAtPlayhead: () => {
     const s = get()
-    const t = s.playhead
+    const t = toFrame(s.playhead, s.project.fps) // the cut lands on a frame, wherever the playhead sits
     // «Разрез захватывает»: the selection (every track without one), or every unlocked track
     const selIds = s.selection.length && setting('editing.splitScope') === 'selection' ? withLinked(s.project, s.selection) : []
     const targets = s.project.tracks.flatMap((tr) =>
@@ -1838,10 +1852,12 @@ export const useEditor = create<EditorState>((set, get) => ({
           if (!linkMap.has(item.clip.linkId)) linkMap.set(item.clip.linkId, uid())
           linkId = linkMap.get(item.clip.linkId)
         }
+        const start = Math.max(0, toFrame(st.playhead + (item.clip.start - base), p.fps))
         const clip: Clip = {
           ...clone(item.clip),
           id: uid(),
-          start: Math.max(0, st.playhead + (item.clip.start - base)),
+          start,
+          duration: frameEnd(p.fps, start, start + item.clip.duration) - start,
           linkId
         }
         track.clips.push(clip)
@@ -1869,8 +1885,11 @@ export const useEditor = create<EditorState>((set, get) => ({
   setPreviewGpuLost: (previewGpuLost) => set({ previewGpuLost }),
   setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(4, zoom)) }),
   setExportOpen: (exportOpen) => set({ exportOpen }),
-  setRange: (range) =>
-    set({ range: range && range.end - range.start > 0.01 ? range : null })
+  setRange: (range) => {
+    const fps = get().project.fps
+    const r = range && { start: toFrame(range.start, fps), end: toFrame(range.end, fps) }
+    set({ range: r && r.end - r.start > 0.01 ? r : null })
+  }
 }))
 
 function makeTrack(p: Project, kind: TrackKind): Track {

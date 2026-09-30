@@ -120,3 +120,15 @@ export function trackOverlaps(clips: Clip[]) {
   }
   return { zones, joints }
 }
+
+/** `t` on the nearest frame boundary (or the one below/above with Math.floor /
+    Math.ceil). A fractional rate is the NTSC rational — 29.97 is 30000/1001,
+    so its frames sit at k·1001/30000, not at k/29.97. The 1e-6 nudge keeps a
+    time already on a frame from dropping one below it under floor. */
+export function toFrame(t: number, fps: number, snap: (x: number) => number = Math.round): number {
+  if (!(fps > 0) || !Number.isFinite(t)) return t
+  const ntsc = Math.round(fps * 1.001)
+  const r = fps % 1 && Math.abs(fps * 1.001 - ntsc) < 0.01 ? ntsc / 1.001 : fps
+  const x = t * r
+  return snap(snap === Math.floor ? x + 1e-6 : snap === Math.ceil ? x - 1e-6 : x) / r
+}

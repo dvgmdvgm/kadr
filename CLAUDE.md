@@ -914,7 +914,12 @@ the ElevenLabs key are all real user data shared with real sessions, and
 each of them has been destroyed by a test at least once.
 
 ## Conventions
-- All timeline math in seconds; keyframe times are clip-local.
+- All timeline math in seconds; keyframe times are clip-local. Every store
+  edit (split, trim, move, insert, paste, speed/duration, range edges,
+  markers) lands starts and ends on frame boundaries (`toFrame` in
+  `timelineMath.ts`; 29.97 is 30000/1001) — the speed and the in-point are
+  never quantised, and loading never requantises an old project. Test:
+  `node scripts/check-frame-quant.mjs`.
 - Profiling over CDP: sample at ≥ 1 ms and never kill the profiling client
   mid-run. A 200 µs profile whose client died left V8's sampler signalling
   the main thread, and a large shared-memory allocation (a project with its
