@@ -62,7 +62,7 @@ let fed = []
 globalThis.VideoDecoder = class {
   static async isConfigSupported() { await serve.gate(); return { supported: true } }
   constructor({ output }) { this.output = output; this.state = 'unconfigured'; this.decodeQueueSize = 0; this.held = [] }
-  configure() { this.state = 'configured'; fed.push('new') }
+  configure() { this.state = 'configured'; this.needKey = true; fed.push('new') }
   emit(n) {
     this.held.sort((a, b) => a - b)
     for (const ts of this.held.splice(0, n)) {
@@ -72,6 +72,9 @@ globalThis.VideoDecoder = class {
   }
   decode(c) {
     if (this.state !== 'configured') throw new Error('decode on a ' + this.state + ' decoder')
+    // as Chromium does: the first chunk after configure() must be a key frame
+    if (this.needKey && c.type !== 'key') throw new Error('DataError: A key frame is required after configure()')
+    this.needKey = false
     fed.push(c.timestamp)
     if (c.type === 'key') this.emit(this.held.length) // an IDR bumps the whole DPB
     this.held.push(c.timestamp)
@@ -94,12 +97,20 @@ const ff = (args) => execFileSync('ffmpeg', ['-y', '-v', 'error', ...args], { st
 const files = {
   'frame run (crf 14, fast, faststart)': ['-preset', 'fast', '-crf', '14', '-movflags', '+faststart'],
   'reversed render (crf 17, fast, faststart)': ['-preset', 'fast', '-crf', '17', '-movflags', '+faststart'],
-  'plain x264, moov at the end': []
+  'plain x264, moov at the end': [],
+  // J13: short GOPs over 90 frames — mp4box holds a part-filled batch (it
+  // hands out 30 at a time) when the pump is mid-file, and after jump(0) that
+  // batch came out AHEAD of the key frame the jump asked for: from a delta
+  // (g 12: sample 30 is one) the decoder threw «a key frame is required»; from
+  // a key (g 10) frames 0–29 were silently skipped and exported as frame 30
+  'short GOPs (g 12, 90 frames, faststart)': ['-g', '12', '-keyint_min', '12', '-sc_threshold', '0', '-movflags', '+faststart', '-frames:v', '90'],
+  'short GOPs (g 10, 90 frames, faststart)': ['-g', '10', '-keyint_min', '10', '-sc_threshold', '0', '-movflags', '+faststart', '-frames:v', '90']
 }
 const media = {}
 for (const [name, x264] of Object.entries(files)) {
   const p = join(dir, Object.keys(media).length + '.mp4')
-  ff(['-f', 'lavfi', '-i', 'mandelbrot=s=320x180:r=30', '-frames:v', '30', '-c:v', 'libx264', ...x264, '-pix_fmt', 'yuv420p', p])
+  const frames = x264.includes('-frames:v') ? [] : ['-frames:v', '30']
+  ff(['-f', 'lavfi', '-i', 'mandelbrot=s=320x180:r=30', ...frames, '-c:v', 'libx264', ...x264, '-pix_fmt', 'yuv420p', p])
   // the file's own decode order, read with mp4box directly
   const f = createFile()
   let order = []
@@ -113,16 +124,21 @@ for (const [name, x264] of Object.entries(files)) {
 // ── every interleaving: the config check answers before, during and after the pump ──
 for (const [name, m] of Object.entries(media)) {
   const bad = []
+  const unopened = []
   let bframes = false
   for (const chunk of [512, 4096, 1 << 20]) {
     for (const delay of [0, 1, 3, 10, 40, 200]) {
       serve = { chunk, gate: async () => { for (let i = 0; i < delay; i++) await tick() } }
       fed = []
       const src = await Mp4FrameSource.open({ path: m.path, kind: 'video', name, id: 'x', duration: 1 })
-      if (!src) { bad.push(`chunk ${chunk} delay ${delay}: did not open`); continue }
+      if (!src) { unopened.push(`chunk ${chunk} delay ${delay}`); continue }
       const got = []
-      for (let k = 0; k < 30; k++) got.push(Math.round((await src.frameAt((k + 0.5) / 30)).timestamp * 30 / 1e6))
+      let threw = null
+      for (let k = 0; k < m.order.length && !threw; k++) {
+        try { got.push(Math.round((await src.frameAt((k + 0.5) / 30)).timestamp * 30 / 1e6)) } catch (e) { threw = `chunk ${chunk} delay ${delay}: frame ${k}: ${e.message}` }
+      }
       src.close()
+      if (threw) { unopened.push(threw); continue }
       const ts = fed.filter((x) => x !== 'new')
       const want = m.order.map((s) => Math.round(((s.cts - m.order[0].cts) * 1e6) / s.scale))
       bframes ||= want.some((x, i) => i && x < want[i - 1])
@@ -134,6 +150,7 @@ for (const [name, m] of Object.entries(media)) {
     }
   }
   check(`${name}: the stream has B-frames (decode order ≠ presentation order)`, bframes)
+  check(`${name}: a jump whose held samples start on a delta still feeds a key frame first (opens and decodes in all 18 interleavings)`, unopened.length === 0, unopened.slice(0, 4).join('; '))
   check(`${name}: every sample fed once in decode order and frame k at every k, 18 interleavings`, bad.length === 0, bad.slice(0, 4).join('; '))
 }
 

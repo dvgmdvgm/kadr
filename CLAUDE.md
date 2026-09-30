@@ -122,7 +122,8 @@ mixes audio and muxes/transcodes per preset.
   `check-decode-determinism.mjs` wants ffmpeg (J10: the real
   `Mp4FrameSource` under node with a reordering fake decoder — every sample
   of a B-frame intermediate is fed once, in decode order, and frame k comes
-  back at every k, however the file's bytes and the config check interleave);
+  back at every k, however the file's bytes and the config check interleave;
+  J13: on short GOPs the first chunk after a jump is the sought key frame);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -929,7 +930,9 @@ mixes audio and muxes/transcodes per preset.
     upsampling bleeding across the seam and from the decoder's padding into
     the alpha. Measured (Chromium 148): a BT.601 pack is pixel-identical to
     the preview but for the last column, where the preview's own VP9
-    element is off from ffmpeg's decode; a BT.709 one is within 2/255
+    element is off from ffmpeg's decode (0,255,172 for ffmpeg's 1,255,255 —
+    a KNOWN LIMIT: the export matches ffmpeg, and parity there would mean
+    copying the element's error); a BT.709 one is within 2/255
     (45 dB). `KADR_DISABLE_ALPHA_PACK` forces the old path. Test:
     `node scripts/check-alpha-export.mjs`.
   * THE YUV MATRIX FOLLOWS THE ELEMENT (J9, `shared/streamColour.ts`):
@@ -952,7 +955,14 @@ mixes audio and muxes/transcodes per preset.
     frame 20 — in some runs only (H8: 3 of 6). `ingestSamples` drops any
     sample number not above the last one queued since the jump. Measured:
     10 exports of a reversed + frame-run project, frame hashes identical
-    (before: frame 9 differed in 3 of 4), stage times unchanged. Test:
+    (before: frame 9 differed in 3 of 4), stage times unchanged. NOR
+    ANYTHING BEFORE THE KEY FRAME THE JUMP SOUGHT (J13): mp4box hands out
+    the batch it was still filling (30 at a time, cut short by data not yet
+    appended) AHEAD of the sought samples, so `jump()` records the seek's
+    sample and `ingestSamples` starts there. From a delta the decoder threw
+    «a key frame is required» and a small faststart file (an SD alpha pack)
+    fell back to element seeks in 16 of 20 exports; from a key, the GOPs up
+    to it were skipped without a word. After: 80 of 80 on the fast path. Test:
     `node scripts/check-decode-determinism.mjs`.
   * MOOV AT THE END (any file not written with faststart) is picked up by
     fetching the file's tail (`pumpTail`) instead of dropping to element

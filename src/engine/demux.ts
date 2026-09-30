@@ -59,6 +59,8 @@ export class Mp4FrameSource {
   private scratch: Uint8Array | null = null
   /** number of the last sample queued since the last jump — see ingestSamples */
   private lastSample = -1
+  /** the key frame a jump seeked mp4box to; nothing is queued before it — see ingestSamples */
+  private jumpSample = -1
 
   /** H.264/HEVC: the space the preview shows this stream in, from the stream
    *  itself (null = the decoder's own); undefined = other codecs, see normalizeColor */
@@ -104,6 +106,15 @@ export class Mp4FrameSource {
       // and that IDR flushed P20 out ahead of its B-frames — frames 17–19
       // exported as frame 20 in some runs only (card J10).
       if (s.number <= this.lastSample) continue
+      // ...and nothing before the key frame the jump asked for: mp4box hands
+      // out a batch it was still filling (30 at a time, cut short by data not
+      // yet appended) AHEAD of the sought samples. On a small faststart file
+      // a delta led → «a key frame is required» → element fallback (card
+      // J13); a leading key skipped the GOPs up to it without a word.
+      if (this.jumpSample >= 0) {
+        if (s.number !== this.jumpSample) continue
+        this.jumpSample = -1
+      }
       this.lastSample = s.number
       this.sampleScale = s.timescale
       const chunk = new EncodedVideoChunk({
@@ -381,6 +392,7 @@ export class Mp4FrameSource {
     this.gopBuffer = []
     this.skipTargetUs = null
     this.lastSample = -1
+    this.jumpSample = -1
     this.current?.close()
     this.current = null
     this.ahead?.close()
@@ -403,6 +415,9 @@ export class Mp4FrameSource {
     // seek in unshifted media time so the chosen keyframe is never late
     const shiftSec = this.sampleScale > 0 ? this.ctsShift / this.sampleScale : 0
     const si = this.file.seek(Math.max(0, srcT + shiftSec), true)
+    try {
+      this.jumpSample = this.file.getTrackById(this.trackId).nextSample
+    } catch { /* no sample table: take whatever comes */ }
     this.file.start()
     void this.pump(si.offset)
   }
