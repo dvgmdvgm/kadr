@@ -6,7 +6,7 @@ import type {
 import { isMusicMarker, LABEL_COLORS } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
-import { tr } from '../i18n'
+import { tr, trf } from '../i18n'
 import { toFrame, nextEdit, clipSourceTime, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
 import { evalAnim } from '../engine/anim'
 import { existingClips } from '../engine/timelineSelect'
@@ -186,7 +186,7 @@ export function sanitizeProject(p: Project): Project {
         wordFrom: -1, wordTo: -1, charFrom: -1, charTo: -1, text: '',
         cut: ['fallback', 'fallback']
       }
-      d.note = 'границы фразы потеряны — пересчитайте разбор'
+      d.note = tr('eStPhraseLost')
     } else {
       if (!Array.isArray(ph.cut) || ph.cut.length !== 2) ph.cut = ['fallback', 'fallback']
       if (ph.t0 > d.src[0]) ph.t0 = d.src[0]
@@ -1386,14 +1386,13 @@ export const useEditor = create<EditorState>((set, get) => ({
           // a clip edge sits inside the phrase being replaced: there is no
           // honest answer for where it should land, so we refuse instead of
           // silently mangling the cut the user made
-          return { error: `клип «${clip.label}» разрезан внутри заменяемой фразы — ` +
-            'автоматически починить нельзя. Сведите озвучку в один клип или снимите разрез.' }
+          return { error: trf('eStCutInside', { label: clip.label ?? '' }) }
         }
         affected.push({ clip, track, oldStart: clip.start, oldEnd: clip.start + clip.duration,
                         inPoint: a, duration: (b - a) / speed })
       }
     }
-    if (!affected.length) return { error: 'на таймлайне нет клипов этой озвучки' }
+    if (!affected.length) return { error: tr('eStNoClips') }
 
     // Куда переехала каждая заменённая фраза: её начало на месте (remap не
     // двигает то, что до реза), а конец задаётся длиной вставки. Без этого
@@ -1406,6 +1405,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     const warnings: string[] = []
     let dropped = 0
+    let straddles = false
     get().pushHistory('hVoiceFix')
     set((st) => {
       const p = cloneProject(st.project)
@@ -1433,9 +1433,7 @@ export const useEditor = create<EditorState>((set, get) => ({
           if (!tracksToRipple.has(track.id)) { skip.add(c.id); continue }
           if (events.some((e) => c.start < e.at - 1e-6 && c.start + c.duration > e.at + 1e-6)) {
             skip.add(c.id)
-            if (ripple && !warnings.some((w) => w.includes('накрывает место склейки'))) {
-              warnings.push('часть клипов накрывает место склейки — их длину сдвиг не исправит')
-            }
+            straddles = true
           }
         }
       }
@@ -1446,7 +1444,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         const all = p.tracks.map((t) => t.id)
         for (const e of [...events].reverse()) shiftAfter(p, e.at, e.d, all, skip)
       }
-      if (!ripple) warnings.push('сдвиг выключен: клипы правее могут наехать друг на друга')
+      if (ripple && straddles) warnings.push(tr('eStStraddle'))
+      if (!ripple) warnings.push(tr('eStNoRipple'))
 
       p.voiceRuns = (p.voiceRuns ?? []).map((r) =>
         r.id === runId ? { ...r, assetId: newAsset.id, duration: newDuration } : r)
@@ -1487,16 +1486,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       p.defects = kept
       return { project: p }
     })
-    if (dropped) {
-      const n = dropped % 100
-      const word = n >= 11 && n <= 14 ? 'отметок'
-        : n % 10 === 1 ? 'отметка'
-        : n % 10 >= 2 && n % 10 <= 4 ? 'отметки'
-        : 'отметок'
-      const verb = n % 10 === 1 && n !== 11 ? 'снята' : 'сняты'
-      warnings.push(`внутри заменённых фраз ${verb} ещё ${dropped} ${word}: ` +
-        'этого звука больше нет, переспросите детектор')
-    }
+    if (dropped) warnings.push(trf('eStDropped', { n: dropped }))
     return { delta: total, warnings }
   },
 
@@ -2009,7 +1999,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       const clip: Clip = {
         id: uid(),
         kind: 'text',
-        text: 'Текст',
+        text: tr('text'),
         textStyle: defaultTextStyle(),
         start,
         duration: frameEnd(p.fps, start, start + setting<number>('editing.textDuration')) - start,

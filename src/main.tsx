@@ -45,8 +45,9 @@ import { detectBeats, clearBeats, beatTimes, useBeatsUi } from './engine/beats'
 import { bakeAudio, bakeState, bakePlan, refreshStaleBakes } from './engine/audioReact'
 import { loadSoundLibrary, findSfx, addSound, setSoundMeta, sfxFamilies, SFX_FAMILIES, SFX_USES } from './engine/sounds'
 import { useSoundsUi } from './components/SoundsDialog'
-import { tr } from './i18n'
+import { tr, speakMainErrors } from './i18n'
 
+speakMainErrors()   // main's errors in the UI language, before anything calls main
 wireLog()   // first: everything below may want to report a failure
 // «Масштаб интерфейса»: the page's zoom factor, now and on every change
 {

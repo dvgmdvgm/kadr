@@ -9,7 +9,7 @@ import { useEditor } from '@/state/store'
 import type { MusicEntry, SfxEntry, SoundLibrary } from '@shared/types'
 import { detectBeats, type BeatGrid } from './beats'
 import { logWarn } from './log'
-import { tr } from '../i18n'
+import { tr, trf } from '../i18n'
 import { soundTitle } from '@shared/sfxTitle'
 
 let lib: Promise<SoundLibrary> | null = null
@@ -129,7 +129,7 @@ export async function addSound(id: string, opts: AddSoundOpts = {}): Promise<Add
   const sfx = L.sfx.find((s) => s.id === id)
   const music: MusicEntry | undefined = sfx ? undefined : L.music.find((m) => m.id === id)
   const entry = sfx ?? music
-  if (!entry) throw new Error(`звук «${id}» не найден в библиотеке`)
+  if (!entry) throw new Error(trf('eSdNotFound', { id }))
   const st = useEditor.getState()
   const existing = st.project.assets.find((a) => a.path === entry.path)
   const asset = existing ?? (await window.kadr.probeMedia(entry.path)).asset

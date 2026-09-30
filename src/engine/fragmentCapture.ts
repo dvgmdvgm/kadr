@@ -10,7 +10,7 @@ import { fadeFactor, overlapFades, trackHeard } from './player'
 import { ensureFragmentServer } from './fragments'
 import { logError, logWarn } from './log'
 import { useFragmentParams } from './fragmentParams'
-import { tr, trf, type TKey } from '../i18n'
+import { tr, say } from '../i18n'
 
 export interface CaptureFrame {
   data: Uint8Array
@@ -182,7 +182,7 @@ export function captureRequested(fragmentId: string): boolean {
 
 export function wireFragmentCapture() {
   window.kadr.onFragmentCaptureLog?.(({ id, level, msg, said }) => {
-    ;(level === 'error' ? logError : logWarn)(tr('lgCapture'), `${id}: ${said ? trf(said.key as TKey, said.args ?? {}) : msg}`)
+    ;(level === 'error' ? logError : logWarn)(tr('lgCapture'), `${id}: ${said ? say(said) : msg}`)
   })
   window.kadr.onFragmentFrame(({ id, w, h, data }) => {
     if (!active.has(id)) return

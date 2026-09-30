@@ -5,6 +5,7 @@ import { activity } from './autosave'
 import { useTtsSettings } from './tts'
 import { flushVerdicts, flushAllVerdicts } from './voiceLearn'
 import type { AudioDefect, RawDefect, VoiceRun } from '@shared/types'
+import { tr, trf } from '../i18n'
 
 const HIDE_KEY = 'kadr.defectsHidden'
 
@@ -45,7 +46,7 @@ function findRun(runId?: string, assetId?: string): VoiceRun {
   const run = runId ? runs.find((r) => r.id === runId)
     : assetId ? runs.find((r) => r.assetId === assetId)
     : runs[runs.length - 1]
-  if (!run) throw new Error('это не озвучка Kadr: разбирать нечего')
+  if (!run) throw new Error(tr('eVcNotKadr'))
   return run
 }
 
@@ -58,10 +59,9 @@ function findRun(runId?: string, assetId?: string): VoiceRun {
  */
 async function assertScriptFresh(run: VoiceRun): Promise<void> {
   const text = await window.kadr.readTextFile(run.scriptPath)
-  if (text === null) throw new Error(`не найден сценарий озвучки: ${run.scriptPath}`)
+  if (text === null) throw new Error(trf('eVcNoScript', { path: run.scriptPath }))
   if (run.scriptHash && (await sha1(text)) !== run.scriptHash) {
-    throw new Error('сценарий изменился после озвучки — индексы слов больше не совпадают. ' +
-                    'Переозвучьте текст или верните файл сценария.')
+    throw new Error(tr('eVcScriptChanged'))
   }
 }
 
@@ -101,13 +101,13 @@ export async function checkVoice(opts: CheckOpts = {}):
   Promise<{ runId: string; defects: number; trust: number; runDir: string }> {
   const st = () => useEditor.getState()
   if (activity.exporting) {
-    throw new Error('идёт экспорт — разбор и экспорт не поделят видеокарту, дождитесь конца')
+    throw new Error(tr('eVcExporting'))
   }
-  if (useVoiceUi.getState().phase !== 'idle') throw new Error('разбор уже идёт')
+  if (useVoiceUi.getState().phase !== 'idle') throw new Error(tr('eVoBusy'))
 
   const run = findRun(opts.runId, opts.assetId)
   const asset = st().project.assets.find((a) => a.id === run.assetId)
-  if (!asset) throw new Error('аудио озвучки пропало из проекта')
+  if (!asset) throw new Error(tr('eVcAudioGone'))
   await assertScriptFresh(run)
 
   // разбор заменит находки прогона — решения по ним надо сохранить ДО этого,
@@ -130,7 +130,7 @@ export async function checkVoice(opts: CheckOpts = {}):
     // re-check the run is still there: the analysis takes minutes and the user
     // may well have deleted the clip meanwhile (the reverseClip discipline)
     const live = (st().project.voiceRuns ?? []).find((r) => r.id === run.id)
-    if (!live) throw new Error('озвучка удалена из проекта, пока шёл разбор')
+    if (!live) throw new Error(tr('eVcDeletedDuring'))
 
     const defects = res.defects.map((raw) => toDefect(run, raw))
     st().applyCheckResult(run.id, {
@@ -170,7 +170,7 @@ export async function addUserDefect(assetId: string, start: number, end: number,
   const st = () => useEditor.getState()
   const run = findRun(undefined, assetId)
   if (!run.runDir) {
-    throw new Error('сначала выполните разбор дефектов — без него не из чего считать фразу')
+    throw new Error(tr('eVcAnalyseFirst'))
   }
   const a0 = Math.max(0, Math.min(start, end))
   const a1 = Math.max(start, end)
@@ -192,7 +192,7 @@ export async function addUserDefect(assetId: string, start: number, end: number,
     src: [a0, a1 > a0 ? a1 : a0 + 0.15],
     phrase,
     state: 'proposed',
-    note: kind === 'redo' ? 'перегенерировать по желанию' : 'отмечено вручную'
+    note: tr(kind === 'redo' ? 'eVcNoteRedo' : 'eVcNoteUser')
   }
   st().addUserDefect(d)
   flushAllVerdicts().catch(() => { /* corpus is best-effort */ })

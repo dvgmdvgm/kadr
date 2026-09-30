@@ -19,6 +19,7 @@ import type {
   VoiceVersionsRequest, VoiceVersionsResult
 } from '@shared/types'
 import { spliceForward, toAnalysisTime, type SpliceUnitMap } from '@shared/voiceMap'
+import { saidError } from '@shared/said'
 import { FFMPEG, FFPROBE, audioCodecArgs } from './ffmpeg'
 import { speechPython } from './transcribe'
 import { setting } from './appSettings'
@@ -125,7 +126,7 @@ async function selfTest(python?: string): Promise<VoiceSelfTest> {
 }
 
 async function check(win: BrowserWindow, req: VoiceCheckRequest): Promise<VoiceCheckResult> {
-  if (current) throw new Error('разбор уже идёт')
+  if (current) throw saidError('eVoBusy')
   const job = { py: null as ChildProcess | null, cancelled: false }
   current = job
   const runDir = runDirFor(req.audioPath, req.scriptPath)
@@ -156,7 +157,7 @@ async function check(win: BrowserWindow, req: VoiceCheckRequest): Promise<VoiceC
       }
     })
     const done = box.done
-    if (!done) throw new Error('разбор не сообщил о завершении')
+    if (!done) throw saidError('eVoNoDone')
     send(1, 'done')
     return {
       runDir,
@@ -188,7 +189,7 @@ async function phraseAt(req: VoicePhraseRequest):
     onLine: (m) => { if (m.type === 'phrase') box.out = m }
   })
   const o = box.out
-  if (!o) throw new Error('не удалось посчитать фразу')
+  if (!o) throw saidError('eVoPhraseFail')
   return { words: o.words as [number, number], phrase: o.phrase as DefectPhrase }
 }
 
@@ -231,8 +232,7 @@ function plan(units: SpliceRequest['units'], duration: number):
       pieces.push({ kind: 'orig', a, b })
       fades.push(u.fade)
     } else if (i > 0) {
-      throw new Error(`фразы ${i} и ${i + 1} слишком близко (${(b - a).toFixed(3)} с) — ` +
-        'их нужно было объединить в одну')
+      throw saidError('eVoTooClose', { a: i, b: i + 1, gap: (b - a).toFixed(3) })
     }
     // cut0 at the very start of the file leaves no head to fade from: the
     // patch simply begins the output
@@ -252,9 +252,9 @@ function plan(units: SpliceRequest['units'], duration: number):
 }
 
 async function splice(req: SpliceRequest): Promise<SpliceResult> {
-  if (!req.units.length) throw new Error('нечего вставлять')
+  if (!req.units.length) throw saidError('eVoNothing')
   const duration = await probeDuration(req.src)
-  if (!duration) throw new Error('исходный файл озвучки не читается')
+  if (!duration) throw saidError('eVoSrcUnreadable')
   const { pieces, fades } = plan(req.units, duration)
 
   // Раскладку каналов берём У ИСХОДНИКА, а не навязываем стерео. Моно, поднятое
@@ -318,12 +318,12 @@ async function splice(req: SpliceRequest): Promise<SpliceResult> {
     child.stderr.on('data', (c) => { err += c })
     child.on('error', reject)
     child.on('close', (code) => code === 0 ? resolve()
-      : reject(new Error(`склейка не удалась: ${err.slice(-400)}`)))
+      : reject(saidError('eVoSpliceFail', { err: err.slice(-400) })))
   })
 
   // measured, never computed: resampling, atempo and mp3 padding move it by ms
   const outDur = await probeDuration(req.out)
-  if (!outDur) throw new Error('склейка дала пустой файл')
+  if (!outDur) throw saidError('eVoSpliceEmpty')
 
   // where each joint ended up, and how big a level step it left
   const seams: SpliceResult['seams'] = []
@@ -518,7 +518,7 @@ async function chainFor(runDir: string, duration?: number):
  */
 async function reindex(req: VoiceReindexRequest): Promise<{ duration: number; splices: number }> {
   const idx = (await readIndex(req.runDir, CUR_INDEX)) ?? (await readIndex(req.runDir, BASE_INDEX))
-  if (!idx) throw new Error('в прогоне нет разбора — переразберите озвучку')
+  if (!idx) throw saidError('eVoNoIndex')
   const units: SpliceUnitMap[] = req.units.map((u) => ({
     cut0: u.cut0, cut1: u.cut1, patchDur: u.patchDur
   }))
@@ -563,7 +563,7 @@ async function writeVerdicts(req: VoiceVerdictsRequest):
   const dir = req.runDir
   const payload = JSON.parse(await fs.readFile(join(dir, 'defects.json'), 'utf8'))
   const audio = String(payload.audio || '')
-  if (!audio) throw new Error('в разборе нет копии звука — переразберите озвучку')
+  if (!audio) throw saidError('eVoNoAudioCopy')
 
   // Строка корпуса указывает на КОПИЮ РАЗОБРАННОГО звука, а времена в проекте
   // живут в координатах текущего файла. После каждой склейки они расходятся,
@@ -679,7 +679,7 @@ async function learn(dry: boolean, python?: string): Promise<VoiceLearnResult> {
   if (dry) args.push('--dry')
   await runDriver({ args, python, onLine: (m) => { if (m.type === 'learn') box.r = m } })
   const r = box.r
-  if (!r) throw new Error('обучение не вернуло отчёт')
+  if (!r) throw saidError('eVoLearnNoReport')
   return {
     ok: !!r.ok,
     examples: Number(r.examples) || 0,

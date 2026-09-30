@@ -1164,7 +1164,7 @@ export interface StoragePruneResult {
 
 export type GpuPref = 'auto' | 'discrete' | 'integrated'
 /** A message main hands the renderer to say in the user's language: an i18n key and its {args}. */
-export interface Said { key: string; args?: Record<string, string | number> }
+export interface Said { key: string; args?: Record<string, string | number | Said> }
 export interface GpuInfo {
   pref: GpuPref
   /** what this launch actually asked Chromium for */

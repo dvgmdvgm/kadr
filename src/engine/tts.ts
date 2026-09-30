@@ -11,6 +11,7 @@ import { dirOf, baseOf } from '@shared/paths'
 import { parseSrt } from './subtitles'
 import { saveUserStore } from './userStore'
 import type { MediaAsset, TextDoc, TtsParams, TtsSettings, TtsVoice, VoiceRun } from '@shared/types'
+import { tr, trf } from '../i18n'
 
 export const TTS_DEFAULTS: TtsSettings = {
   voiceId: '',
@@ -216,19 +217,19 @@ function textOfDoc(content: string, format: 'srt' | 'txt'): string {
 async function resolveSource(opts: SpeakOpts): Promise<{ text: string; name: string }> {
   if (opts.textDocId) {
     const doc = useEditor.getState().project.texts?.find((t) => t.id === opts.textDocId)
-    if (!doc) throw new Error('текст не найден в проекте')
+    if (!doc) throw new Error(tr('eTtsNoTextDoc'))
     const content = await window.kadr.readTextFile(doc.path)
-    if (content === null) throw new Error(`не читается файл текста: ${doc.path}`)
+    if (content === null) throw new Error(trf('eTtsDocUnreadable', { path: doc.path }))
     return { text: textOfDoc(content, doc.format), name: opts.name || doc.name }
   }
   if (opts.path) {
     const content = await window.kadr.readTextFile(opts.path)
-    if (content === null) throw new Error(`не читается файл: ${opts.path}`)
+    if (content === null) throw new Error(trf('eTtsFileUnreadable', { path: opts.path }))
     const fmt = /\.srt$/i.test(opts.path) ? 'srt' : 'txt'
     return { text: textOfDoc(content, fmt), name: opts.name || baseOf(opts.path) }
   }
   if (opts.text != null) return { text: opts.text, name: opts.name || 'voice' }
-  throw new Error('нечего озвучивать: не задан ни текст, ни файл')
+  throw new Error(tr('eTtsNothing'))
 }
 
 /**
@@ -241,19 +242,19 @@ async function resolveSource(opts: SpeakOpts): Promise<{ text: string; name: str
 export async function speakText(opts: SpeakOpts = {}): Promise<SpeakResult> {
   const st = () => useEditor.getState()
   const { text, name } = await resolveSource(opts)
-  if (!text.trim()) throw new Error('текст пуст')
+  if (!text.trim()) throw new Error(tr('eTtsTextEmpty'))
 
   let dir = opts.dir ?? null
   if (!dir) {
     const pp = st().projectPath
-    dir = pp ? dirOf(pp) : await window.kadr.pickDirectory('Куда сохранить озвучку')
+    dir = pp ? dirOf(pp) : await window.kadr.pickDirectory(tr('eTtsPickDir'))
     if (!dir) throw new Error('cancelled')
   }
 
   const base = `${dir}/${sanitizeName(name)}`
   const outPath = await freeVoiceFile(base)
   const params = ttsParams(opts.params)
-  if (!params.voiceId) throw new Error('не выбран голос')
+  if (!params.voiceId) throw new Error(tr('eTtsNoVoice'))
   const tempo = opts.tempo ?? ttsTempo()
 
   const res = await window.kadr.ttsSpeak({
@@ -289,7 +290,7 @@ export async function speakText(opts: SpeakOpts = {}): Promise<SpeakResult> {
   const placed = st().addVoiceOver({
     asset, run, texts: [scriptDoc], trackId: opts.trackId ?? null, at
   })
-  if (!placed) throw new Error('не удалось положить клип на таймлайн')
+  if (!placed) throw new Error(tr('eTtsPlaceFail'))
 
   return {
     runId: run.id,

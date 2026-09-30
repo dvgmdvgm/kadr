@@ -21,6 +21,7 @@ const check = (name, ok, detail = '') => {
 const load = async (entry) => {
   const out = await build({
     entryPoints: [join(root, entry)], bundle: true, write: false, format: 'esm', platform: 'node', logLevel: 'silent',
+    alias: { '@shared': join(root, 'shared') },
     // i18n.ts reads the UI language from the store; the check names the language itself
     plugins: [{
       name: 'no-store',

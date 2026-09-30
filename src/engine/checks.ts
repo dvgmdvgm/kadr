@@ -300,7 +300,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
       checked.clips++
       if (!ins.ok) {
         issues.push({ kind: 'inspectError', level: 'warn', t: clip.start, clipId: clip.id, fragmentId: fid,
-          message: `фрагмент ${fid} не прочитать для проверки: ${ins.error.split('\n')[0]}` })
+          message: trf('eCkUnreadable', { id: fid, err: ins.error.split('\n')[0] }) })
         continue
       }
       const speed = clip.speed || 1
@@ -312,17 +312,17 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
       if (evs.length && !beats.length && !warnedNoBeats) {
         warnedNoBeats = true
         issues.push({ kind: 'noBeats', level: 'info', t: 0,
-          message: 'на таймлайне нет разметки музыки — события не с чем сверить (сначала «Биты» / kadr_beats)' })
+          message: tr('eCkNoBeats') })
       }
       for (const e of evs) {
         checked.events++
         events.push({ t: e.tl, kind: e.kind, label: e.label, clipId: clip.id, trackId: track.id })
-        const name = e.label ? `«${e.label}»` : e.kind === 'big' ? 'крупное событие' : 'событие'
+        const name = e.label ? trf('eCkQuote', { q: e.label }) : tr(e.kind === 'big' ? 'eCkBigEvent' : 'eCkEvent')
         if (beats.length) {
           const d = nearest(beats, e.tl) * 1000
           if (d > L.beatMs) {
             issues.push({ kind: 'offBeat', level: 'warn', t: e.tl, clipId: clip.id, fragmentId: fid,
-              message: `${name} в ${fmt(e.tl)} мимо доли на ${Math.round(d)} мс` })
+              message: trf('eCkOffBeat', { name, t: fmt(e.tl), ms: Math.round(d) }) })
           }
         }
         if (e.kind === 'big' && downs.length) {
@@ -330,12 +330,12 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
           const dBeat = beats.length ? nearest(beats, e.tl) * 1000 : Infinity
           if (d > L.beatMs && dBeat <= L.beatMs) {
             issues.push({ kind: 'bigOffDownbeat', level: 'warn', t: e.tl, clipId: clip.id, fragmentId: fid,
-              message: `${name} в ${fmt(e.tl)} на доле, но не на первой доле такта` })
+              message: trf('eCkOffDownbeat', { name, t: fmt(e.tl) }) })
           }
         }
         if (inPause(e.tl)) {
           issues.push({ kind: 'eventInPause', level: 'warn', t: e.tl, clipId: clip.id, fragmentId: fid,
-            message: `${name} в ${fmt(e.tl)} попадает в паузу музыки — в паузе кадр должен стоять` })
+            message: trf('eCkInPause', { name, t: fmt(e.tl) }) })
         }
       }
       // downbeats inside a clip that declares events, with nothing on them
@@ -352,8 +352,8 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
         for (const r of runs) {
           issues.push({ kind: 'emptyDownbeats', level: 'info', t: r[0], end: r[r.length - 1], clipId: clip.id, fragmentId: fid,
             message: r.length === 1
-              ? `первая доля такта в ${fmt(r[0])} без события`
-              : `${r.length} первых долей подряд без события: ${fmt(r[0])}–${fmt(r[r.length - 1])}` })
+              ? trf('eCkEmptyDown', { t: fmt(r[0]) })
+              : trf('eCkEmptyDowns', { n: r.length, from: fmt(r[0]), to: fmt(r[r.length - 1]) }) })
         }
       }
 
@@ -364,10 +364,10 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
         checked.texts++
         const shown = t1 - t0
         const need = readingTime(x.text, x.sub)
-        const quote = `«${x.text}${x.sub ? ' / ' + x.sub : ''}»`
+        const quote = trf('eCkQuote', { q: x.text + (x.sub ? ' / ' + x.sub : '') })
         if (shown + 1e-3 < need) {
           issues.push({ kind: 'textShort', level: 'warn', t: t0, end: t1, clipId: clip.id, fragmentId: fid,
-            message: `${quote} видна ${shown.toFixed(2)} с — на ${words(x.text) + words(x.sub)} слов нужно ≥ ${need.toFixed(1)} с` })
+            message: trf('eCkTextShort', { quote, shown: shown.toFixed(2), words: words(x.text) + words(x.sub), need: need.toFixed(1) }) })
         }
         if (x.path.length > 1) {
           let fastest = 0
@@ -377,7 +377,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
           }
           if (fastest > L.textMovePxPerSec) {
             issues.push({ kind: 'textMoving', level: 'warn', t: t0, end: t1, clipId: clip.id, fragmentId: fid,
-              message: `${quote} движется по экрану (до ${Math.round(fastest)} px/с) — читаемый текст стоит на месте, к детали тянется только линия` })
+              message: trf('eCkTextMoving', { quote, v: Math.round(fastest) }) })
           }
         }
         if ((x.role ?? 'title') === 'title') titles.push({ t0, t1, text: x.text, box: x.box, clipId: clip.id, fragmentId: fid })
@@ -397,13 +397,13 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
           const a = toTimeline(clip, j.from), b = toTimeline(clip, j.to)
           if (a === null) continue
           const what = {
-            speedStep: `скорость меняется за один кадр на ${Math.round(j.amount * 100)}% — движение начинается или обрывается без разгона`,
-            turnStep: `поворот меняется за один кадр на ${Math.round(j.amount * 100)}% — без разгона`,
-            jump: 'камера скачком меняет положение — склейка внутри одного кадра',
-            shake: 'камера дрожит (ускорение меняет знак снова и снова)'
+            speedStep: trf('eCkSpeedStep', { p: Math.round(j.amount * 100) }),
+            turnStep: trf('eCkTurnStep', { p: Math.round(j.amount * 100) }),
+            jump: tr('eCkJump'),
+            shake: tr('eCkShake')
           }[j.reason]
           issues.push({ kind: 'cameraJerk', level: 'warn', t: a, end: b ?? a, clipId: clip.id, fragmentId: fid,
-            message: `рывок камеры ${fmt(a)}${b && b - a > 0.05 ? '–' + fmt(b) : ''}: ${what}` })
+            message: trf('eCkJerk', { at: `${fmt(a)}${b && b - a > 0.05 ? '–' + fmt(b) : ''}`, what }) })
         }
       }
     }
@@ -414,12 +414,12 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
       for (let j = i + 1; j < titles.length && titles[j].t0 < titles[i].t1 - 1e-3; j++) {
         const a = titles[i], b = titles[j]
         issues.push({ kind: 'textConcurrent', level: 'warn', t: b.t0, end: Math.min(a.t1, b.t1), clipId: b.clipId, fragmentId: b.fragmentId,
-          message: `две главные надписи одновременно: «${a.text}» и «${b.text}» (${fmt(b.t0)}–${fmt(Math.min(a.t1, b.t1))})` })
+          message: trf('eCkTwoTitles', { a: a.text, b: b.text, from: fmt(b.t0), to: fmt(Math.min(a.t1, b.t1)) }) })
         if (a.box && b.box && a.clipId === b.clipId) {
           const [ax, ay, aw, ah] = a.box, [bx, by, bw, bh] = b.box
           if (ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah) {
             issues.push({ kind: 'textOverlap', level: 'warn', t: b.t0, clipId: b.clipId, fragmentId: b.fragmentId,
-              message: `«${a.text}» и «${b.text}» перекрывают друг друга` })
+              message: trf('eCkOverlap', { a: a.text, b: b.text }) })
           }
         }
       }
@@ -453,10 +453,10 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
         const seen = delta > L.seam
         if (seen && s.continuous) {
           issues.push({ kind: 'seam', level: 'warn', t: s.b.start, clipId: s.b.id, fragmentId: s.fb,
-            message: `стык ${s.fa} → ${s.fb} в ${fmt(s.b.start)} виден: средняя разница ${(delta * 255).toFixed(1)}/255 (окна одного фильма должны совпадать, ≤ ${(L.seam * 255).toFixed(0)}/255)` })
+            message: trf('eCkSeamSeen', { a: s.fa, b: s.fb, t: fmt(s.b.start), d: (delta * 255).toFixed(1), max: (L.seam * 255).toFixed(0) }) })
         } else {
           issues.push({ kind: 'seam', level: 'info', t: s.b.start, clipId: s.b.id, fragmentId: s.fb,
-            message: `стык ${s.fa} → ${s.fb} в ${fmt(s.b.start)}: разница ${(delta * 255).toFixed(1)}/255 — ${seen ? 'монтажная склейка' : 'бесшовно'}` })
+            message: trf('eCkSeam', { a: s.fa, b: s.fb, t: fmt(s.b.start), d: (delta * 255).toFixed(1), verdict: tr(seen ? 'eCkSeamCut' : 'eCkSeamless') }) })
         }
       })
       const off = 2 * seams.length
@@ -466,7 +466,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
         const need = c.large ? L.contrastLarge : L.contrastText
         if (r !== null && r < need) {
           issues.push({ kind: 'contrast', level: 'warn', t: c.t, clipId: c.clipId, fragmentId: c.fragmentId,
-            message: `«${c.text}» в ${fmt(c.t)}: контраст с фоном ${r.toFixed(1)}:1, нужно ≥ ${need}:1` })
+            message: trf('eCkContrast', { text: c.text, t: fmt(c.t), r: r.toFixed(1), need }) })
         }
       })
     }
@@ -480,7 +480,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
         done.add(fid)
         const r = await window.kadr.fragmentCollide(fid).catch((e) => ({ ok: false as const, error: String((e as Error)?.message ?? e) }))
         if (!r.ok) {
-          issues.push({ kind: 'inspectError', level: 'warn', t: clip.start, clipId: clip.id, fragmentId: fid, message: `пересечения в ${fid} не проверить: ${r.error.split('\n')[0]}` })
+          issues.push({ kind: 'inspectError', level: 'warn', t: clip.start, clipId: clip.id, fragmentId: fid, message: trf('eCkCollideErr', { id: fid, err: r.error.split('\n')[0] }) })
           continue
         }
         checked.collisions++
@@ -490,7 +490,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
           // touching on (nearly) every frame both were there = an assembly in contact
           if (p.hitFrames.length >= 0.9 * p.sampled) {
             issues.push({ kind: 'contact', level: 'info', t: clip.start, clipId: clip.id, fragmentId: fid,
-              message: `${p.pair}: касаются всё время — сборка в контакте (не движение сквозь)` })
+              message: trf('eCkContact', { pair: p.pair }) })
             continue
           }
           const runs: [number, number][] = []
@@ -503,7 +503,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
             const a = toTimeline(clip, tau(f0)), b = toTimeline(clip, tau(f1))
             if (a === null) continue
             issues.push({ kind: 'collision', level: 'warn', t: a, end: b ?? a, clipId: clip.id, fragmentId: fid,
-              message: `${p.pair} проходят друг сквозь друга ${fmt(a)}${b && b - a > 0.05 ? '–' + fmt(b) : ''}` })
+              message: trf('eCkCollision', { pair: p.pair, at: `${fmt(a)}${b && b - a > 0.05 ? '–' + fmt(b) : ''}` }) })
           }
         }
       }

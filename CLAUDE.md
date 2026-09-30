@@ -63,6 +63,14 @@ mixes audio and muxes/transcodes per preset.
   transcripts, voice-over scripts and run folders, reversed renders, downloads
   and frame-run intermediates — into `<project>/media/` and rewrites them;
   paths inside the project folder are saved relative);
+  `check-i18n-literals.mjs` (no Cyrillic literal anywhere outside
+  `src/i18n.ts` — errors included — and every key main says is in the
+  table) and `check-said.mjs` (H9: main has no table and no UI language, so
+  it throws `saidError(key, args)` from `shared/said.ts` — a mark + JSON in
+  the message, args may be Saids themselves — and returns warnings as
+  `said(…)`; `speakMainErrors()` in src/i18n.ts wraps every `window.kadr`
+  call at boot so a rejection arrives as the sentence in the UI language,
+  and `spoken()` says a returned warning);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);

@@ -10,9 +10,11 @@
 // Rules (TS AST over src/**/*.ts(x), electron/*.ts, shared/*.ts):
 //  1. JSX text, and a literal given to title / aria-label / placeholder / alt,
 //     comes from the table — except the proper nouns and codes in ALLOW.
-//  2. No Cyrillic in a string or template literal of a component (.tsx). The
-//     .ts modules still throw Russian errors: counted against a ceiling that
-//     may only fall. Main hands the renderer a key and args (`Said`) instead.
+//  2. No Cyrillic in a string or template literal anywhere — components and
+//     .ts modules alike (errors thrown or returned included): the renderer
+//     says it through tr()/trf(), main throws `saidError(key, args)`
+//     (shared/said.ts) and the renderer says that in the UI language.
+//  2a. Every key main says exists in the table.
 //  3. log*(source, msg) never gets a literal with words (a file name aside):
 //     both go through tr().
 //  4. The English table carries no Cyrillic.
@@ -36,9 +38,9 @@ const check = (name, hits) => {
 const ALLOW = new Set([
   'Kadr', 'Claude', 'Claude Code', 'Python', 'BPM', 'Remotion:', 'Ctrl+S', '· Ctrl+S', 'Ctrl+Shift+S', 'Esc', 'OK',
   'Русский', 'English', 'Sans', 'Arial Black', 'Serif', 'Mono', 'large-v3 —', 'medium —', 'base —',
-  '~/kadr-fragments', 'claude', 'http://127.0.0.1:1080', 'fps ·', 'RU', 'EN'
+  '~/kadr-fragments', 'claude', 'http://127.0.0.1:1080', 'fps ·', 'RU', 'EN',
+  'е'   // shared/keymap.ts: the palette's search folds ё into е — a letter, not text
 ])
-const DEBT_CEILING = 142
 const CYR = /[Ѐ-ӿ]/
 const WORD = /[A-Za-zЀ-ӿ]{2,}/
 const ATTRS = new Set(['title', 'aria-label', 'placeholder', 'alt'])
@@ -64,7 +66,7 @@ const literal = (e) => {
 }
 const allowed = (s) => ALLOW.has(s.trim().replace(/\s+/g, ' '))
 
-const text = [], cyr = [], debt = [], logs = [], roles = [], labels = []
+const text = [], cyr = [], logs = [], roles = [], labels = []
 for (const file of files) {
   const src = readFileSync(file, 'utf8')
   const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
@@ -86,7 +88,7 @@ for (const file of files) {
     const strs = ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) ? [n.text]
       : ts.isTemplateExpression(n) ? [n.head.text, ...n.templateSpans.map((s) => s.literal.text)] : []
     if (strs.some((s) => CYR.test(s)) && !ts.isJsxAttribute(n.parent) && !allowed(strs.join('')) && !ts.isTemplateSpan(n.parent)) {
-      (tsx ? cyr : debt).push(at(n, strs.join('…')))
+      cyr.push(at(n, strs.join('…')))
     }
     if (ts.isCallExpression(n) && /^log(Error|Warn|Info)$/.test(n.expression.getText())) {
       for (const a of n.arguments.slice(0, 2)) {
@@ -116,11 +118,16 @@ const enCyr = en.split('\n').map((l, i) => [l, i]).filter(([l]) => CYR.test(l.re
   .map(([l]) => 'src/i18n.ts (en)  ' + l.trim().slice(0, 80))
 
 check('no user-visible literal outside i18n.ts (JSX text, title, aria-label, placeholder, alt)', text)
-check('no Cyrillic literal in a component', cyr)
-// Known debt, a ratchet: error texts thrown by engine modules and main (checks'
-// findings, voice-over, 3D import, …) are still Russian. The number may only fall.
-console.log(`      (${debt.length} Cyrillic literals left in .ts modules, ceiling ${DEBT_CEILING})`)
-check(`the .ts modules carry no more Cyrillic literals than before (${DEBT_CEILING})`, debt.length > DEBT_CEILING ? debt : [])
+check('no Cyrillic literal in main or renderer .ts outside i18n', cyr)
+// main's Saids: a key missing from the table would read as the bare key
+const keys = new Set([...i18n.slice(0, enAt).matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]))
+const saidKeys = files.filter((f) => /[\\/]electron[\\/]/.test(f)).flatMap((f) => {
+  const src = readFileSync(f, 'utf8')
+  return [...src.matchAll(/said(?:Error)?\(\s*'(\w+)'|\bkey: '(\w+)'/g)]
+    .map((m) => [relative(root, f).replace(/\\/g, '/'), m[1] ?? m[2]])
+})
+check(`every key main says is in the table (${saidKeys.length} uses)`,
+  saidKeys.filter(([, k]) => !keys.has(k)).map(([f, k]) => `${f}  ${k}`))
 check('session-log sources and messages go through tr()', logs)
 check('the English table has no Russian', enCyr)
 check('every clickable non-control element has a role', roles)

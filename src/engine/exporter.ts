@@ -95,7 +95,7 @@ export function startExport(
     // the very end («write after end» / «write ECANCELED»), and until then the
     // second one sat on the first one's fragment renders looking frozen.
     if (activity.exporting) {
-      throw new Error('уже идёт другой экспорт — дождитесь его или отмените')
+      throw new Error(tr('eExBusy'))
     }
     activity.exporting = true
     // an export can take hours: the system must not sleep under it

@@ -77,9 +77,9 @@ export function beatTarget(project: Project, opts: DetectBeatsOpts, editorRange:
 export async function detectBeats(opts: DetectBeatsOpts = {}): Promise<DetectBeatsResult & { analysis: AudioAnalysisResult }> {
   const st = useEditor.getState()
   const { range, filter, source } = beatTarget(st.project, opts, st.range)
-  if (!(range.end - range.start > 0.5)) throw new Error('слишком короткий участок для поиска битов (нужно больше 0.5 с)')
+  if (!(range.end - range.start > 0.5)) throw new Error(tr('eBtShort'))
   const segments = collectRangeAudio(st.project, range.start, range.end, filter)
-  if (!segments.length) throw new Error('в выбранном участке нет звука')
+  if (!segments.length) throw new Error(tr('eBtSilent'))
   useBeatsUi.setState({ busy: true })
   try {
     const analysis = await window.kadr.audioAnalyze({ audioSegments: segments, duration: range.end - range.start })

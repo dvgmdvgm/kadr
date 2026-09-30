@@ -45,7 +45,7 @@ export function wireModels() {
  */
 export async function importModels(paths: string[], opts: { budget?: number; name?: string } = {}): Promise<ModelInfo[]> {
   const dir = projectDir()
-  if (!dir) throw new Error('3D-модели хранятся в папке проекта (kadr-lib/models) — сначала сохраните проект')
+  if (!dir) throw new Error(tr('eMdSaveFirst'))
   const out: ModelInfo[] = []
   useModelsUi.setState((s) => ({ busy: s.busy + paths.length }))
   try {
@@ -111,7 +111,7 @@ const camera = (h: number, r: number) => cameraPath([
   { t: DUR, target: [0, h * 0.5, 0], az: 35, el: 10, r: r * 0.92, fov: 30 }
 ])
 
-export const fragment = { component: Film, meta, inspect: defineInspect({ events: [{ t: REVEAL, kind: 'big', label: 'модель готова' }] }) }
+export const fragment = { component: Film, meta, inspect: defineInspect({ events: [{ t: REVEAL, kind: 'big', label: '${tr('eMdReadyLabel')}' }] }) }
 `
 }
 
@@ -132,7 +132,7 @@ export async function insertModelFragment(name: string, opts: { start?: number; 
 export async function prepareForFragment(assetId: string, opts: { maxSide?: number } = {}) {
   const st = useEditor.getState()
   const a = st.project.assets.find((x) => x.id === assetId)
-  if (!a) throw new Error('нет такого файла в корзине')
+  if (!a) throw new Error(tr('eMdNoAsset'))
   const dir = projectDir()
   if (!dir) {
     logError(tr('lgForFragment'), tr('lmFragMediaNoProject'))

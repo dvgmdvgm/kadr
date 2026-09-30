@@ -53,7 +53,7 @@ async function snapshotDir(opts: { dir?: string; interactive?: boolean }): Promi
   const pp = useEditor.getState().projectPath
   if (pp) return dirOf(pp)
   if (opts.interactive) {
-    const dir = await window.kadr.pickDirectory('Куда сохранить снимок кадра')
+    const dir = await window.kadr.pickDirectory(tr('eSnPickDir'))
     if (!dir) throw new Error('snapshot cancelled')
     return dir
   }
@@ -278,7 +278,7 @@ function sheetLabel(t: number, fps: number): string {
   const last = beats.length ? beats.reduce((a, b) => (b.time > a.time ? b : a)) : null
   if (last) {
     const b = last as { bar?: number; beatInBar?: number }
-    out += ` · такт ${b.bar}.${b.beatInBar ?? 1}`
+    out += trf('eSnBar', { bar: `${b.bar}.${b.beatInBar ?? 1}` })
   }
   return out
 }

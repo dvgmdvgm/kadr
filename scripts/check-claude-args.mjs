@@ -125,7 +125,8 @@ try {
   delete process.env.CLAUDE_CONFIG_DIR
   rmSync(cfg, { recursive: true, force: true })
   const main = readFileSync(join(root, 'electron', 'main.ts'), 'utf8')
-  const calls = main.match(/withTranscripts\([^)]*\)/g) ?? []
+  // a call per line: H8 wrapped the project in saveRelative(…), whose ')' ended a [^)]* match early
+  const calls = main.split('\n').filter((l) => /withTranscripts\(/.test(l)).map((l) => l.trim())
   check('both project writers pass the embedChats setting',
     calls.length === 2 && calls.every((c) => c.includes("'claude.embedChats'")), calls.join(' | '))
 }
