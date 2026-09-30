@@ -13,11 +13,22 @@ export interface RawEncodeOpts {
   /** 'libx264' or a preset ffmpegVideo codec such as 'libvpx-vp9' */
   codec: string
   bitrate: number
+  /** x264 only: 'abr' (default, the built-in presets) or constant quality */
+  rateControl?: 'abr' | 'crf'
+  /** x264 CRF, 0–51; default 18 (decision 3) */
+  crf?: number
+  /** x264 speed preset; default 'faster' */
+  x264Preset?: string
   out: string
 }
 
+/** the x264 speed presets the export dialog offers, fastest first */
+export const X264_PRESETS = ['faster', 'fast', 'medium', 'slow'] as const
+
 export function rawEncodeArgs(o: RawEncodeOpts): string[] {
   const b = Math.max(1_000_000, o.bitrate || 10_000_000)
+  const speed = (X264_PRESETS as readonly string[]).includes(o.x264Preset ?? '') ? o.x264Preset! : 'faster'
+  const crf = Math.min(51, Math.max(0, Math.round(o.crf ?? 18)))
   const ow = o.outWidth ?? o.width
   const oh = o.outHeight ?? o.height
   const vf = ow === o.width && oh === o.height
@@ -33,8 +44,10 @@ export function rawEncodeArgs(o: RawEncodeOpts): string[] {
     '-i', 'pipe:0',
     '-vf', vf,
     ...(o.codec === 'libx264'
-      ? ['-c:v', 'libx264', '-preset', 'faster',
-         '-b:v', String(b), '-maxrate', String(Math.round(b * 1.6)), '-bufsize', String(b * 3)]
+      ? ['-c:v', 'libx264', '-preset', speed,
+         ...(o.rateControl === 'crf'
+           ? ['-crf', String(crf)]
+           : ['-b:v', String(b), '-maxrate', String(Math.round(b * 1.6)), '-bufsize', String(b * 3)])]
       : ['-c:v', o.codec, '-b:v', String(b),
          ...(o.codec === 'libvpx-vp9' ? ['-row-mt', '1', '-cpu-used', '4'] : [])]),
     '-pix_fmt', 'yuv420p',

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ExportProgress } from '@shared/types'
+import type { ExportPreset, ExportProgress } from '@shared/types'
 import {
   PRESETS, presetName, videoCodecLabel, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
   saveExportPreset, renameExportPreset, deleteExportPreset
 } from '@/presets'
 import { fileNameFrom } from '@shared/exportPresets'
+import { X264_PRESETS } from '@shared/rawEncode'
 import { effective, type SettingKey } from '@shared/settings'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
@@ -35,6 +36,9 @@ export function ExportDialog() {
   const motionBlur = on('export.motionBlur')
   const frameBlending = on('export.frameBlending')
   const fastEncoder = on('export.fastEncoder')
+  const quality: 'abr' | 'crf' = effective('export.quality', snap).value === 'crf' ? 'crf' : 'abr'
+  const crf = Number(effective('export.crf', snap).value)
+  const x264Preset = String(effective('export.x264Preset', snap).value)
   const put = useSettings.getState().set
   // the preset name being typed: null = not editing; `mode` says what OK does
   const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
@@ -54,6 +58,9 @@ export function ExportDialog() {
   const running = status.kind === 'running'
   const presets = [...userPresets, ...PRESETS]
   const preset = presets.find((p) => p.id === presetId) ?? PRESETS[0]
+  // rate control is x264's (G3): VP9 and MP3 keep their preset as it is
+  const x264 = preset.ffmpegVideo === 'copy' && !preset.audioOnly
+  const job: ExportPreset = x264 ? { ...preset, rateControl: quality, crf, x264Preset } : preset
   const own = isUserPreset(preset)
   const fileName = fileNameFrom(setting<string>('export.fileName'),
     { project: project.name, preset: presetName(preset), date: new Date() })
@@ -66,6 +73,9 @@ export function ExportDialog() {
       put('export.motionBlur', p.motionBlur)
       put('export.frameBlending', p.frameBlending)
       put('export.fastEncoder', p.fastEncoder)
+      put('export.quality', p.rateControl ?? 'abr')
+      put('export.crf', p.crf ?? 18)
+      put('export.x264Preset', p.x264Preset ?? 'faster')
     }
   }
 
@@ -73,7 +83,7 @@ export function ExportDialog() {
     const name = naming?.name.trim()
     if (naming && name) {
       if (naming.mode === 'rename') renameExportPreset(preset.id, name)
-      else choose(saveExportPreset(preset, { motionBlur, frameBlending, fastEncoder }, name).id)
+      else choose(saveExportPreset(job, { motionBlur, frameBlending, fastEncoder }, name).id)
     }
     setNaming(null)
   }
@@ -87,7 +97,7 @@ export function ExportDialog() {
     setStatus({ kind: 'running', phase: 'video', progress: 0 })
     const h = startExport(
       s.project,
-      preset,
+      job,
       out,
       (p) => setStatus({ kind: 'running', phase: p.phase, progress: p.progress }),
       s.range,
@@ -214,7 +224,39 @@ export function ExportDialog() {
         <>
           {value(t('exSize'), `${width}×${height}${asProject(preset.width)}`)}
           {value(t('exFps'), `${fps} fps${asProject(preset.fps)}`)}
-          {value(t('exCodec'), videoCodecLabel(preset))}
+          {/* the fast encoder is Chromium's: it takes no x264 rate control */}
+          {value(t('exCodec'), videoCodecLabel(fastEncoder ? preset : job))}
+          {x264 && (
+            <>
+              <div className="insp-field">
+                <span>{t('exQuality')}</span>
+                <select aria-label={t('exQuality')} value={quality} disabled={running || fastEncoder}
+                        title={fastEncoder ? t('fastEncoderHint') : undefined}
+                        onChange={(e) => put('export.quality', e.target.value)}>
+                  <option value="abr">{t('exQualityAbr')}</option>
+                  <option value="crf">{t('exQualityCrf')}</option>
+                </select>
+              </div>
+              {quality === 'crf' && (
+                <div className="insp-field" title={t('exCrfHint')}>
+                  <span>{t('exCrf')}</span>
+                  <input type="number" aria-label={t('exCrf')} min={0} max={51} step={1} value={crf}
+                         disabled={running || fastEncoder}
+                         onChange={(e) => {
+                           const n = Math.round(Number(e.target.value))
+                           if (e.target.value !== '' && n >= 0 && n <= 51) put('export.crf', n)
+                         }} />
+                </div>
+              )}
+              <div className="insp-field">
+                <span>{t('exSpeed')}</span>
+                <select aria-label={t('exSpeed')} value={x264Preset} disabled={running || fastEncoder}
+                        onChange={(e) => put('export.x264Preset', e.target.value)}>
+                  {X264_PRESETS.map((p) => <option key={p} value={p}>{t(`x264${p}`)}</option>)}
+                </select>
+              </div>
+            </>
+          )}
           <label className="anim-check export-mb">
             <input
               type="checkbox"

@@ -6,7 +6,7 @@ import { promises as fsp } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment } from '@shared/types'
-import { rawEncodeArgs } from '@shared/rawEncode'
+import { rawEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
 
@@ -637,16 +637,7 @@ export class RawVideoEncoder {
   private closed: Promise<void> | null = null
   private err = ''
 
-  start(opts: {
-    width: number
-    height: number
-    outWidth?: number
-    outHeight?: number
-    fps: number
-    codec: string // 'libx264' or an ffmpegVideo codec like 'libvpx-vp9'
-    bitrate: number
-    out: string
-  }) {
+  start(opts: RawEncodeOpts) {
     const child = spawn(FFMPEG, rawEncodeArgs(opts), { stdio: ['pipe', 'ignore', 'pipe'] })
     this.child = child
     child.stderr!.on('data', (c) => { this.err += c })

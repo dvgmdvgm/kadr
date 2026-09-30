@@ -965,6 +965,7 @@ function registerIpc() {
       width, height, outWidth, outHeight, fps,
       codec: preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo,
       bitrate: preset.videoBitrate,
+      rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
       out: st.videoTemp
     })
     try {

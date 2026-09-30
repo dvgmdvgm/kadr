@@ -21,7 +21,8 @@ mixes audio and muxes/transcodes per preset.
   `check-ttstext.mjs` (text splitting), `check-proxy.mjs` (proxy choice),
   `check-voicemap.mjs` (time remapping after a splice),
   `check-settings-wiring.mjs` (every setting has a consumer and a row),
-  `check-chats.mjs` (Claude chats round-tripping through the .kadr);
+  `check-chats.mjs` (Claude chats round-tripping through the .kadr),
+  `check-rate-control.mjs` (x264 ABR/CRF args);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
@@ -691,7 +692,10 @@ mixes audio and muxes/transcodes per preset.
   fast decode (`src/engine/demux.ts`, mp4box + WebCodecs, element-seek
   fallback, `KADR_DISABLE_FAST_DECODE` kill-switch) → optional 8-sample
   motion blur and per-clip frame blending → ffmpeg x264 encode at the
-  preset bitrate (the preload spawns ffmpeg and receives readPixels
+  preset bitrate, or in the quality mode at CRF (default 18) — both with a
+  chosen x264 speed, args built in `shared/rawEncode.ts` (ABR args
+  unchanged, test `check-rate-control.mjs`) and written to the session
+  log on every export (the preload spawns ffmpeg and receives readPixels
   frames BY REFERENCE — contextIsolation is off exactly for this; every
   IPC/bridge route copies ~8 MB per 1080p frame and tripled render time;
   Chromium's own WebCodecs encoder ignores the requested bitrate and

@@ -998,6 +998,10 @@ export interface ExportPreset {
   audioCodec: string
   audioBitrate: string // ffmpeg style, e.g. '192k'
   audioOnly?: boolean
+  /** x264 rate control (shared/rawEncode.ts); absent = 'abr' at videoBitrate */
+  rateControl?: 'abr' | 'crf'
+  crf?: number
+  x264Preset?: string
 }
 
 export interface ExportJob {
@@ -1308,6 +1312,7 @@ export interface KadrApi {
   rawEncodeStart(o: {
     width: number; height: number; outWidth?: number; outHeight?: number
     fps: number; codec: string; bitrate: number
+    rateControl?: 'abr' | 'crf'; crf?: number; x264Preset?: string
   }): Promise<string>
   /** resolves when ffmpeg's stdin accepted the memory — only then reuse it */
   rawEncodeFrame(view: Uint8Array): Promise<void>

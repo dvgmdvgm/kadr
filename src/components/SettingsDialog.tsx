@@ -11,6 +11,7 @@ import { useT, type TKey } from '@/i18n'
 import { useSettings } from '@/state/store'
 import { TRANSITIONS } from '@/gl/transitions'
 import { PRESETS, presetName, allPresets } from '@/presets'
+import { X264_PRESETS } from '@shared/rawEncode'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
 import { KeysSection, KeysHeadActions } from './KeysSection'
@@ -472,6 +473,17 @@ function Export({ t }: { t: T }) {
       </Row>
       <Row label={t('setFastEnc')} keys={['export.fastEncoder']} shown={t('setOff')}>
         <Check k="export.fastEncoder" label={t('setFastEnc')} />
+      </Row>
+      <Row label={t('exQuality')} keys={['export.quality']} shown={t('exQualityAbr')}>
+        <Choice k="export.quality" label={t('exQuality')} width={240}
+                options={[['abr', t('exQualityAbr')], ['crf', t('exQualityCrf')]]} />
+      </Row>
+      <Row label={t('exCrf')} keys={['export.crf']} shown="18" detail={t('exCrfHint')}>
+        <Num k="export.crf" label={t('exCrf')} step={1} />
+      </Row>
+      <Row label={t('exSpeed')} keys={['export.x264Preset']} shown={t('x264faster')}>
+        <Choice k="export.x264Preset" label={t('exSpeed')} width={240}
+                options={X264_PRESETS.map((p) => [p, t(`x264${p}`)])} />
       </Row>
       <Row label={t('setFileName')} keys={['export.fileName']} shown="{project}" detail={t('setFileNameHint')}>
         <Text k="export.fileName" label={t('setFileName')} mono />

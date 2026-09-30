@@ -107,6 +107,10 @@ export const SETTINGS = {
   'export.motionBlur': { type: 'boolean', default: true, section: 'export' },
   'export.frameBlending': { type: 'boolean', default: true, section: 'export' },
   'export.fastEncoder': { type: 'boolean', default: false, section: 'export' },
+  /** x264 rate control (shared/rawEncode.ts): the preset's bitrate, or constant quality (decision 3) */
+  'export.quality': { type: 'enum', options: ['abr', 'crf'], default: 'abr', section: 'export' },
+  'export.crf': { type: 'number', min: 0, max: 51, default: 18, section: 'export' },
+  'export.x264Preset': { type: 'enum', options: ['faster', 'fast', 'medium', 'slow'], default: 'faster', section: 'export' },
   /** the name the save dialog proposes: {project} {preset} {date} (shared/exportPresets.ts fileNameFrom) */
   'export.fileName': { type: 'string', default: '{project}', section: 'export' },
   /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */

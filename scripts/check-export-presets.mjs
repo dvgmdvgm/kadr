@@ -72,6 +72,15 @@ run('a broken entry is dropped, the good ones stay', () => {
     r.map((p) => p.id).join(','))
 })
 
+run('a user preset keeps its x264 rate control (G3)', () => {
+  const crf = userPreset({ ...yt, rateControl: 'crf', crf: 20, x264Preset: 'slow' },
+    { motionBlur: true, frameBlending: true, fastEncoder: false }, 'CRF', 'user-crf')
+  const r = sanitizeUserPresets(JSON.parse(JSON.stringify([crf, { ...crf, id: 'user-bad', crf: 99 }])), builtinIds)
+  check('a user preset keeps its x264 rate control (G3)',
+    r.length === 1 && r[0].rateControl === 'crf' && r[0].crf === 20 && r[0].x264Preset === 'slow',
+    JSON.stringify(r))
+})
+
 run('unknown fields are not carried', () => {
   const good = userPreset(yt, { motionBlur: true, frameBlending: true, fastEncoder: false }, 'Ok', 'user-ok')
   const r = sanitizeUserPresets([{ ...good, evil: '<script>' }], builtinIds)

@@ -11,7 +11,8 @@ export const presetName = (p: ExportPreset): string => (NAME_KEY[p.id] ? tr(NAME
 const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3' }
 /** the export dialog's read-only codec lines: «H.264 · 10 Mbit/s», «AAC · 192 kbit/s» */
 export const videoCodecLabel = (p: ExportPreset): string =>
-  `${p.ffmpegVideo === 'libvpx-vp9' ? 'VP9' : 'H.264'} · ${+(p.videoBitrate / 1e6).toFixed(1)} ${tr('mbpsUnit')}`
+  `${p.ffmpegVideo === 'libvpx-vp9' ? 'VP9' : 'H.264'} · ${p.rateControl === 'crf'
+    ? `CRF ${p.crf ?? 18}` : `${+(p.videoBitrate / 1e6).toFixed(1)} ${tr('mbpsUnit')}`}`
 export const audioCodecLabel = (p: ExportPreset): string =>
   `${AUDIO_CODEC[p.audioCodec] ?? p.audioCodec} · ${parseInt(p.audioBitrate)} ${tr('kbpsUnit')}`
 

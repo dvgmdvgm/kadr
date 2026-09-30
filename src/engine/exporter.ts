@@ -18,6 +18,7 @@ import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
 import { registerLibFonts } from './fonts'
 import { logInfo, logWarn } from './log'
+import { rawEncodeArgs } from '@shared/rawEncode'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
@@ -199,10 +200,13 @@ export function startExport(
     if (useRaw) {
       const codec = preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo
       try {
-        rawDirect = await window.kadr.rawEncodeStart({
+        const enc = {
           width: rw, height: rh, outWidth: width, outHeight: height,
-          fps, codec, bitrate: preset.videoBitrate
-        })
+          fps, codec, bitrate: preset.videoBitrate,
+          rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset
+        }
+        logInfo(tr('lgExport'), rawEncodeArgs({ ...enc, out: 'pipe' }).join(' '))
+        rawDirect = await window.kadr.rawEncodeStart(enc)
         for (let s = 0; s < 2; s++) slots.push(new Uint8Array(rw * rh * 4))
       } catch (err) {
         logWarn(tr('lgExport'), tr('lmExpDirect'), err)
