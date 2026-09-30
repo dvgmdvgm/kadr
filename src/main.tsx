@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App, { openProjectAt } from './App'
 import { runAction, useKeymap, setActionKeys, usePaletteUi } from './engine/actions'
 import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints, setting } from './state/store'
-import { PRESETS } from './presets'
+import { PRESETS, allPresets } from './presets'
 import { startExport } from './engine/exporter'
 import { evalAnim } from './engine/anim'
 import { wireProxies } from './engine/proxy'
@@ -88,7 +88,7 @@ wireFonts()
 // every editor operation is reachable from here.
 ;(window as any).kadrEditor = {
   useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults,
-  PRESETS, startExport, evalAnim, openProject: openProjectAt,
+  PRESETS, exportPresets: allPresets, startExport, evalAnim, openProject: openProjectAt,
   transcribe: transcribeFlow, parseSrt, cuesToSrt, docTimeToProject, segmentsToCues,
   createFragment, ensureFragmentServer, deleteFragment, fragmentNeedsCapture, autoCaptions, captionsTsx, autosaveNow, activity,
   // an embedded-Claude turn begins: main calls this before the turn's first /eval

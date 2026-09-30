@@ -102,10 +102,13 @@ export const SETTINGS = {
   'save.keep': { type: 'number', min: 1, max: 100, default: 10, section: 'save' },
   /** MB per project */
   'save.capMB': { type: 'number', min: 10, max: 100000, default: 500, section: 'save' },
-  // the export dialog's starting values (ExportDialog.tsx)
+  // the export dialog's starting values (ExportDialog.tsx), written back by it: the last export's choices
   'export.preset': { type: 'string', default: 'yt1080', section: 'export' },
   'export.motionBlur': { type: 'boolean', default: true, section: 'export' },
   'export.frameBlending': { type: 'boolean', default: true, section: 'export' },
+  'export.fastEncoder': { type: 'boolean', default: false, section: 'export' },
+  /** the name the save dialog proposes: {project} {preset} {date} (shared/exportPresets.ts fileNameFrom) */
+  'export.fileName': { type: 'string', default: '{project}', section: 'export' },
   /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */
   'storage.cacheRoot': { type: 'string', default: '', section: 'storage', restart: true },
   /** decoded intermediates, GB */

@@ -1,5 +1,8 @@
+import { create } from 'zustand'
 import type { ExportPreset } from '@shared/types'
+import { sanitizeUserPresets, userPreset, type ExportOptions, type UserExportPreset } from '@shared/exportPresets'
 import { tr, type TKey } from './i18n'
+import { saveUserStore } from './engine/userStore'
 
 /** The name shown for a preset: the three that describe themselves in words are translated. */
 const NAME_KEY: Record<string, TKey> = { source: 'presetSource', webm: 'presetWebm', mp3: 'presetMp3' }
@@ -106,3 +109,34 @@ export const PRESETS: ExportPreset[] = [
     audioOnly: true
   }
 ]
+
+// ---- the user's presets: userData/export-presets.json, newest first --------
+// Built-ins stay read-only; a user preset is a built-in's fields plus the
+// three render options (shared/exportPresets.ts reads the file back).
+
+const FILE = 'export-presets'
+export const useExportPresets = create<{ presets: UserExportPreset[] }>(() => ({ presets: [] }))
+/** what the dialog, the settings screen and kadr_export choose from: the user's first */
+export const allPresets = (): ExportPreset[] => [...useExportPresets.getState().presets, ...PRESETS]
+export const isUserPreset = (p: ExportPreset): p is UserExportPreset => (p as UserExportPreset).user === true
+
+function persist(presets: UserExportPreset[]) {
+  useExportPresets.setState({ presets })
+  void saveUserStore(FILE, presets)
+}
+export function saveExportPreset(base: ExportPreset, opts: ExportOptions, name: string): UserExportPreset {
+  const p = userPreset(base, opts, name.trim(), `user-${crypto.randomUUID()}`)
+  persist([p, ...useExportPresets.getState().presets])
+  return p
+}
+export const renameExportPreset = (id: string, name: string) =>
+  persist(useExportPresets.getState().presets.map((p) => (p.id === id ? { ...p, name: name.trim() } : p)))
+export const deleteExportPreset = (id: string) =>
+  persist(useExportPresets.getState().presets.filter((p) => p.id !== id))
+
+if (typeof window !== 'undefined' && window.kadr) {
+  window.kadr.readUserStore(FILE).then(
+    (raw) => useExportPresets.setState({ presets: sanitizeUserPresets(raw, PRESETS.map((p) => p.id)) }),
+    () => { /* no file yet: the built-ins */ }
+  )
+}

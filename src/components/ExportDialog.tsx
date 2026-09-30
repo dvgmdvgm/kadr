@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ExportProgress } from '@shared/types'
-import { PRESETS, presetName, videoCodecLabel, audioCodecLabel } from '@/presets'
+import {
+  PRESETS, presetName, videoCodecLabel, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
+  saveExportPreset, renameExportPreset, deleteExportPreset
+} from '@/presets'
+import { fileNameFrom } from '@shared/exportPresets'
+import { effective, type SettingKey } from '@shared/settings'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
-import { useEditor, setting, projectDuration } from '@/state/store'
+import { useEditor, useSettings, setting, projectDuration } from '@/state/store'
 import { useT } from '@/i18n'
 import { Icon } from './icons'
 import { Modal } from './Modal'
@@ -21,18 +26,18 @@ export function ExportDialog() {
   const open = useEditor((s) => s.exportOpen)
   const range = useEditor((s) => s.range)
   const project = useEditor((s) => s.project)
-  const [presetId, setPresetId] = useState(PRESETS[0].id)
-  const [motionBlur, setMotionBlur] = useState(true)
-  const [frameBlending, setFrameBlending] = useState(true)
-  const [fastEncoder, setFastEncoder] = useState(false)
-  // «Экспорт» settings: each opening starts from them
-  useEffect(() => {
-    if (!open) return
-    const p = setting<string>('export.preset')
-    setPresetId(PRESETS.some((x) => x.id === p) ? p : PRESETS[0].id)
-    setMotionBlur(setting('export.motionBlur') === true)
-    setFrameBlending(setting('export.frameBlending') === true)
-  }, [open])
+  const userPresets = useExportPresets((s) => s.presets)
+  // the «Экспорт» settings ARE the dialog's state: every change is written
+  // back, so the next opening (and the next launch) starts from the last choice
+  const snap = useSettings((s) => s.snap)
+  const on = (k: SettingKey) => effective(k, snap).value === true
+  const presetId = String(effective('export.preset', snap).value)
+  const motionBlur = on('export.motionBlur')
+  const frameBlending = on('export.frameBlending')
+  const fastEncoder = on('export.fastEncoder')
+  const put = useSettings.getState().set
+  // the preset name being typed: null = not editing; `mode` says what OK does
+  const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
   const handle = useRef<ExportHandle | null>(null)
 
@@ -47,12 +52,36 @@ export function ExportDialog() {
 
   if (!open) return null
   const running = status.kind === 'running'
-  const preset = PRESETS.find((p) => p.id === presetId) ?? PRESETS[0]
+  const presets = [...userPresets, ...PRESETS]
+  const preset = presets.find((p) => p.id === presetId) ?? PRESETS[0]
+  const own = isUserPreset(preset)
+  const fileName = fileNameFrom(setting<string>('export.fileName'),
+    { project: project.name, preset: presetName(preset), date: new Date() })
+
+  function choose(id: string) {
+    put('export.preset', id)
+    const p = allPresets().find((x) => x.id === id)
+    // a user preset carries its render options
+    if (p && isUserPreset(p)) {
+      put('export.motionBlur', p.motionBlur)
+      put('export.frameBlending', p.frameBlending)
+      put('export.fastEncoder', p.fastEncoder)
+    }
+  }
+
+  function commitName() {
+    const name = naming?.name.trim()
+    if (naming && name) {
+      if (naming.mode === 'rename') renameExportPreset(preset.id, name)
+      else choose(saveExportPreset(preset, { motionBlur, frameBlending, fastEncoder }, name).id)
+    }
+    setNaming(null)
+  }
 
   async function begin() {
     const s = useEditor.getState()
     const ext = preset.container
-    const out = await window.kadr.exportDialog(s.project.name, ext)
+    const out = await window.kadr.exportDialog(fileName, ext)
     if (!out) return
     s.setPlaying(false)
     setStatus({ kind: 'running', phase: 'video', progress: 0 })
@@ -142,12 +171,41 @@ export function ExportDialog() {
       }
     >
       <div className="insp-section">{t('preset')}</div>
-      <select className="export-preset" aria-label={t('preset')} value={presetId} disabled={running}
-              onChange={(e) => setPresetId(e.target.value)}>
-        {PRESETS.map((p) => (
-          <option key={p.id} value={p.id}>{presetName(p)}</option>
-        ))}
-      </select>
+      {naming ? (
+        <div className="export-preset-row">
+          <input type="text" className="export-preset" aria-label={t('exPresetName')} autoFocus
+                 placeholder={t('exPresetName')} value={naming.name}
+                 onChange={(e) => setNaming({ ...naming, name: e.target.value })}
+                 onKeyDown={(e) => {
+                   if (e.key === 'Enter') commitName()
+                   // Escape leaves the name field, not the dialog
+                   if (e.key === 'Escape') { e.stopPropagation(); setNaming(null) }
+                 }} />
+          <button className="primary" disabled={!naming.name.trim()} onClick={commitName}>{t('save')}</button>
+          <button onClick={() => setNaming(null)}>{t('cancel')}</button>
+        </div>
+      ) : (
+        <div className="export-preset-row">
+          <select className="export-preset" aria-label={t('preset')} value={preset.id} disabled={running}
+                  onChange={(e) => choose(e.target.value)}>
+            {userPresets.length > 0 && (
+              <optgroup label={t('exMyPresets')}>
+                {userPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </optgroup>
+            )}
+            <optgroup label={t('exBuiltin')}>
+              {PRESETS.map((p) => <option key={p.id} value={p.id}>{presetName(p)}</option>)}
+            </optgroup>
+          </select>
+          <button className="ghost icon-only" title={t('exSaveAs')} aria-label={t('exSaveAs')} disabled={running}
+                  onClick={() => setNaming({ mode: 'save', name: '' })}><Icon name="save" /></button>
+          <button className="ghost icon-only" title={t('exRename')} aria-label={t('exRename')} disabled={running || !own}
+                  onClick={() => setNaming({ mode: 'rename', name: preset.name })}><Icon name="pencil" /></button>
+          <button className="ghost icon-only" title={t('exDeletePreset')} aria-label={t('exDeletePreset')}
+                  disabled={running || !own}
+                  onClick={() => { deleteExportPreset(preset.id); put('export.preset', null) }}><Icon name="trash" /></button>
+        </div>
+      )}
 
       <div className="insp-section">{t('exVideo')}</div>
       {preset.audioOnly ? (
@@ -162,7 +220,7 @@ export function ExportDialog() {
               type="checkbox"
               checked={motionBlur}
               disabled={running}
-              onChange={(e) => setMotionBlur(e.target.checked)}
+              onChange={(e) => put('export.motionBlur', e.target.checked)}
             />
             {t('motionBlur')}
           </label>
@@ -171,7 +229,7 @@ export function ExportDialog() {
               type="checkbox"
               checked={frameBlending}
               disabled={running}
-              onChange={(e) => setFrameBlending(e.target.checked)}
+              onChange={(e) => put('export.frameBlending', e.target.checked)}
             />
             {t('frameBlending')}
           </label>
@@ -180,7 +238,7 @@ export function ExportDialog() {
               type="checkbox"
               checked={fastEncoder}
               disabled={running}
-              onChange={(e) => setFastEncoder(e.target.checked)}
+              onChange={(e) => put('export.fastEncoder', e.target.checked)}
             />
             {t('fastEncoder')}
           </label>
@@ -198,6 +256,7 @@ export function ExportDialog() {
 
       <div className="insp-section">{t('exFile')}</div>
       {value(t('exFormat'), `${preset.container.toUpperCase()} (.${preset.container})`)}
+      {value(t('exName'), `${fileName}.${preset.container}`)}
       <div className="dim">{t('exAskPath')}</div>
     </Modal>
   )

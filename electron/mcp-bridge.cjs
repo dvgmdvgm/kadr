@@ -125,8 +125,8 @@ server.registerTool('kadr_state', {
         projectPath: s.projectPath,
         selection: s.selection,
         playhead: s.playhead,
-        exportPresets: window.kadrEditor.PRESETS.map(p => ({
-          id: p.id, name: p.name, container: p.container, audioOnly: !!p.audioOnly
+        exportPresets: window.kadrEditor.exportPresets().map(p => ({
+          id: p.id, name: p.name, container: p.container, audioOnly: !!p.audioOnly, user: !!p.user
         })),
         // source seconds mapped to the timeline here, once: doing it in the
         // model means getting speed/inPoint wrong sooner or later
@@ -341,27 +341,30 @@ server.registerTool('kadr_export', {
     'Render the current Kadr project (or a time range of it) to a file and wait for completion. ' +
     'Uses the same WYSIWYG pipeline as the editor (GPU composite, effects, transitions, audio mix). ' +
     'presetId comes from kadr_state.exportPresets (default: first mp4). For audio-only output pick ' +
-    'an audioOnly preset (mp3). Returns when the file is fully written.',
+    'an audioOnly preset (mp3). A user preset (user: true) also brings its motion blur and frame ' +
+    'blending unless given here. Returns when the file is fully written.',
   inputSchema: {
     outputPath: z.string().describe('absolute output file path; extension should match the preset container'),
     presetId: z.string().optional(),
     start: z.number().optional().describe('range start, seconds'),
     end: z.number().optional().describe('range end, seconds'),
-    motionBlur: z.boolean().optional().describe('default true'),
-    frameBlending: z.boolean().optional().describe('default true')
+    motionBlur: z.boolean().optional().describe('default: the user preset's, else true'),
+    frameBlending: z.boolean().optional().describe('default: the user preset's, else true')
   }
 }, async ({ outputPath, presetId, start, end, motionBlur, frameBlending }) => {
   try {
     return asText(await editorEval(`
       const ed = window.kadrEditor
       const preset = ${JSON.stringify(presetId ?? null)}
-        ? ed.PRESETS.find(p => p.id === ${JSON.stringify(presetId ?? '')})
+        ? ed.exportPresets().find(p => p.id === ${JSON.stringify(presetId ?? '')})
         : ed.PRESETS.find(p => p.container === 'mp4')
       if (!preset) throw new Error('preset not found')
       const range = ${start != null && end != null ? `{ start: ${start}, end: ${end} }` : 'null'}
       const h = ed.startExport(ed.useEditor.getState().project, preset,
         ${JSON.stringify(outputPath)}, () => {}, range,
-        { motionBlur: ${motionBlur !== false}, frameBlending: ${frameBlending !== false} })
+        { motionBlur: ${motionBlur ?? 'preset.motionBlur !== false'},
+          frameBlending: ${frameBlending ?? 'preset.frameBlending !== false'},
+          encoder: preset.fastEncoder ? 'webcodecs' : 'x264' })
       await h.done
       return { written: ${JSON.stringify(outputPath)}, preset: preset.id }`))
   } catch (e) { return asError(e) }
