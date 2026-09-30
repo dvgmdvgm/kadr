@@ -111,6 +111,13 @@ export const SETTINGS = {
   'export.quality': { type: 'enum', options: ['abr', 'crf'], default: 'abr', section: 'export' },
   'export.crf': { type: 'number', min: 0, max: 51, default: 18, section: 'export' },
   'export.x264Preset': { type: 'enum', options: ['faster', 'fast', 'medium', 'slow'], default: 'faster', section: 'export' },
+  /** the dialog's own output size, fps and bitrate (Mbit/s) over the preset's; 0 = the preset's (G4) */
+  'export.width': { type: 'number', min: 0, max: 8192, default: 0, section: 'export' },
+  'export.height': { type: 'number', min: 0, max: 8192, default: 0, section: 'export' },
+  'export.fps': { type: 'number', min: 0, max: 240, default: 0, section: 'export' },
+  'export.bitrate': { type: 'number', min: 0, max: 400, default: 0, section: 'export' },
+  /** a size other than the project's: bars, crop or stretch (shared/rawEncode.ts outputRect) */
+  'export.fit': { type: 'enum', options: ['fit', 'fill', 'stretch'], default: 'fit', section: 'export' },
   /** the name the save dialog proposes: {project} {preset} {date} (shared/exportPresets.ts fileNameFrom) */
   'export.fileName': { type: 'string', default: '{project}', section: 'export' },
   /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */

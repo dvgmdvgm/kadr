@@ -485,6 +485,20 @@ function Export({ t }: { t: T }) {
         <Choice k="export.x264Preset" label={t('exSpeed')} width={240}
                 options={X264_PRESETS.map((p) => [p, t(`x264${p}`)])} />
       </Row>
+      <Row label={t('exSize')} keys={['export.width', 'export.height']} shown="0 × 0" detail={t('exZeroPreset')}>
+        <Num k="export.width" label={t('exWidth')} step={2} />
+        <Num k="export.height" label={t('exHeight')} step={2} />
+      </Row>
+      <Row label={t('exFps')} keys={['export.fps']} shown="0" unit={t('fpsUnit')} detail={t('exZeroPreset')}>
+        <Num k="export.fps" label={t('exFps')} />
+      </Row>
+      <Row label={t('exBitrate')} keys={['export.bitrate']} shown="0" unit={t('mbpsUnit')} detail={t('exZeroPreset')}>
+        <Num k="export.bitrate" label={t('exBitrate')} />
+      </Row>
+      <Row label={t('exFit')} keys={['export.fit']} shown={t('exFitFit')}>
+        <Choice k="export.fit" label={t('exFit')} width={240}
+                options={[['fit', t('exFitFit')], ['fill', t('exFitFill')], ['stretch', t('exFitStretch')]]} />
+      </Row>
       <Row label={t('setFileName')} keys={['export.fileName']} shown="{project}" detail={t('setFileNameHint')}>
         <Text k="export.fileName" label={t('setFileName')} mono />
       </Row>

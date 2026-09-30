@@ -2786,6 +2786,7 @@ div.tr-error {
 /* the export dialog: sections of read-only values, the status beside the action */
 .export-preset-row { display: flex; gap: var(--s2); align-items: center; }
 .export-preset { flex: 1; min-width: 0; }
+.export-size { display: flex; gap: var(--s2); align-items: center; font-size: var(--fz-sm); color: var(--c-text-2); }
 .export-value { color: var(--c-text); font-size: var(--fz-sm); font-variant-numeric: tabular-nums; text-align: right; }
 .modal-actions:has(.export-status) { align-items: center; }
 .export-status { flex: 1; min-width: 0; }

@@ -39,6 +39,7 @@ const FIELDS: Record<keyof UserExportPreset, (v: unknown) => boolean> = {
   rateControl: (v) => v === undefined || v === 'abr' || v === 'crf',
   crf: (v) => v === undefined || (typeof v === 'number' && v >= 0 && v <= 51),
   x264Preset: (v) => v === undefined || str(v),
+  fit: (v) => v === undefined || v === 'fit' || v === 'fill' || v === 'stretch',
   motionBlur: bool,
   frameBlending: bool,
   fastEncoder: bool,
@@ -61,6 +62,28 @@ export function sanitizeUserPresets(raw: unknown, builtinIds: readonly string[])
     out.push(p as unknown as UserExportPreset)
   }
   return out
+}
+
+/** the export dialog's own size, fps and bitrate (Mbit/s); 0 = the preset's */
+export interface OutputOverrides {
+  width: number
+  height: number
+  fps: number
+  bitrate: number
+  fit: NonNullable<ExportPreset['fit']>
+}
+
+/** the preset with the dialog's values laid over it; sizes rounded to even (yuv420p) */
+export function withOutput(p: ExportPreset, o: OutputOverrides): ExportPreset {
+  const even = (n: number) => Math.max(2, Math.round(n / 2) * 2)
+  return {
+    ...p,
+    ...(o.width > 0 && { width: even(o.width) }),
+    ...(o.height > 0 && { height: even(o.height) }),
+    ...(o.fps > 0 && { fps: o.fps }),
+    ...(o.bitrate > 0 && { videoBitrate: Math.round(o.bitrate * 1e6) }),
+    fit: o.fit
+  }
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')

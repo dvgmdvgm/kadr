@@ -1002,6 +1002,8 @@ export interface ExportPreset {
   rateControl?: 'abr' | 'crf'
   crf?: number
   x264Preset?: string
+  /** a size other than the project's: fit (bars, default) · fill (crop) · stretch */
+  fit?: 'fit' | 'fill' | 'stretch'
 }
 
 export interface ExportJob {

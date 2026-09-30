@@ -23,6 +23,8 @@ mixes audio and muxes/transcodes per preset.
   `check-settings-wiring.mjs` (every setting has a consumer and a row),
   `check-chats.mjs` (Claude chats round-tripping through the .kadr),
   `check-rate-control.mjs` (x264 ABR/CRF args);
+  `check-output-geometry.mjs` wants ffmpeg (fit/fill/stretch on output, a
+  changed fps keeps the duration);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
@@ -695,7 +697,9 @@ mixes audio and muxes/transcodes per preset.
   preset bitrate, or in the quality mode at CRF (default 18) — both with a
   chosen x264 speed, args built in `shared/rawEncode.ts` (ABR args
   unchanged, test `check-rate-control.mjs`) and written to the session
-  log on every export (the preload spawns ffmpeg and receives readPixels
+  log on every export; a size other than the project's is fit (bars), fill
+  (crop) or stretch (`ExportPreset.fit`, `outputRect` for the fast
+  encoder's blit), and frames are sampled at the OUTPUT fps (the preload spawns ffmpeg and receives readPixels
   frames BY REFERENCE — contextIsolation is off exactly for this; every
   IPC/bridge route copies ~8 MB per 1080p frame and tripled render time;
   Chromium's own WebCodecs encoder ignores the requested bitrate and

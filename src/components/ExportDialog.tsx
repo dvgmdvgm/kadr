@@ -4,8 +4,8 @@ import {
   PRESETS, presetName, videoCodecLabel, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
   saveExportPreset, renameExportPreset, deleteExportPreset
 } from '@/presets'
-import { fileNameFrom } from '@shared/exportPresets'
-import { X264_PRESETS } from '@shared/rawEncode'
+import { fileNameFrom, withOutput } from '@shared/exportPresets'
+import { X264_PRESETS, type OutputFit } from '@shared/rawEncode'
 import { effective, type SettingKey } from '@shared/settings'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
@@ -39,6 +39,13 @@ export function ExportDialog() {
   const quality: 'abr' | 'crf' = effective('export.quality', snap).value === 'crf' ? 'crf' : 'abr'
   const crf = Number(effective('export.crf', snap).value)
   const x264Preset = String(effective('export.x264Preset', snap).value)
+  // G4: the dialog's own size / fps / bitrate over the preset's (0 = the preset's) and the fit
+  const num = (k: SettingKey) => Number(effective(k, snap).value) || 0
+  const out = {
+    width: num('export.width'), height: num('export.height'), fps: num('export.fps'), bitrate: num('export.bitrate'),
+    fit: String(effective('export.fit', snap).value) as OutputFit
+  }
+  const custom = out.width > 0 || out.height > 0 || out.fps > 0 || out.bitrate > 0
   const put = useSettings.getState().set
   // the preset name being typed: null = not editing; `mode` says what OK does
   const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
@@ -60,13 +67,19 @@ export function ExportDialog() {
   const preset = presets.find((p) => p.id === presetId) ?? PRESETS[0]
   // rate control is x264's (G3): VP9 and MP3 keep their preset as it is
   const x264 = preset.ffmpegVideo === 'copy' && !preset.audioOnly
-  const job: ExportPreset = x264 ? { ...preset, rateControl: quality, crf, x264Preset } : preset
+  const shaped = preset.audioOnly ? preset : withOutput(preset, out)
+  const job: ExportPreset = x264 ? { ...shaped, rateControl: quality, crf, x264Preset } : shaped
   const own = isUserPreset(preset)
   const fileName = fileNameFrom(setting<string>('export.fileName'),
     { project: project.name, preset: presetName(preset), date: new Date() })
 
+  const resetOutput = () => (['export.width', 'export.height', 'export.fps', 'export.bitrate'] as const)
+    .forEach((k) => put(k, null))
+
   function choose(id: string) {
     put('export.preset', id)
+    // a preset IS a size, rate and bitrate: choosing one drops the dialog's own
+    resetOutput()
     const p = allPresets().find((x) => x.id === id)
     // a user preset carries its render options
     if (p && isUserPreset(p)) {
@@ -76,6 +89,7 @@ export function ExportDialog() {
       put('export.quality', p.rateControl ?? 'abr')
       put('export.crf', p.crf ?? 18)
       put('export.x264Preset', p.x264Preset ?? 'faster')
+      put('export.fit', p.fit ?? 'fit')
     }
   }
 
@@ -131,9 +145,20 @@ export function ExportDialog() {
       : ''
 
   const asProject = (v: unknown) => (v === 'project' ? ` · ${t('exAsProject')}` : '')
-  const width = preset.width === 'project' ? project.width : preset.width
-  const height = preset.height === 'project' ? project.height : preset.height
-  const fps = preset.fps === 'project' ? project.fps : preset.fps
+  const width = job.width === 'project' ? project.width : job.width
+  const height = job.height === 'project' ? project.height : job.height
+  const fps = job.fps === 'project' ? project.fps : job.fps
+  // committed on blur / Enter: a half-typed «1» of «1080» must not become the size
+  const numIn = (k: SettingKey, v: number, label: string, min: number, max: number, step: number | 'any' = 1) => (
+    <input type="number" aria-label={label} key={`${k}:${v}`} defaultValue={v} min={min} max={max} step={step}
+           disabled={running}
+           onBlur={(e) => {
+             const n = Number(e.target.value.replace(',', '.'))
+             if (e.target.value.trim() !== '' && Number.isFinite(n) && n >= min && n <= max) { if (n !== v) put(k, n) }
+             else e.target.value = String(v)
+           }}
+           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
+  )
   const sec = t('secUnit')
   const value = (label: string, v: string) => (
     <div className="insp-field"><span>{label}</span><span className="export-value">{v}</span></div>
@@ -222,10 +247,42 @@ export function ExportDialog() {
         <div className="dim">{t('exNoVideo')}</div>
       ) : (
         <>
-          {value(t('exSize'), `${width}×${height}${asProject(preset.width)}`)}
-          {value(t('exFps'), `${fps} fps${asProject(preset.fps)}`)}
+          <div className="insp-field">
+            <span>{t('exSize')}</span>
+            <span className="export-size">
+              {numIn('export.width', width, t('exWidth'), 16, 8192, 2)}×{numIn('export.height', height, t('exHeight'), 16, 8192, 2)}
+              {asProject(job.width)}
+              {custom && (
+                <button className="ghost icon-only" title={t('exReset')} aria-label={t('exReset')} disabled={running}
+                        onClick={resetOutput}><Icon name="undo" /></button>
+              )}
+            </span>
+          </div>
+          {(width !== project.width || height !== project.height) && (
+            <div className="insp-field">
+              <span>{t('exFit')}</span>
+              <select aria-label={t('exFit')} value={out.fit} disabled={running}
+                      onChange={(e) => put('export.fit', e.target.value)}>
+                <option value="fit">{t('exFitFit')}</option>
+                <option value="fill">{t('exFitFill')}</option>
+                <option value="stretch">{t('exFitStretch')}</option>
+              </select>
+            </div>
+          )}
+          <div className="insp-field">
+            <span>{t('exFps')}</span>
+            <span className="export-size">{numIn('export.fps', fps, t('exFps'), 1, 240, 'any')} {t('fpsUnit')}{asProject(job.fps)}</span>
+          </div>
           {/* the fast encoder is Chromium's: it takes no x264 rate control */}
-          {value(t('exCodec'), videoCodecLabel(fastEncoder ? preset : job))}
+          {value(t('exCodec'), videoCodecLabel(fastEncoder ? shaped : job))}
+          {!(x264 && quality === 'crf' && !fastEncoder) && (
+            <div className="insp-field">
+              <span>{t('exBitrate')}</span>
+              <span className="export-size">
+                {numIn('export.bitrate', +(job.videoBitrate / 1e6).toFixed(1), t('exBitrate'), 0.1, 400, 'any')} {t('mbpsUnit')}
+              </span>
+            </div>
+          )}
           {x264 && (
             <>
               <div className="insp-field">

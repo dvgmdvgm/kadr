@@ -18,7 +18,7 @@ import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
 import { registerLibFonts } from './fonts'
 import { logInfo, logWarn } from './log'
-import { rawEncodeArgs } from '@shared/rawEncode'
+import { rawEncodeArgs, outputRect, exportFrameCount } from '@shared/rawEncode'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
@@ -202,7 +202,7 @@ export function startExport(
       try {
         const enc = {
           width: rw, height: rh, outWidth: width, outHeight: height,
-          fps, codec, bitrate: preset.videoBitrate,
+          fps, codec, bitrate: preset.videoBitrate, fit: preset.fit,
           rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset
         }
         logInfo(tr('lgExport'), rawEncodeArgs({ ...enc, out: 'pipe' }).join(' '))
@@ -259,18 +259,14 @@ export function startExport(
 
     // webcodecs path renders into the muxed stream directly ('copy' presets
     // never re-encode), so its frames must already be preset-sized: blit the
-    // project-sized canvas into a centered fit rectangle when sizes differ
+    // project-sized canvas into the preset's fit / fill / stretch rectangle when sizes differ
     let fit: { c: HTMLCanvasElement; g: CanvasRenderingContext2D
                dx: number; dy: number; dw: number; dh: number } | null = null
     if (!useRaw && (width !== rw || height !== rh)) {
       const c = document.createElement('canvas')
       c.width = width
       c.height = height
-      const s = Math.min(width / rw, height / rh)
-      const dw = Math.round(rw * s)
-      const dh = Math.round(rh * s)
-      fit = { c, g: c.getContext('2d')!,
-              dx: Math.floor((width - dw) / 2), dy: Math.floor((height - dh) / 2), dw, dh }
+      fit = { c, g: c.getContext('2d')!, ...outputRect(preset.fit, rw, rh, width, height) }
     }
 
     // stage timing accumulators — one summary line at export end shows where
@@ -283,7 +279,7 @@ export function startExport(
       mark = now
     }
     try {
-      const totalFrames = Math.max(1, Math.round(duration * fps))
+      const totalFrames = exportFrameCount(duration, fps)
       for (let k = 0; k < totalFrames; k++) {
         if (cancelled) throw new Error('cancelled')
         if (encodeError) throw encodeError
