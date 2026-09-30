@@ -2,7 +2,7 @@
 // plain node (scripts/check-timeline.mjs): the waveform's per-pixel peaks and
 // the overlap zones of a track. Both were rewritten for speed on a 1124-clip,
 // 19-minute project, and both must give EXACTLY what the old, slow code gave.
-import type { Clip } from '@shared/types'
+import type { Clip, MediaAsset } from '@shared/types'
 
 /** A waveform as the timeline draws it: peak and RMS bins (0..255) at `rate` per second. */
 export interface WaveBins {
@@ -248,4 +248,17 @@ export function followLeft(mode: FollowMode, x: number, left: number, lanes: num
   if (mode === 'smooth' && (fwd ? want <= left : want >= left) && x >= left && x < left + lanes) return null
   want = Math.max(0, want)
   return Math.abs(want - left) < 0.5 ? null : want
+}
+
+/** Source-media time for a clip-local timeline offset, honoring speed and
+    looping. A freeze frame (`freezeAt`, E10) samples that one second throughout. */
+export function clipSourceTime(clip: Clip, asset: MediaAsset | undefined, rel: number): number {
+  if (clip.freezeAt !== undefined) return clip.freezeAt
+  const speed = clip.speed || 1
+  let srcRel = rel * speed
+  if (asset && asset.kind !== 'image' && asset.duration > 0) {
+    const span = Math.max(0.05, asset.duration - clip.inPoint)
+    if (srcRel >= span) srcRel %= span // extended beyond the source — loop
+  }
+  return clip.inPoint + srcRel
 }

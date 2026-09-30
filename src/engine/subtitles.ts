@@ -194,7 +194,7 @@ export function collectRangeAudio(
     if (filter?.trackIds || filter?.clipIds ? track.muted : !trackHeard(project, track)) continue
     if (filter?.trackIds && !filter.trackIds.includes(track.id)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted || clip.disabled) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
       if (filter?.clipIds && !filter.clipIds.includes(clip.id)) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (!asset?.hasAudio) continue

@@ -7,7 +7,8 @@ import { isMusicMarker, LABEL_COLORS } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
-import { toFrame, nextEdit, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
+import { toFrame, nextEdit, clipSourceTime, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
+import { evalAnim } from '../engine/anim'
 import {
   SETTINGS, effective, fromLegacy, healValue,
   type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
@@ -204,6 +205,7 @@ export function sanitizeProject(p: Project): Project {
     for (const c of track.clips) {
       label(c)
       if (c.disabled !== undefined) { if (c.disabled) c.disabled = true; else delete c.disabled }
+      if (c.freezeAt !== undefined && !(Number.isFinite(c.freezeAt) && c.freezeAt >= 0)) delete c.freezeAt
       for (const k of ['start', 'duration', 'inPoint'] as const)
         if (!Number.isFinite(c[k])) c[k] = 0
       if (!Number.isFinite(c.speed) || c.speed <= 0) c.speed = 1
@@ -346,8 +348,8 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
       shiftClipAnims(c, -delta) // keyframes stay glued to the content
     } else {
       let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
-      if (asset && asset.kind !== 'image') {
-        // edge trim never reveals more than the source (unless already looping)
+      if (asset && asset.kind !== 'image' && c.freezeAt === undefined) {
+        // edge trim never reveals more than the source (unless already looping; a freeze is not bound by it)
         const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
         if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
       }
@@ -463,6 +465,27 @@ function openGap(p: Project, t: number, len: number, trackIds: Iterable<string>,
     }
   }
   shiftAfter(p, t, len, ids, skip)
+}
+
+/** Copies of the clips `ids` (unlocked tracks only) moved by `dt` on their own
+    tracks; the copies of a pair are a pair of their own. Returns the new ids. */
+function copyClips(p: Project, ids: string[], dt: number): string[] {
+  const want = new Set(ids)
+  const links = new Map<string, string>()
+  const out: string[] = []
+  for (const tr of p.tracks) {
+    if (tr.locked) continue
+    for (const c of tr.clips.filter((x) => want.has(x.id))) {
+      const copy: Clip = { ...clone(c), id: uid(), start: c.start + dt }
+      if (c.linkId) {
+        if (!links.has(c.linkId)) links.set(c.linkId, uid())
+        copy.linkId = links.get(c.linkId)
+      }
+      tr.clips.push(copy)
+      out.push(copy.id)
+    }
+  }
+  return out
 }
 
 function liftRange(p: Project, r: { start: number; end: number }) {
@@ -796,6 +819,10 @@ export interface TimeRange {
   end: number
 }
 
+/** what «Вставить атрибуты» (Ctrl+Alt+V) can carry over */
+export type AttrPart = 'transform' | 'effects' | 'volume' | 'speed' | 'masks'
+export const ATTR_PARTS: AttrPart[] = ['transform', 'effects', 'volume', 'speed', 'masks']
+
 interface ClipboardItem {
   kind: TrackKind
   trackId: string
@@ -1024,6 +1051,16 @@ interface EditorState {
   pasteAtPlayhead(ripple?: boolean): void
   /** Ctrl+X: copy the selection (else the range) and lift it — one undo step, no ripple. */
   cut(): void
+  /** Copies of the clips left where they are (the copy-drag moves the originals
+      off them); no undo step of its own — the drag pushed one. Returns the new ids. */
+  duplicateInPlace(ids: string[]): string[]
+  /** «Дублировать»: a copy of the selection right after it, selected — one undo step. */
+  duplicateSelection(): void
+  /** Ctrl+Alt+V: the chosen parts of the copied clip onto the selection — one undo step. */
+  pasteAttributes(parts: AttrPart[]): void
+  /** Shift+F: split the footage under the playhead (the selected clip, else the top
+      unlocked video track's) and insert a `len` s still of that frame, rippling what follows. */
+  freezeFrame(len?: number): void
   /** I / O: the range's in / out at the playhead; the other end is kept while it
       still lies on its side, else it becomes the timeline's end / 0. */
   markIn(): void
@@ -2257,6 +2294,95 @@ export const useEditor = create<EditorState>((set, get) => ({
           p.tracks.filter((t) => t.clips.some((c) => mine.has(c.id))).map((t) => t.id), mine)
       }
       return { project: p, selection: ids }
+    })
+  },
+
+  duplicateInPlace: (ids) => {
+    const out: string[] = []
+    set((st) => {
+      const p = cloneProject(st.project)
+      out.push(...copyClips(p, ids, 0))
+      return { project: p }
+    })
+    return out
+  },
+
+  duplicateSelection: () => {
+    const s = get()
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!own.length) return
+    const a = Math.min(...own.map((c) => c.start))
+    const b = Math.max(...own.map((c) => c.start + c.duration))
+    s.pushHistory('hDuplicate')
+    set((st) => {
+      const p = cloneProject(st.project)
+      return { project: p, selection: copyClips(p, own.map((c) => c.id), b - a) }
+    })
+  },
+
+  pasteAttributes: (parts) => {
+    const s = get()
+    const src = (s.clipboard.find((i) => i.kind === 'video') ?? s.clipboard[0])?.clip
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!src || !own.length || !parts.length) return
+    const has = (k: AttrPart) => parts.includes(k)
+    s.pushHistory('hPasteAttrs')
+    set((st) => {
+      const p = cloneProject(st.project)
+      if (has('speed')) {
+        // first, so the keyframes it rescales are the target's own; twins follow
+        const sp = src.speed || 1
+        for (const id of withLinked(p, own.map((c) => c.id))) {
+          const f = findClip(p, id)
+          if (!f || f.track.locked || f.clip.kind !== 'media') continue
+          const c = f.clip
+          const old = c.speed || 1
+          rescaleClipAnims(c, old / sp)
+          c.speed = sp
+          c.duration = frameEnd(p.fps, c.start, c.start + (c.duration * old) / sp) - c.start
+        }
+      }
+      for (const { id } of own) {
+        const c = findClip(p, id)!.clip
+        if (has('transform')) c.transform = clone(src.transform)
+        if (has('effects')) c.effects = clone(src.effects ?? [])
+        if (has('volume')) c.gain = clone(src.gain)
+        if (has('masks')) {
+          for (const k of ['mask', 'maskShape', 'maskShapes'] as const) {
+            if (src[k] === undefined) delete c[k]
+            else (c as unknown as Record<string, unknown>)[k] = clone(src[k])
+          }
+        }
+      }
+      return { project: p }
+    })
+  },
+
+  freezeFrame: (len = 2) => {
+    const s = get()
+    const p0 = s.project
+    const t = toFrame(s.playhead, p0.fps)
+    const under = p0.tracks.flatMap((tr) => tr.locked || tr.kind !== 'video' ? [] : tr.clips.filter((c) =>
+      c.kind === 'media' && !c.disabled && c.start <= t + 1e-6 && c.start + c.duration > t + 1e-6 &&
+      p0.assets.find((a) => a.id === c.assetId)?.kind === 'video'))
+    const c0 = under.find((c) => s.selection.includes(c.id)) ?? under[0]
+    if (!c0) return
+    s.pushHistory('hFreeze')
+    set((st) => {
+      const p = cloneProject(st.project)
+      const f = findClip(p, c0.id)!
+      const rel = t - f.clip.start
+      const at = clipSourceTime(f.clip, p.assets.find((a) => a.id === f.clip.assetId), rel)
+      const still: Clip = { ...clone(f.clip), id: uid(), start: t, inPoint: at, speed: 1, freezeAt: at, fadeIn: 0, fadeOut: 0 }
+      for (const k of ['linkId', 'transitionIn', 'transitionOut', 'audioBake'] as const) delete still[k]
+      // the look of that moment, held: every animated value taken at the frame
+      forEachAnim(still, (a) => ({ value: evalAnim(a, rel) }))
+      still.duration = frameEnd(p.fps, t, t + len) - t
+      openGap(p, t, still.duration, [f.track.id], new Set())
+      f.track.clips.push(still)
+      return { project: p, selection: [still.id] }
     })
   },
 

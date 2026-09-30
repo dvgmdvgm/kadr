@@ -9,7 +9,7 @@ import type {
 import { uid } from '@/state/store'
 import { Compositor } from '@/gl/compositor'
 import {
-  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime, withoutDisabled,
+  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime, sourceFrameRate, withoutDisabled,
   type BlendFrame
 } from './player'
 import { Mp4FrameSource } from './demux'
@@ -545,9 +545,7 @@ export function startExport(
         // per-pixel alpha the two passes stack (0.5 → 0.56 effective alpha,
         // measured), so alpha sources stay unblended — exactly as they were
         // before they had a fast decode path at all.
-        const srcRate = asset.hasAlpha
-          ? 1
-          : ((clip.speed || 1) * (asset.fps || fps)) / fps
+        const srcRate = sourceFrameRate(clip, asset, fps)
         waits.push(
           s.frameAt(srcT).then(
             (f) => {

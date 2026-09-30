@@ -93,7 +93,7 @@ server.registerTool('kadr_state', {
     'playhead, and available export presets. All times are in seconds. tracks[0] is the topmost ' +
     'video track (drawn last). Clip: {id, kind: media|text, assetId, start, duration, inPoint, ' +
     'speed, gain, muted, transform, mask?, maskShapes?, effects[], transitionIn/Out?, fadeIn/Out?, ' +
-    'label?, color? (label 1..8), disabled? (switched off: not drawn, not heard, not exported)}. ' +
+    'label?, color? (label 1..8), disabled? (switched off: not drawn, not heard, not exported), freezeAt? (freeze frame: this source second held for the whole clip, silent)}. ' +
     'Track: {id, kind, name, muted, locked, solo? (while any track is soloed only soloed tracks are ' +
     'HEARD, in preview and export; the picture ignores solo), color?, gain, clips}. ' +
     'project.markers are the user\'s free-floating timeline markers ({id, time, label}) — use ' +

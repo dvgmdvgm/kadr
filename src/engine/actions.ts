@@ -17,6 +17,7 @@ import { useSoundsUi } from '../components/SoundsDialog'
 import { useCaptionsUi } from '../components/CaptionsDialog'
 import { useTextUi } from '../components/TextTools'
 import { useSettingsUi } from '../components/SettingsDialog'
+import { usePasteAttrsUi } from '../components/PasteAttrsMenu'
 import { modalsOpen } from '../components/Modal'
 import { logError, logWarn } from './log'
 import { saveUserStore } from './userStore'
@@ -103,6 +104,13 @@ const HANDLERS: Record<ActionId, Handler> = {
   'edit.pasteInsert': {
     enabled: (s) => s.clipboard.length > 0, why: 'whyNoClipboard', run: (s) => s.pasteAtPlayhead(true)
   },
+  'edit.pasteAttributes': {
+    enabled: (s) => s.clipboard.length > 0 && s.selection.length > 0,
+    why: 'whyPasteAttrs',
+    run: () => usePasteAttrsUi.getState().open()
+  },
+  'clip.duplicate': { enabled: hasClips, why: 'whyNoSel', run: (s) => s.duplicateSelection() },
+  'clip.freeze': { run: (s) => s.freezeFrame() },
   'edit.trimStart': { run: (s) => s.trimToPlayhead('in') },
   'edit.trimEnd': { run: (s) => s.trimToPlayhead('out') },
   'edit.link': { enabled: (s) => s.selection.length > 0, why: 'whyNoClips', run: (s) => s.toggleLinkSelection() },

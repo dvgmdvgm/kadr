@@ -182,6 +182,8 @@ export interface Clip {
   color?: number
   /** switched off: neither drawn nor heard, in preview or export (drawn hatched) */
   disabled?: boolean
+  /** freeze frame: this SOURCE second is drawn for the whole clip, silent (preview and export alike) */
+  freezeAt?: number
   /**
    * remotion clips: the sound under the clip was baked into the fragment
    * (audio.json next to its entry) by «Реакция на звук». `hash` fingerprints

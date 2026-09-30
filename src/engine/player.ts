@@ -8,7 +8,7 @@ import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/aud
 import { getTextLayer } from './text'
 import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
 import { logError } from './log'
-import { advanceClock, type ClockAnchor } from './timelineMath'
+import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
 
 export interface ActiveLayer {
   clip: Clip
@@ -30,15 +30,20 @@ export function withoutDisabled(project: Project): Project {
   return { ...project, tracks: project.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => !c.disabled) })) }
 }
 
-/** Source-media time for a clip-local timeline offset, honoring speed and looping. */
-export function clipSourceTime(clip: Clip, asset: MediaAsset | undefined, rel: number): number {
-  const speed = clip.speed || 1
-  let srcRel = rel * speed
-  if (asset && asset.kind !== 'image' && asset.duration > 0) {
-    const span = Math.max(0.05, asset.duration - clip.inPoint)
-    if (srcRel >= span) srcRel %= span // extended beyond the source — loop
-  }
-  return clip.inPoint + srcRel
+export { clipSourceTime }
+
+/** Source frames per project frame, for frame blending in the export: below 1
+    the successor frame is blended in. Alpha sources and freezes never blend
+    (a freeze would fade into the frame after the one it holds). */
+export function sourceFrameRate(clip: Clip, asset: MediaAsset, fps: number): number {
+  if (asset.hasAlpha || clip.freezeAt !== undefined) return 1
+  return ((clip.speed || 1) * (asset.fps || fps)) / fps
+}
+
+/** Does the clip's element play (rather than sit paused and follow by seeks)?
+    Not in reverse, not while paused, and never for a freeze frame. */
+export function elementRuns(clip: Clip, playing: boolean, rate: number): boolean {
+  return playing && rate > 0 && clip.freezeAt === undefined
 }
 
 /** Combined fade-in/out gain (0..1) at a clip-local time. */
@@ -105,7 +110,7 @@ export function audibleClipsAt(project: Project, t: number): ActiveLayer[] {
   for (const track of project.tracks) {
     if (!trackHeard(project, track)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted || clip.disabled) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
       if (!audioFollowsSpeed(clip.speed || 1)) continue // silent, as in the export
       if (t < clip.start || t >= clip.start + clip.duration) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
@@ -805,7 +810,6 @@ export class Player {
     // Reverse has no element path (a <video> only plays forward): the elements
     // are handled as paused and follow the clock by seeking, muted — frames
     // are painted by per-frame seeks, and beyond ~2× the seeks skip frames.
-    const running = playing && rate > 0
     playbackHealth.drift.clear() // the clips audible on THIS frame
     const activeIds = new Set<string>()
     const seen = new Set<string>()
@@ -826,6 +830,7 @@ export class Player {
       const rel = t - clip.start
       const desired = clipSourceTime(clip, asset, rel)
       const isAudible = audible.some((a) => a.clip.id === clip.id)
+      const running = elementRuns(clip, playing, rate) // a freeze sits paused on its frame
       const eff = (clip.speed || 1) * (running ? rate : 1)
       // beyond Chromium's cap the audio is silent, as for a clip that fast (shared/audioSpeed.ts)
       el.muted = !isAudible || !running || !audioFollowsSpeed(eff)

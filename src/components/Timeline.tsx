@@ -18,6 +18,7 @@ import { useT, type TKey } from '@/i18n'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
 import { CtxMenu } from './CtxMenu'
+import { PasteAttrsMenu } from './PasteAttrsMenu'
 import { Modal } from './Modal'
 import { trackDeleteAsks } from '@/engine/discardGuard'
 import { reverseClip, useReverseUi } from '@/engine/reverse'
@@ -524,6 +525,7 @@ export function Timeline({ height }: { height: number }) {
           <Icon name="glow" /> {t('capButton')}
         </button>
         <BeatButtons />
+        <PasteAttrsMenu />
         <ChecksButton />
         <button data-act="sounds" title={t('soundsButtonHint')}
                 onClick={() => useSoundsUi.getState().setOpen(true)}>
@@ -2183,15 +2185,17 @@ const ClipView = memo(function ClipView({
         return
       }
     }
+    // Ctrl on the body: a click toggles the selection, a DRAG past 3 px copies
+    // (Explorer's copy modifier) — the originals move, copies stay behind
+    let copy: string[] | null = null
+    const toggleSelection = () => {
+      const s = useEditor.getState()
+      const sel = new Set(s.selection)
+      if (sel.has(clip.id)) linkedIds.forEach((id) => sel.delete(id))
+      else linkedIds.forEach((id) => sel.add(id))
+      s.select([...sel])
+    }
     if (e.ctrlKey) {
-      const toggleSelection = () => {
-        const s = useEditor.getState()
-        const sel = new Set(s.selection)
-        if (sel.has(clip.id)) linkedIds.forEach((id) => sel.delete(id))
-        else linkedIds.forEach((id) => sel.add(id))
-        s.select([...sel])
-      }
-
       // On a voice-over clip Ctrl+DRAG marks a span for the defect detector —
       // the gesture the work actually needs. A Ctrl+CLICK (no movement) still
       // toggles the selection exactly as before, so nothing is taken away.
@@ -2228,19 +2232,18 @@ const ClipView = memo(function ClipView({
         })
         return
       }
-      toggleSelection()
-      return
+      copy = selected ? unlocked(st.project, st.selection) : linkedIds
     }
-    if (!selected) st.select(linkedIds)
+    if (!copy && !selected) st.select(linkedIds)
 
     const rect = e.currentTarget.getBoundingClientRect()
     const lx = e.clientX - rect.left
     const zone = setting<number>('mouse.edgeZone')
-    const mode: DragMode = lx < zone && w > 24 ? 'in' : lx > rect.width - zone && w > 24 ? 'out' : 'move'
+    const mode: DragMode = copy ? 'move' : lx < zone && w > 24 ? 'in' : lx > rect.width - zone && w > 24 ? 'out' : 'move'
     const grabTime = clip.start + lx / st.zoom
-    st.pushHistory(mode === 'move' ? 'hMove' : 'hTrim')
+    if (!copy) st.pushHistory(mode === 'move' ? 'hMove' : 'hTrim')
 
-    const sel = useEditor.getState().selection
+    const sel = copy ?? useEditor.getState().selection
     const group =
       mode === 'move' && sel.length > 1 && sel.includes(clip.id)
         ? sel
@@ -2337,13 +2340,27 @@ const ClipView = memo(function ClipView({
     const startY = e.clientY
     let moved = false
     const onMoveTracked = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) > 3) moved = true
+      if (!moved && Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) > 3) {
+        moved = true
+        if (copy) {
+          // one undo step: the copies and the move that follows
+          const s = useEditor.getState()
+          s.pushHistory('hDuplicate')
+          s.select(copy)
+          s.duplicateInPlace(copy)
+        }
+      }
+      if (copy && !moved) return
       onMove(ev)
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMoveTracked)
       window.removeEventListener('pointerup', onUp)
       drag.current = null
+      if (copy) {
+        if (!moved) toggleSelection()
+        return
+      }
       // a plain click (no drag) parks the playhead at the click position;
       // dragging keeps the red cursor where it was so clips can snap to it
       if (!moved && mode === 'move') {
