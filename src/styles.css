@@ -1019,26 +1019,26 @@ body.kadr-popout .preview {
   z-index: 7;
   pointer-events: none;
   overflow: visible;
-  --gz: var(--c-accent);
+  color: var(--c-accent); /* the parts paint in currentColor */
 }
-.clip-gizmo.fragment { --gz: var(--c-fragment); }
+.clip-gizmo.fragment { color: var(--c-fragment); }
 .clip-gizmo svg { position: absolute; inset: 0; overflow: visible; }
 .clip-gizmo polygon {
   fill: transparent;
-  stroke: var(--gz);
+  stroke: currentColor;
   stroke-width: 1;
   stroke-dasharray: 4 3;
   pointer-events: all;
   cursor: move;
   touch-action: none;
 }
-.clip-gizmo line { stroke: var(--gz); stroke-width: 1; }
+.clip-gizmo line { stroke: currentColor; stroke-width: 1; }
 .clip-gizmo-handle {
   position: absolute;
   width: 13px;
   height: 13px;
   transform: translate(-50%, -50%);
-  background: var(--gz);
+  background: currentColor;
   border: 2px solid var(--c-text);
   border-radius: var(--r1);
   cursor: nwse-resize;
@@ -2783,6 +2783,13 @@ div.tr-error {
   word-break: break-word;
 }
 .export-mb { display: flex; gap: var(--s3); margin: var(--s4) 0 var(--s1); font-size: var(--fz-md); }
+/* the export dialog: sections of read-only values, the status beside the action */
+.export-preset { width: 100%; }
+.export-value { color: var(--c-text); font-size: var(--fz-sm); font-variant-numeric: tabular-nums; text-align: right; }
+.modal-actions:has(.export-status) { align-items: center; }
+.export-status { flex: 1; min-width: 0; }
+.export-status > * { margin-top: 0; }
+.export-status .export-err { max-height: 96px; overflow-y: auto; }
 
 .lang { min-width: 42px; font-variant-numeric: tabular-nums; }
 
