@@ -729,6 +729,128 @@ progress::-webkit-progress-value {
 .bin-item:hover .bin-del, .bin-del:focus-visible { display: inline-flex; }
 .bin-del:hover { background: var(--c-danger-solid); color: var(--c-on-solid); border-color: transparent; }
 .bin-del-sel { color: var(--c-danger); }
+/* H4 (canvas H): search, layout, sort, «в деле», hover scrub and the list.
+   The bin is a size container so the list drops columns as the panel narrows. */
+.media-bin { container-type: inline-size; }
+.bin-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-bottom: 1px solid var(--c-line);
+}
+.bin-search { flex: 1 1 120px; min-width: 0; }
+/* narrow panel: search + layout on one line, sort + direction + «Неиспользуемые» on the next */
+.bin-sort { flex: 1 1 90px; min-width: 0; max-width: 200px; }
+.bin-tools button { min-height: 24px; }
+.bin-tools button.ghost:not(.icon-only) { padding: 2px var(--s3); font-size: var(--fz-sm); }
+.hint button { margin-top: var(--s2); }
+.bin-dur {
+  position: absolute;
+  right: var(--s2);
+  bottom: 26px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  background: rgb(var(--rgb-shadow) / 0.78);
+  color: var(--c-text-2);
+  font-size: var(--fz-micro);
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+/* one <video> over the hovered tile's thumbnail — never more than one in the bin */
+.bin-scrub {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 68px;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.bin-scrub-pos {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  height: 68px;
+  margin-left: -1px;
+  background: var(--c-accent);
+  pointer-events: none;
+}
+.bin-name:has(> .bin-used) { display: flex; align-items: center; gap: var(--s2); }
+.bin-name > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bin-used {
+  flex: none;
+  padding: 0 5px;
+  border-radius: var(--r-full);
+  background: var(--c-accent-soft);
+  color: var(--c-accent-hi);
+  font-size: var(--fz-micro);
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+.bin-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-size: var(--fz-sm);
+}
+.bin-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: 27px;
+  padding: 3px var(--s4);
+  border-bottom: 1px solid var(--c-line);
+  color: var(--c-text-2);
+  cursor: grab;
+}
+.bin-row:hover { background: var(--c-bg-3); }
+.bin-row.selected { background: var(--c-accent-soft); color: var(--c-text); box-shadow: inset 2px 0 0 var(--c-accent); }
+.bin-row.offline .bin-c-name { color: var(--c-danger-text); }
+.bin-row.offline .bin-row-thumb { opacity: 0.35; }
+.bin-list-head, .bin-list-head:hover {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 24px;
+  background: var(--c-bg-1);
+  cursor: default;
+  font-size: var(--fz-label);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-text-3);
+}
+.bin-row-thumb {
+  flex: none;
+  width: 36px;
+  height: 20px;
+  object-fit: cover;
+  border-radius: var(--r1);
+}
+.bin-row-thumb.bin-audio { height: 20px; }
+.bin-c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bin-c-dur, .bin-c-res, .bin-c-fps, .bin-c-codec, .bin-c-used {
+  flex: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bin-c-dur { width: 44px; }
+.bin-c-res { width: 76px; }
+.bin-c-fps { width: 42px; }
+.bin-c-codec { width: 52px; padding-left: var(--s2); text-align: left; }
+.bin-c-used { width: 44px; }
+.bin-row .proxy-badge.offline { position: static; display: inline-flex; margin-right: var(--s2); vertical-align: middle; }
+.bin-row .bin-del { top: 3px; left: auto; right: var(--s2); }
+.bin-row:hover .bin-del { display: inline-flex; }
+@container (max-width: 519px) { .bin-c-codec { display: none; } }
+@container (max-width: 399px) { .bin-c-res, .bin-c-fps { display: none; } }
 .bin-confirm { max-width: 460px; }
 .bin-confirm p { margin: var(--s4) 0; font-size: var(--fz-md); line-height: 1.5; }
 

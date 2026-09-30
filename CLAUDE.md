@@ -44,6 +44,9 @@ mixes audio and muxes/transcodes per preset.
   `check-template.mjs` (H3: «Сохранить как шаблон» keeps tracks, settings,
   text clips and the user's markers and drops media, fragment clips,
   transcripts, voice runs and chats; a new project from it gets fresh ids);
+  `check-bin-filter.mjs` (H4: the media bin's search — name and extension,
+  any case — its stable sort, the «в деле» count with an A/V pair counted
+  once, and «Неиспользуемые», all in `shared/binView.ts`);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);

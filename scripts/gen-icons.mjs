@@ -42,7 +42,8 @@ const MAP = {
   popout: 'picture-in-picture-2', popin: 'picture-in-picture',
   alert: 'triangle-alert',
   beat: 'metronome', sfx: 'bell-ring', reactive: 'activity',
-  sliders: 'sliders-horizontal', onion: 'layers-2', solo: 'headphones'
+  sliders: 'sliders-horizontal', onion: 'layers-2', solo: 'headphones',
+  grid: 'layout-grid', list: 'list', sortAsc: 'arrow-up-narrow-wide', sortDesc: 'arrow-down-wide-narrow'
 }
 
 const body = (file) => {
