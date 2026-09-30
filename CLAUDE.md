@@ -41,6 +41,9 @@ mixes audio and muxes/transcodes per preset.
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
   the empty bin — newest first, unique by path, capped at 20);
+  `check-template.mjs` (H3: «Сохранить как шаблон» keeps tracks, settings,
+  text clips and the user's markers and drops media, fragment clips,
+  transcripts, voice runs and chats; a new project from it gets fresh ids);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -1009,7 +1012,8 @@ mixes audio and muxes/transcodes per preset.
   so deleting one costs time and nothing else; a reversed clip, a download
   and a voice-over run are stored BY PATH in the project and cannot be
   derived again; backups are REFERENCED too (user data), one folder per
-  project named `projectKey(path)`. The key formula lives in its own file because a second
+  project named `projectKey(path)`. Project templates (`userData/templates/
+  <name>.kadr`, H3) belong to no project and are never deleted from the panel. The key formula lives in its own file because a second
   copy would drift, and a drifted formula aims a delete button at the
   wrong file. Projects are keyed BY PATH, never by name. `storage:prune`
   FAILS CLOSED: without an explicit `confirm: true` it only counts, so a

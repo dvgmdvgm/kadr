@@ -26,6 +26,7 @@ import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
 import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
 import { argvProject } from '@shared/argvProject'
+import { templateOf, templateFileName } from '@shared/template'
 import { FONT_FILE } from '@shared/fontName'
 import type { SettingsStore } from './settings'
 import { appSettings, cacheDir, setting, tempDir } from './appSettings'
@@ -687,6 +688,28 @@ function registerIpc() {
     await atomicWrite(p, JSON.stringify(data, null, 1)).catch((err: NodeJS.ErrnoException) => {
       throw new Error(`${p}: ${err.code ?? err.message}`)
     })
+  })
+
+  // project templates (card H3): userData/templates/<name>.kadr, structure only
+  const templatesDir = () => join(app.getPath('userData'), 'templates')
+  ipcMain.handle('template:list', async () => {
+    let names: string[]
+    try { names = (await fs.readdir(templatesDir())).filter((n) => /\.kadr$/i.test(n)) } catch { return [] }
+    const out: { name: string; project: Project }[] = []
+    for (const n of names) {
+      try {
+        const project = JSON.parse(await fs.readFile(join(templatesDir(), n), 'utf8'))
+        if (Array.isArray(project?.tracks)) out.push({ name: n.slice(0, -5), project })
+      } catch { /* not a project: not a template either */ }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name))
+  })
+  ipcMain.handle('template:save', async (_e, name: string, project: Project) => {
+    const file = templateFileName(String(name ?? ''))
+    await fs.mkdir(templatesDir(), { recursive: true })
+    // stripped here too: whatever the (scriptable) page sends, no media lands in a template
+    await atomicWrite(join(templatesDir(), file + '.kadr'), JSON.stringify(templateOf(project), null, 1))
+    return file
   })
 
   ipcMain.handle('media:open-dialog', async () => {

@@ -13,7 +13,8 @@ const NAME: Record<StorageGroupId, TKey> = {
   reversed: 'stReversed',
   imported: 'stImported',
   voiceRuns: 'stVoiceRuns',
-  backups: 'stBackups'
+  backups: 'stBackups',
+  templates: 'stTemplates'
 }
 const ABOUT: Record<StorageGroupId, TKey> = {
   proxies: 'stProxiesAbout',
@@ -23,7 +24,8 @@ const ABOUT: Record<StorageGroupId, TKey> = {
   reversed: 'stReversedAbout',
   imported: 'stImportedAbout',
   voiceRuns: 'stVoiceRunsAbout',
-  backups: 'stBackupsAbout'
+  backups: 'stBackupsAbout',
+  templates: 'stTemplatesAbout'
 }
 
 /** bytes → «1.4 ГБ»: the number is for a human, the unit comes from i18n */
@@ -165,7 +167,7 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
                       <span className="st-size">{size(g.bytes, t)}</span>
                       <span className="st-files">{g.files}</span>
                       <button
-                        disabled={busy || g.files === 0}
+                        disabled={busy || g.files === 0 || !g.rebuildable}
                         onClick={() => setAsk({
                           group: g.id, scope: 'stale', files: g.files, bytes: g.bytes
                         })}

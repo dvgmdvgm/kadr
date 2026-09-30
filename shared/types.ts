@@ -1081,7 +1081,7 @@ export interface BackupOffer {
 
 export type StorageGroupId =
   | 'proxies' | 'decoded' | 'fragments' | 'ttsqcCache'
-  | 'reversed' | 'imported' | 'voiceRuns' | 'backups'
+  | 'reversed' | 'imported' | 'voiceRuns' | 'backups' | 'templates'
 
 /** A project, reduced to what identifies the files it owns on disk. */
 export interface StorageProject {
@@ -1257,6 +1257,10 @@ export interface KadrApi {
   storagePrune(req: StoragePruneRequest): Promise<StoragePruneResult>
   readUserStore(name: string): Promise<unknown>
   writeUserStore(name: string, data: unknown): Promise<void>
+  /** project templates (userData/templates), sorted by name */
+  listTemplates(): Promise<{ name: string; project: Project }[]>
+  /** save the project's structure as a template; resolves the file name it got */
+  saveTemplate(name: string, project: Project): Promise<string>
   /** main's settings (shared/settings.ts): a synchronous copy for the boot, and a patch (null = default) */
   settingsGet(): SettingsSnapshot
   settingsSet(patch: Partial<Record<string, SettingValue | null>>): Promise<SettingsSnapshot>

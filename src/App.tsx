@@ -21,6 +21,7 @@ import { SettingsDialog, useSettingsUi } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { RelinkDialog } from './components/RelinkDialog'
 import { RecentMenuButton } from './components/RecentProjects'
+import { TemplateMenuButton, TemplatePicker, useTemplatePick } from './components/Templates'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
 import { Modal } from './components/Modal'
@@ -170,9 +171,16 @@ function RestorePrompt() {
   )
 }
 
+/** «Новый проект»: with templates on disk the picker asks which (H3); without, the empty default as before */
 async function newProjectGuarded() {
+  const list = await window.kadr.listTemplates().catch(() => [])
+  if (list.length) useTemplatePick.setState({ list })
+  else await startProject(newProject())
+}
+
+async function startProject(p: Project) {
   if (!(await confirmDiscard())) return
-  useEditor.getState().setProject(newProject())
+  useEditor.getState().setProject(p)
   markProjectSaved(useEditor.getState().project)
 }
 
@@ -382,6 +390,7 @@ export default function App() {
             <Icon name="save" /> <span className="bar-label">{t('save')}</span>
           </button>
           <button data-act="save-as" onClick={saveProjectAs} title="Ctrl+Shift+S">{t('saveAs')}</button>
+          <TemplateMenuButton onSaved={(n, err) => n ? flashSave('tplSaved', n) : flashSave('tplSaveFail', String(err), true)} />
         </span>
         <button className="primary" data-act="export"
                 onClick={() => useEditor.getState().setExportOpen(true)}>
@@ -459,6 +468,7 @@ export default function App() {
       {/* keyed by project: another project brings up ITS chats */}
       <DiscardPrompt />
       <RestorePrompt />
+      <TemplatePicker onPick={(p) => void startProject(p)} />
       <RelinkDialog />
       {claudeOpen && <ClaudePanel key={project.id} onClose={() => setClaudeOpen(false)} />}
       {debugOpen && <DebugPanel onClose={() => setPanel(null)} />}

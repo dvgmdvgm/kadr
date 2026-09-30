@@ -42,7 +42,9 @@ const GROUPS: GroupDef[] = [
   { id: 'voiceRuns', dir: () => join(app.getPath('userData'), 'ttsqc-runs'), rebuildable: false, match: 'path' },
   // one folder per project, named projectKey(path) (electron/backups.ts); a never-saved
   // project's folder (unsaved-<id>) belongs to no file and shows as unattributed
-  { id: 'backups', dir: () => join(app.getPath('userData'), 'backups'), rebuildable: false, match: 'project' }
+  { id: 'backups', dir: () => join(app.getPath('userData'), 'backups'), rebuildable: false, match: 'project' },
+  // «Сохранить как шаблон» (H3): user data, belongs to no project and is never deleted from the panel
+  { id: 'templates', dir: () => join(app.getPath('userData'), 'templates'), rebuildable: false, match: 'none' }
 ]
 
 /** Every project we were told about, reduced to what identifies its files. */
@@ -263,7 +265,9 @@ async function prune(req: StoragePruneRequest): Promise<StoragePruneResult> {
     if (req.scope === 'project') return req.project ? owners.includes(req.project) : false
     return true   // 'all'
   })
-  // a project's own files may only be dropped when they can come back
+  // a project's own files may only be dropped when they can come back; user data
+  // that belongs to nobody (templates) is not the panel's to drop at all
+  if (def.match === 'none' && !def.rebuildable) return { removed: 0, bytes: 0, error: 'not rebuildable' }
   if (req.scope !== 'stale' && !def.rebuildable) {
     return { removed: 0, bytes: 0, error: 'not rebuildable' }
   }
