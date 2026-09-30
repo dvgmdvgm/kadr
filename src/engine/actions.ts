@@ -34,7 +34,9 @@ export const appCommands = {
   save: () => {},
   saveAs: () => {},
   newProject: () => {},
-  openProject: () => {}
+  openProject: () => {},
+  /** a .kadr from the recent list, behind the unsaved-work question */
+  openRecent: (_path: string) => {}
 }
 
 interface Handler {

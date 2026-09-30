@@ -8,11 +8,14 @@ import { useTtsUi } from './TtsDialog'
 import { useT } from '@/i18n'
 import { Icon, Spinner } from './icons'
 import { Modal } from './Modal'
+import { RecentList } from './RecentProjects'
 import { useModelsUi, insertModelFragment, prepareForFragment } from '@/engine/models'
 
 export function MediaBin() {
   const t = useT()
   const assets = useEditor((s) => s.project.assets)
+  // an empty project: the bin's empty state is where a session starts, so it offers the recent list
+  const noClips = useEditor((s) => s.project.tracks.every((tk) => !tk.clips.length))
   const texts = useEditor((s) => s.project.texts ?? [])
   const ttsReady = useTtsUi((s) => s.hasKey)
   const proxyJobs = useProxyProgress((s) => s.jobs)
@@ -121,6 +124,12 @@ export function MediaBin() {
         onDrop={onBinDrop}
       >
         {assets.length === 0 && <div className="hint">{t('emptyBin')}</div>}
+        {assets.length === 0 && noClips && (
+          <div className="bin-recent">
+            <div className="ctx-title">{t('recentTitle')}</div>
+            <RecentList />
+          </div>
+        )}
         {assets.map((a) => (
           <div
             key={a.id}

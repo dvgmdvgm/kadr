@@ -6,24 +6,24 @@ import { useEditor } from '@/state/store'
 import { logWarn } from './log'
 import { saveUserStore } from './userStore'
 import { tr } from '../i18n'
+import { create } from 'zustand'
+import { normalizeRecent, pushRecent, type Recent } from '@shared/recent'
+
+/** the list as last read or written — the views subscribe; `null` until first read */
+export const useRecent = create<{ list: Recent[] | null }>(() => ({ list: null }))
 
 const STORE = 'recent-projects'
-const CAP = 20
-
-interface Recent { path: string; at: number }
 
 let cache: Recent[] | null = null
 
 async function read(): Promise<Recent[]> {
   if (cache) return cache
   try {
-    const raw = await window.kadr.readUserStore(STORE)
-    cache = Array.isArray(raw)
-      ? (raw as Recent[]).filter((r) => r && typeof r.path === 'string')
-      : []
+    cache = normalizeRecent(await window.kadr.readUserStore(STORE))
   } catch {
     cache = []
   }
+  useRecent.setState({ list: cache })
   return cache
 }
 
@@ -34,9 +34,8 @@ async function read(): Promise<Recent[]> {
  * every file on disk looks equally orphaned.
  */
 export async function rememberProject(path: string): Promise<void> {
-  const list = (await read()).filter((r) => r.path !== path)
-  list.unshift({ path, at: Date.now() })
-  cache = list.slice(0, CAP)
+  cache = pushRecent(await read(), path, Date.now())
+  useRecent.setState({ list: cache })
   try {
     await window.kadr.writeUserStore(STORE, cache)
   } catch (err) {
@@ -50,6 +49,7 @@ export async function recentProjects(): Promise<string[]> {
 
 export async function forgetProject(path: string): Promise<void> {
   cache = (await read()).filter((r) => r.path !== path)
+  useRecent.setState({ list: cache })
   await saveUserStore(STORE, cache)
 }
 

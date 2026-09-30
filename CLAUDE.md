@@ -39,6 +39,8 @@ mixes audio and muxes/transcodes per preset.
   timeline position); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
+  `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
+  the empty bin — newest first, unique by path, capped at 20);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
   compared beat for beat with librosa's own cues), and with ffmpeg
   `check-limiter.mjs` (the export master limiter) and

@@ -20,6 +20,7 @@ import { StoragePanel } from './components/StoragePanel'
 import { SettingsDialog, useSettingsUi } from './components/SettingsDialog'
 import { CommandPalette } from './components/CommandPalette'
 import { RelinkDialog } from './components/RelinkDialog'
+import { RecentMenuButton } from './components/RecentProjects'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
 import { Modal } from './components/Modal'
@@ -207,7 +208,11 @@ export async function openProjectAt(path: string, { force = false }: { force?: b
   return true
 }
 
-Object.assign(appCommands, { save: saveProject, saveAs: saveProjectAs, newProject: newProjectGuarded, openProject })
+const openRecent = (path: string) => {
+  openProjectAt(path).catch((err) => logError(tr('lgProject'), trf('lmOpenFail', { path }), err))
+}
+
+Object.assign(appCommands, { save: saveProject, saveAs: saveProjectAs, newProject: newProjectGuarded, openProject, openRecent })
 
 const TL_MIN = 160
 
@@ -228,9 +233,7 @@ export default function App() {
     void confirmDiscard().then((go) => go && window.kadr.closeWindow())
   }), [])
   // a .kadr from the command line, or from a second launch (single instance)
-  useEffect(() => window.kadr.onOpenProject((path) => {
-    openProjectAt(path).catch((err) => logError(tr('lgProject'), trf('lmOpenFail', { path }), err))
-  }), [])
+  useEffect(() => window.kadr.onOpenProject(openRecent), [])
   const dirty = savedProject !== null && project !== savedProject
   const undoLabel = useEditor((s) => s.past[s.past.length - 1]?.label)
   const redoLabel = useEditor((s) => s.future[0]?.label)
@@ -374,6 +377,7 @@ export default function App() {
           <button data-act="open-project" onClick={openProject} title={t('open')} aria-label={t('open')}>
             <Icon name="folderOpen" /> <span className="bar-label">{t('open')}</span>
           </button>
+          <RecentMenuButton />
           <button data-act="save" onClick={saveProject} title={`${t('save')} · Ctrl+S`} aria-label={t('save')}>
             <Icon name="save" /> <span className="bar-label">{t('save')}</span>
           </button>
