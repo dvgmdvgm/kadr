@@ -154,6 +154,33 @@ for (const [name, m] of Object.entries(media)) {
   check(`${name}: every sample fed once in decode order and frame k at every k, 18 interleavings`, bad.length === 0, bad.slice(0, 4).join('; '))
 }
 
+// ── J13's own risk: a jump to the last sample or past the track's end. mp4box
+// leaves nextSample alone when the seek time is beyond the track, so an intake
+// that waits for "the sought sample" could wait forever — or, as measured,
+// throw «no frames» and send the clip to element seeks. The seek is clamped to
+// the last sample, so the tail frame holds, as it does without a jump.
+{
+  const m = media['short GOPs (g 12, 90 frames, faststart)']
+  const dur = m.order.length / 30
+  const hung = []
+  for (const at of [dur - 1 / 60, dur, dur + 0.5, dur + 5]) {
+    for (const chunk of [512, 1 << 20]) {
+      for (const delay of [0, 40]) {
+        serve = { chunk, gate: async () => { for (let i = 0; i < delay; i++) await tick() } }
+        const src = await Mp4FrameSource.open({ path: m.path, kind: 'video', name: 'end', id: 'x', duration: dur })
+        if (!src) { hung.push(`t ${at} chunk ${chunk} delay ${delay}: did not open`); continue }
+        const r = await Promise.race([
+          src.frameAt(at).then((f) => (f ? Math.round(f.timestamp * 30 / 1e6) : 'null'), (e) => 'threw: ' + e.message),
+          new Promise((res) => setTimeout(() => res('HUNG'), 5000))
+        ])
+        src.close()
+        if (r !== m.order.length - 1) hung.push(`t ${at.toFixed(3)} chunk ${chunk} delay ${delay}: ${r}`)
+      }
+    }
+  }
+  check('a jump to the last sample or past the track end gives the last frame on the fast path — no hang (5 s timeout), no throw', hung.length === 0, hung.slice(0, 4).join('; '))
+}
+
 rmSync(dir, { recursive: true, force: true })
 console.log(fails ? `\n${fails} FAIL` : '\nall PASS')
 process.exit(fails ? 1 : 0)

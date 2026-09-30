@@ -959,7 +959,9 @@ mixes audio and muxes/transcodes per preset.
     ANYTHING BEFORE THE KEY FRAME THE JUMP SOUGHT (J13): mp4box hands out
     the batch it was still filling (30 at a time, cut short by data not yet
     appended) AHEAD of the sought samples, so `jump()` records the seek's
-    sample and `ingestSamples` starts there. From a delta the decoder threw
+    sample and `ingestSamples` starts there (a seek past the video track's
+    end is clamped to its last sample: mp4box would leave nextSample
+    stale and the source threw «no frames»). From a delta the decoder threw
     «a key frame is required» and a small faststart file (an SD alpha pack)
     fell back to element seeks in 16 of 20 exports; from a key, the GOPs up
     to it were skipped without a word. After: 80 of 80 on the fast path. Test:

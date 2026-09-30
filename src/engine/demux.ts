@@ -414,10 +414,14 @@ export class Mp4FrameSource {
     this.file.stop()
     // seek in unshifted media time so the chosen keyframe is never late
     const shiftSec = this.sampleScale > 0 ? this.ctsShift / this.sampleScale : 0
-    const si = this.file.seek(Math.max(0, srcT + shiftSec), true)
-    try {
-      this.jumpSample = this.file.getTrackById(this.trackId).nextSample
-    } catch { /* no sample table: take whatever comes */ }
+    let t = Math.max(0, srcT + shiftSec)
+    const trak = (() => { try { return this.file.getTrackById(this.trackId) } catch { return null } })()
+    // past the video track's end mp4box skips the track and leaves nextSample
+    // where it was — seek the last sample's GOP instead (the tail frame holds)
+    const last = trak?.samples?.[trak.samples.length - 1]
+    if (last) t = Math.min(t, last.cts / last.timescale)
+    const si = this.file.seek(t, true)
+    this.jumpSample = trak?.samples?.length ? trak.nextSample : -1
     this.file.start()
     void this.pump(si.offset)
   }
