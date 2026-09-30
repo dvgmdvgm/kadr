@@ -116,13 +116,14 @@ const TOOLS = [
     name: 'kadr_propose',
     fn: 'propose',
     helper: true,
-    description: 'Propose ranges for the USER to cut — retakes (a line said again: keep the better take), false starts, fluff. Read the words first (kadr_state fields:["words"]). kind = a short lowercase name ("retake", "short", …); ranges [{start, end, reason}] in project s. They appear as flags on the timeline with the reason; a new set of one kind replaces the previous set of that kind. Proposing is no edit. Nothing is cut until the user confirms: APPLY with apply "confirmed" (optionally kind) cuts only the confirmed ranges out of every unlocked track, ripple, overlaps merged — one undo step; with nothing confirmed it errors. Never cut good takes yourself.',
+    description: 'Propose ranges for the USER to cut — retakes (a line said again: keep the better take), false starts, fluff. Read the words first (kadr_state fields:["words"]). kind = a short lowercase name ("retake", "short", …); ranges [{start, end, reason}] in project s. They appear as flags on the timeline with the reason; a new set of one kind replaces the previous set of that kind. Proposing is no edit. Nothing is cut until the user confirms: APPLY with apply "confirmed" (optionally kind) cuts only the confirmed ranges out of every unlocked track, ripple, overlaps merged — one undo step; with nothing confirmed it errors. Never cut good takes yourself. kind "short" = clips to cut OUT of a long recording as separate shorts (reason = the file name, keep it short): they are never cut; the user confirms them and exports each to its own file (Export dialog, «Export selected», any preset incl. 9:16).',
     input: {
       kind: z.string().regex(/^[a-z][a-z_]{1,23}$/).optional(),
       ranges: z.array(z.object({ start: sec, end: sec, reason: z.string().min(1).max(300) }).strict()).min(1).max(500).optional(),
       apply: z.literal('confirmed').optional()
     },
     check: (a) => {
+      if (a.apply && a.kind === 'short') return 'shorts are never cut: the user exports the confirmed ones (Export dialog, «Export selected»)'
       if (a.apply) return a.ranges ? 'apply takes no ranges (it cuts what the user confirmed)' : undefined
       if (!a.kind || !a.ranges) return 'kind and ranges are both needed (or apply: "confirmed")'
       if (a.kind === 'silence') return 'kind "silence" belongs to kadr_silences'

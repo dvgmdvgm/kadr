@@ -1831,7 +1831,8 @@ function DefectButtons() {
 function SilenceButtons() {
   const t = useT()
   const { items, busy, none } = useSilences()
-  const confirmed = items.filter((x) => x.state === 'confirmed').length
+  // a confirmed 'short' (card I11) goes to «Экспортировать выбранные», not here
+  const confirmed = items.filter((x) => x.state === 'confirmed' && x.kind !== 'short').length
   return (
     <>
       <button data-act="silences" title={t('silButtonHint')} disabled={busy} onClick={() => void findSilencesHere()}>
@@ -1870,7 +1871,7 @@ function SilenceFlags() {
   // the agent's proposals (kadr_propose, card I8) ride the same flags, with their reason
   const tip = (x: Silence) => {
     const len = (x.end - x.start).toFixed(2)
-    return x.reason ? trf('propTip', { reason: x.reason, len }) : trf('silTip', { len })
+    return x.reason ? trf(x.kind === 'short' ? 'shortTip' : 'propTip', { reason: x.reason, len }) : trf('silTip', { len })
   }
   return (
     <>

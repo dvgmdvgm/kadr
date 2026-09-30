@@ -94,6 +94,9 @@ mixes audio and muxes/transcodes per preset.
   reason; only what the user confirmed is cut, in ONE undo step, overlapping
   ranges merged in `extractRanges`; apply by ids is refused, and
   kadr_silences never cuts another kind);
+  `check-batch-ranges.mjs` (I11: confirmed `short` proposals export once
+  each, one at a time, named from the reason without overwriting a file or
+  each other; a failure or a cancel stops the batch; a short is never cut);
   `check-scenes.mjs` wants ffmpeg (I6: scdet finds a generated clip's 4 hard
   cuts within a frame, mapped through inPoint and speed to 'scene' markers
   as ONE undo step, snap targets that survive a load; kadr_scenes refuses
@@ -360,7 +363,12 @@ mixes audio and muxes/transcodes per preset.
   kadr_propose (I8: the agent's ranges with a reason — retakes read off the
   transcript words — in the SAME proposal store and flags as the pauses,
   per `kind`; the tool can only apply what the USER confirmed; test
-  `node scripts/check-proposals.mjs`) /
+  `node scripts/check-proposals.mjs`; kind `short` (I11) is NEVER cut —
+  `applySilences` skips it — and the export dialog's «Экспортировать
+  выбранные» renders each confirmed one to its own file named from the
+  reason (`src/engine/shorts.ts`: « (2)» for a name already on disk or in the
+  batch), one `startExport` after another; test
+  `node scripts/check-batch-ranges.mjs`) /
   kadr_scenes (I6, `src/engine/scenes.ts`: ffmpeg `scdet` in main,
   `media:scenes`, over the source span of every video clip in a clip /
   range / the timeline; the cuts become `TimelineMarker.kind = 'scene'` —

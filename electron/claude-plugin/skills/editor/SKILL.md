@@ -98,6 +98,12 @@ rhythm, readability or physical sense — not a technical failure. So:
   reason}])`. They show as flags with your reason; the user confirms. Then
   `kadr_propose(apply: "confirmed")` cuts only what they confirmed, overlaps
   merged, ONE undo step. There is no way to cut a proposal nobody confirmed.
+- Long recording → shorts: read the words, pick self-contained moments and
+  `kadr_propose(kind: "short", ranges: [{start, end, reason}])` — the reason
+  becomes the FILE NAME, so make it a short title. Shorts are never cut: the
+  user confirms them and exports each to its own file from the Export dialog
+  («Экспортировать выбранные», any preset — «Shorts/Reels 1080×1920» with
+  fill for 9:16), one after another. Do not rate virality.
 - Music under a voice: `kadr_duck(musicClipIds)` writes gain keys that dip
   the music (−12 dB default) wherever the other tracks speak, with attack
   and release; it MULTIPLIES the clip's existing gain, so run it once (or

@@ -100,8 +100,12 @@ const pad = (n: number) => String(n).padStart(2, '0')
 export function fileNameFrom(template: string, v: { project: string; preset: string; date: Date }): string {
   const tpl = template.trim() || '{project}'
   const date = `${v.date.getFullYear()}-${pad(v.date.getMonth() + 1)}-${pad(v.date.getDate())}`
-  const name = tpl
-    .replace(/\{(project|preset|date)\}/g, (_, k: string) => (k === 'project' ? v.project : k === 'preset' ? v.preset : date))
+  return safeFileName(tpl.replace(/\{(project|preset|date)\}/g, (_, k: string) => (k === 'project' ? v.project : k === 'preset' ? v.preset : date)))
+}
+
+/** a name Windows accepts: no control or reserved characters, no edge dots/spaces; empty → 'export' */
+export function safeFileName(s: string): string {
+  const name = s
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f]/g, '')
     .replace(/[<>:"/\\|?*]/g, '_')

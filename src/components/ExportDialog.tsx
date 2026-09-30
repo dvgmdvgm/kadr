@@ -13,7 +13,9 @@ import {
 } from '@shared/rawEncode'
 import { effective, type SettingKey } from '@shared/settings'
 import { etaOf, fmtClock, estimateBytes, ETA_WINDOW, type EtaSample } from '@shared/exportEta'
-import { startExport, type ExportHandle } from '@/engine/exporter'
+import { startExport, type ExportHandle, type ExportOptions } from '@/engine/exporter'
+import { useSilences } from '@/engine/silences'
+import { shortJobs, exportShorts, SHORT } from '@/engine/shorts'
 import { useVoiceUi } from '@/engine/voiceCheck'
 import { useEditor, useSettings, setting, projectDuration } from '@/state/store'
 import { useT, trf } from '@/i18n'
@@ -73,6 +75,10 @@ export function ExportDialog() {
   const [title, setTitle] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const handle = useRef<ExportHandle | null>(null)
+  // I11: «Экспортировать выбранные» — the confirmed shorts, one file each, one at a time
+  const shorts = useSilences((u) => u.items.filter((x) => x.kind === SHORT && x.state === 'confirmed').length)
+  const [batch, setBatch] = useState<{ i: number; n: number } | null>(null)
+  const batching = useRef(false)
   // G9: the target the finished export is held against (the dialog may change after the start)
   const doneTarget = useRef<number | undefined>(undefined)
   // G8: the progress events of the current phase, for the moving-average fps and ETA
@@ -88,6 +94,8 @@ export function ExportDialog() {
 
   useEffect(() => {
     return window.kadr.onExportProgress((p) => {
+      // a batch ends (or fails) on its own promise, not on each file's «done»
+      if (batching.current) { if (!['done', 'error', 'cancelled'].includes(p.phase)) progressed(p); return }
       if (p.phase === 'done') setStatus({ kind: 'done', loudness: p.loudness })
       else if (p.phase === 'error') setStatus({ kind: 'error', message: p.message ?? '' })
       else if (p.phase === 'cancelled') setStatus({ kind: 'cancelled' })
@@ -180,38 +188,53 @@ export function ExportDialog() {
     setNaming(null)
   }
 
-  async function begin() {
-    const s = useEditor.getState()
-    const ext = job.container
-    const out = await window.kadr.exportDialog(fileName, ext)
-    if (!out) return
-    s.setPlaying(false)
+  const options: ExportOptions = {
+    motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264',
+    extras: muxed ? {
+      title: metaTitle.trim() || undefined,
+      subsDoc,
+      sidecar: subs === 'off' ? undefined : subs,
+      embedSubs: canEmbed && subsEmbed,
+      chapters: chapKind === 'off' ? undefined : chapKind,
+      lead: t('exChLead')
+    } : undefined
+  }
+
+  function running0() {
+    useEditor.getState().setPlaying(false)
     track.current = { phase: '', s: [] }
     doneTarget.current = job.loudness
     setStatus({ kind: 'running', phase: 'video', progress: 0, est: null })
-    const h = startExport(
-      s.project,
-      job,
-      out,
-      progressed,
-      s.range,
-      {
-        motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264',
-        extras: muxed ? {
-          title: metaTitle.trim() || undefined,
-          subsDoc,
-          sidecar: subs === 'off' ? undefined : subs,
-          embedSubs: canEmbed && subsEmbed,
-          chapters: chapKind === 'off' ? undefined : chapKind,
-          lead: t('exChLead')
-        } : undefined
-      }
-    )
+  }
+  const failed = (err: Error) => {
+    if (String(err?.message).includes('cancelled')) setStatus({ kind: 'cancelled' })
+    else setStatus({ kind: 'error', message: String(err?.message ?? err) })
+  }
+
+  async function begin() {
+    const s = useEditor.getState()
+    const out = await window.kadr.exportDialog(fileName, job.container)
+    if (!out) return
+    running0()
+    const h = startExport(s.project, job, out, progressed, s.range, options)
     handle.current = h
-    h.done.catch((err) => {
-      if (String(err?.message).includes('cancelled')) setStatus({ kind: 'cancelled' })
-      else setStatus({ kind: 'error', message: String(err?.message ?? err) })
-    })
+    h.done.catch(failed)
+  }
+
+  /** I11: each confirmed short to its own file in a folder, named from its reason, one after another */
+  async function beginShorts() {
+    const dir = await window.kadr.pickDirectory(t('exShortsDir'))
+    if (!dir) return
+    const jobs = await shortJobs(dir, job.container)
+    if (!jobs.length) return
+    const project = useEditor.getState().project
+    running0()
+    batching.current = true
+    const h = exportShorts(jobs, (range, path) => startExport(project, job, path, progressed, range, options),
+      (i) => { track.current = { phase: '', s: [] }; setBatch({ i, n: jobs.length }) })
+    handle.current = h
+    h.done.then(() => setStatus({ kind: 'done' }), failed)
+      .finally(() => { batching.current = false; setBatch(null) })
   }
 
   function cancel() {
@@ -261,7 +284,7 @@ export function ExportDialog() {
   const statusLine =
     status.kind === 'running' ? (
       <div className="export-progress">
-        <div>{phaseLabel}</div>
+        <div>{batch ? `${trf('exShortsAt', { i: batch.i + 1, n: batch.n })} · ` : ''}{phaseLabel}</div>
         <progress value={status.progress} max={1} />
         <div className="dim">
           {[
@@ -311,10 +334,18 @@ export function ExportDialog() {
           {running ? (
             <button onClick={cancel}>{t('cancel')}</button>
           ) : (
-            <button className="primary" disabled={checking} onClick={begin}
-                    title={checking ? t('dfLong') : undefined}>
-              <Icon name="download" /> {t('startExport')}
-            </button>
+            <>
+              {shorts > 0 && (
+                <button data-act="export-shorts" disabled={checking} onClick={() => void beginShorts()}
+                        title={checking ? t('dfLong') : t('exShortsHint')}>
+                  <Icon name="download" /> {trf('exShorts', { n: shorts })}
+                </button>
+              )}
+              <button className="primary" disabled={checking} onClick={begin}
+                      title={checking ? t('dfLong') : undefined}>
+                <Icon name="download" /> {t('startExport')}
+              </button>
+            </>
           )}
         </>
       }

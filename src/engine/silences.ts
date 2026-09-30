@@ -78,6 +78,9 @@ export function silenceSpans(env: number[], fps: number, opts: SilenceOpts = {},
 /** the proposals on the timeline; `none` = the last search found nothing */
 export const useSilences = create<{ items: Silence[]; busy: boolean; none: boolean }>(() => ({ items: [], busy: false, none: false }))
 
+/** the confirmed proposals «Удалить подтверждённые» cuts — a 'short' (card I11) is exported, never cut */
+export const cuttable = () => useSilences.getState().items.filter((x) => x.state === 'confirmed' && x.kind !== 'short')
+
 export const clearSilences = () => useSilences.setState({ items: [], none: false })
 
 export const confirmAllSilences = () =>
@@ -169,7 +172,7 @@ export function proposeRanges(kind: string, ranges: { start: number; end: number
     'confirmed', 'all' that are not rejected, or these ids — of `kind` when
     given. Overlaps merge (store.extractRanges). Returns what went. */
 export function applySilences(which: 'confirmed' | 'all' | string[], kind?: string): Silence[] {
-  const items = useSilences.getState().items.filter((x) => !kind || x.kind === kind)
+  const items = useSilences.getState().items.filter((x) => x.kind !== 'short' && (!kind || x.kind === kind))
   const chosen = Array.isArray(which)
     ? items.filter((x) => which.includes(x.id))
     : items.filter((x) => (which === 'all' ? x.state !== 'rejected' : x.state === 'confirmed'))
