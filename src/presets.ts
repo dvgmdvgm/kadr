@@ -10,9 +10,13 @@ export const presetName = (p: ExportPreset): string => (NAME_KEY[p.id] ? tr(NAME
 
 const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3' }
 /** the export dialog's read-only codec lines: «H.264 · 10 Mbit/s», «AAC · 192 kbit/s» */
-export const videoCodecLabel = (p: ExportPreset): string =>
-  `${p.ffmpegVideo === 'libvpx-vp9' ? 'VP9' : 'H.264'} · ${p.rateControl === 'crf'
-    ? `CRF ${p.crf ?? 18}` : `${+(p.videoBitrate / 1e6).toFixed(1)} ${tr('mbpsUnit')}`}`
+const HW_LABEL = { nvenc: 'NVENC', qsv: 'Quick Sync', amf: 'AMF' } as const
+/** «H.264 · CRF 18», «H.264 · NVENC · CQ 18»: a hardware encoder's quality is its own CQ, not CRF */
+export const videoCodecLabel = (p: ExportPreset): string => {
+  const hw = p.ffmpegVideo === 'copy' && p.videoEncoder && p.videoEncoder !== 'x264' ? HW_LABEL[p.videoEncoder] : ''
+  return `${p.ffmpegVideo === 'libvpx-vp9' ? 'VP9' : 'H.264'}${hw ? ` · ${hw}` : ''} · ${p.rateControl === 'crf'
+    ? `${hw ? 'CQ' : 'CRF'} ${p.crf ?? 18}` : `${+(p.videoBitrate / 1e6).toFixed(1)} ${tr('mbpsUnit')}`}`
+}
 export const audioCodecLabel = (p: ExportPreset): string =>
   `${AUDIO_CODEC[p.audioCodec] ?? p.audioCodec} · ${parseInt(p.audioBitrate)} ${tr('kbpsUnit')}`
 

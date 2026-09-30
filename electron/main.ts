@@ -5,8 +5,9 @@ import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg
+  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders
 } from './ffmpeg'
+import { rawCodec } from '@shared/rawEncode'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
@@ -923,6 +924,8 @@ function registerIpc() {
     return out
   })
 
+  ipcMain.handle('encoders:list', () => detectEncoders())
+
   ipcMain.handle('export:dialog', async (_e, defaultName: string, ext: string) => {
     const r = await dialog.showSaveDialog(win!, {
       defaultPath: join(await lastDir('export'), `${defaultName}.${ext}`),
@@ -963,7 +966,7 @@ function registerIpc() {
     st.rawEncoded = true
     st.raw.start({
       width, height, outWidth, outHeight, fps,
-      codec: preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo,
+      codec: rawCodec(preset),
       bitrate: preset.videoBitrate, fit: preset.fit,
       rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
       out: st.videoTemp

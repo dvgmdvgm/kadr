@@ -1002,6 +1002,8 @@ export interface ExportPreset {
   rateControl?: 'abr' | 'crf'
   crf?: number
   x264Preset?: string
+  /** H.264 presets: x264 on the CPU, or a hardware encoder (shared/rawEncode.ts rawCodec); absent = x264 */
+  videoEncoder?: 'x264' | 'nvenc' | 'qsv' | 'amf'
   /** a size other than the project's: fit (bars, default) · fill (crop) · stretch */
   fit?: 'fit' | 'fill' | 'stretch'
 }
@@ -1304,6 +1306,8 @@ export interface KadrApi {
   fragmentParamsWrite(id: string, patch: Record<string, FragmentParamValue> | null): Promise<Record<string, unknown>>
 
   exportDialog(defaultName: string, ext: string): Promise<string | null>
+  /** hardware encoders that open on this machine (e.g. 'h264_nvenc'); probed once per launch */
+  hwEncoders(): Promise<string[]>
   exportBegin(job: ExportJob): Promise<void>
   exportVideoChunk(data: ArrayBuffer, position: number): Promise<void>
   /** Direct encode in the renderer process: preload spawns ffmpeg and pipes

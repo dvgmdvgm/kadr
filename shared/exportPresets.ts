@@ -40,6 +40,7 @@ const FIELDS: Record<keyof UserExportPreset, (v: unknown) => boolean> = {
   crf: (v) => v === undefined || (typeof v === 'number' && v >= 0 && v <= 51),
   x264Preset: (v) => v === undefined || str(v),
   fit: (v) => v === undefined || v === 'fit' || v === 'fill' || v === 'stretch',
+  videoEncoder: (v) => v === undefined || ['x264', 'nvenc', 'qsv', 'amf'].includes(v as string),
   motionBlur: bool,
   frameBlending: bool,
   fastEncoder: bool,

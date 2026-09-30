@@ -11,7 +11,7 @@ import { useT, type TKey } from '@/i18n'
 import { useSettings } from '@/state/store'
 import { TRANSITIONS } from '@/gl/transitions'
 import { PRESETS, presetName, allPresets } from '@/presets'
-import { X264_PRESETS } from '@shared/rawEncode'
+import { X264_PRESETS, VIDEO_ENCODERS } from '@shared/rawEncode'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
 import { KeysSection, KeysHeadActions } from './KeysSection'
@@ -480,6 +480,10 @@ function Export({ t }: { t: T }) {
       </Row>
       <Row label={t('exCrf')} keys={['export.crf']} shown="18" detail={t('exCrfHint')}>
         <Num k="export.crf" label={t('exCrf')} step={1} />
+      </Row>
+      <Row label={t('exEncoder')} keys={['export.videoEncoder']} shown={t('encx264')}>
+        <Choice k="export.videoEncoder" label={t('exEncoder')} width={240}
+                options={VIDEO_ENCODERS.map((e) => [e, t(`enc${e}`)])} />
       </Row>
       <Row label={t('exSpeed')} keys={['export.x264Preset']} shown={t('x264faster')}>
         <Choice k="export.x264Preset" label={t('exSpeed')} width={240}

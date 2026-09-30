@@ -81,6 +81,13 @@ run('a user preset keeps its x264 rate control (G3)', () => {
     JSON.stringify(r))
 })
 
+run('a user preset keeps its encoder (G5)', () => {
+  const nv = userPreset({ ...yt, videoEncoder: 'nvenc' },
+    { motionBlur: true, frameBlending: true, fastEncoder: false }, 'NV', 'user-nv')
+  const r = sanitizeUserPresets(JSON.parse(JSON.stringify([nv, { ...nv, id: 'user-bad', videoEncoder: 'h264_nvenc; rm' }])), builtinIds)
+  check('a user preset keeps its encoder (G5)', r.length === 1 && r[0].videoEncoder === 'nvenc', JSON.stringify(r))
+})
+
 run('unknown fields are not carried', () => {
   const good = userPreset(yt, { motionBlur: true, frameBlending: true, fastEncoder: false }, 'Ok', 'user-ok')
   const r = sanitizeUserPresets([{ ...good, evil: '<script>' }], builtinIds)

@@ -18,7 +18,7 @@ import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
 import { registerLibFonts } from './fonts'
 import { logInfo, logWarn } from './log'
-import { rawEncodeArgs, outputRect, exportFrameCount } from '@shared/rawEncode'
+import { rawEncodeArgs, outputRect, exportFrameCount, rawCodec } from '@shared/rawEncode'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
@@ -115,6 +115,14 @@ export function startExport(
     const duration = span.end - span.start
     if (duration <= 0) throw new Error('empty project')
 
+    // a hardware encoder chosen elsewhere (a user preset from another machine,
+    // kadr_export) that does not open here encodes on x264 instead of failing
+    if (!preset.audioOnly && rawCodec(preset).startsWith('h264_') &&
+        !(await window.kadr.hwEncoders()).includes(rawCodec(preset))) {
+      logWarn(tr('lgExport'), trf('lmHwMissing', { enc: rawCodec(preset) }))
+      preset = { ...preset, videoEncoder: 'x264' }
+    }
+
     await window.kadr.exportBegin({
       projectName: project.name,
       preset,
@@ -198,7 +206,7 @@ export function startExport(
     const slots: Uint8Array[] = []
     const slotPending: (Promise<void> | null)[] = [null, null]
     if (useRaw) {
-      const codec = preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo
+      const codec = rawCodec(preset)
       try {
         const enc = {
           width: rw, height: rh, outWidth: width, outHeight: height,
@@ -223,7 +231,7 @@ export function startExport(
           })
         }
       }
-      console.info(`[kadr] export encoder: ffmpeg x264 (${rawDirect ? 'direct' : rawWs ? 'ws' : 'ipc'} pipe)`)
+      console.info(`[kadr] export encoder: ffmpeg ${rawCodec(preset)} (${rawDirect ? 'direct' : rawWs ? 'ws' : 'ipc'} pipe)`)
     } else {
       muxer = new Muxer({
         target: new StreamTarget({

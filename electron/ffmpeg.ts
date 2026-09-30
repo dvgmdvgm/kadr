@@ -6,7 +6,7 @@ import { promises as fsp } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment } from '@shared/types'
-import { rawEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
+import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
 
@@ -21,6 +21,20 @@ export function configureFfmpeg(o: { ffmpeg: string; ffprobe: string; tmp: strin
   FFMPEG = o.ffmpeg
   FFPROBE = o.ffprobe
   TMP_DIR = o.tmp
+}
+
+/** the hardware encoders that WORK here — listed by `-encoders` AND opening on a
+    one-frame test encode (a listed encoder with no driver fails only at encode
+    time). Once per launch, probes in parallel (~1 s each); never rejects. */
+let hwEncoders: Promise<string[]> | null = null
+export function detectEncoders(): Promise<string[]> {
+  return (hwEncoders ??= (async () => {
+    const listed = await execFileP(FFMPEG, ['-hide_banner', '-encoders'], { maxBuffer: 4 * 1024 * 1024 })
+      .then((r) => parseEncoders(r.stdout), () => [])
+    const ok = await Promise.all(listed.map((n) =>
+      execFileP(FFMPEG, probeEncodeArgs(n), { timeout: 15000 }).then(() => true, () => false)))
+    return listed.filter((_, i) => ok[i])
+  })())
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i

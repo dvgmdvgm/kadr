@@ -22,7 +22,8 @@ mixes audio and muxes/transcodes per preset.
   `check-voicemap.mjs` (time remapping after a splice),
   `check-settings-wiring.mjs` (every setting has a consumer and a row),
   `check-chats.mjs` (Claude chats round-tripping through the .kadr),
-  `check-rate-control.mjs` (x264 ABR/CRF args);
+  `check-rate-control.mjs` (x264 ABR/CRF args), `check-encoders.mjs`
+  (hardware encoder listing and args; with ffmpeg it probes them for real);
   `check-output-geometry.mjs` wants ffmpeg (fit/fill/stretch on output, a
   changed fps keeps the duration);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
@@ -697,7 +698,13 @@ mixes audio and muxes/transcodes per preset.
   preset bitrate, or in the quality mode at CRF (default 18) — both with a
   chosen x264 speed, args built in `shared/rawEncode.ts` (ABR args
   unchanged, test `check-rate-control.mjs`) and written to the session
-  log on every export; a size other than the project's is fit (bars), fill
+  log on every export; H.264 may instead run on a HARDWARE encoder
+  (`export.videoEncoder`: nvenc / qsv / amf, `rawCodec`), each with its own
+  ABR and constant-quality («CQ», not CRF) args. `detectEncoders` in
+  electron/ffmpeg.ts trusts a one-frame test encode, not the `-encoders`
+  listing (a listed encoder with no driver fails only at encode time); once
+  per launch, in parallel. One chosen elsewhere that does not open here
+  encodes on x264 with a warning. Test `check-encoders.mjs`; a size other than the project's is fit (bars), fill
   (crop) or stretch (`ExportPreset.fit`, `outputRect` for the fast
   encoder's blit), and frames are sampled at the OUTPUT fps (the preload spawns ffmpeg and receives readPixels
   frames BY REFERENCE — contextIsolation is off exactly for this; every
@@ -759,7 +766,12 @@ mixes audio and muxes/transcodes per preset.
   chroma samples (whole-frame PSNR 71.3 dB), but the last unit is
   swscale's internal fixed-point rounding and no one- or two-stage integer
   model reproduced it, for 4:2:0 or 4:4:4. Implement it from libswscale's
-  source, not by measurement. Also: `-sws_flags` on the command line does
+  source, not by measurement. NVENC does not move this much: on an RTX 4090,
+  10 s from the app, 1080p60 x264 128 fps vs NVENC 137 (encode stage 2.6 →
+  2.2 ms/frame, read 2.4 either way), 2160p60 47 vs 55 fps (encode 7.8 →
+  6.2, read 10.2 → 8.5), while the encoders alone on the same frames in
+  plain ffmpeg differ by 30–60 %: the frame leaving the renderer still
+  dominates. What NVENC buys is mostly a free CPU. Also: `-sws_flags` on the command line does
   NOT reach this conversion (the scale filter's own `flags` default wins),
   so an A/B on those flags that compares output bytes proves nothing, and
   filter threading is already on by default.
