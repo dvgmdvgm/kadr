@@ -492,13 +492,17 @@ mixes audio and muxes/transcodes per preset.
   voice-over splice, `closeGapAt`, `closeGaps`, `rippleDelete` (with twins;
   closes only what the clips left EMPTY) and `extractRange` (all unlocked
   tracks, markers follow) go through it; locked tracks are never passed.
-  Test: `node scripts/check-ripple.mjs`. `rippleTrim` (Shift+drag of an edge;
+  Test: `node scripts/check-ripple.mjs`. `rippleDelete` (spans taken in the
+  original positions, overlapping ones on shared tracks merged so a deleted
+  pair moves nothing twice), `rippleTrim` (Shift+drag of an edge;
   the in edge keeps its start, the head comes off the source) and the
   `ripple` flag of `insertClipsFromAssets`/`pasteAtPlayhead` (Shift-drop,
   Ctrl+Shift+V: a clip across the point is split) ripple the receiving
   tracks PLUS the tracks of the twins of every clip they move
   (`rippleTracks`) — an image inserted on V1 must still push the A1 halves
-  of what follows. Test: `node scripts/check-ripple-trim.mjs`.
+  of what follows. A range cut (`liftRange`) splits through `splitClipAt`,
+  so both right halves of a pair stay linked. Test:
+  `node scripts/check-ripple-trim.mjs`.
   COPYING THE PROJECT IS THE HOT PATH. A project is deep-copied TWICE per
   edit — once by `pushHistory`, once by the mutation itself (33
   `cloneProject` call sites) — so a drag copies it on every pointermove and

@@ -407,10 +407,11 @@ function openGap(p: Project, t: number, len: number, trackIds: Iterable<string>,
 }
 
 function liftRange(p: Project, r: { start: number; end: number }) {
+  const rightLinks = new Map<string, string>()
   for (const tr of p.tracks) {
     if (tr.locked) continue
     const out: Clip[] = []
-    for (const c of tr.clips) {
+    for (const c of [...tr.clips]) {
       const end = c.start + c.duration
       const speed = c.speed || 1
       if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
@@ -418,19 +419,9 @@ function liftRange(p: Project, r: { start: number; end: number }) {
       } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
         // fully inside — drop
       } else if (c.start < r.start && end > r.end) {
-        // covers the range — split into two
-        const right: Clip = {
-          ...clone(c),
-          id: uid(),
-          start: r.end,
-          duration: end - r.end,
-          inPoint: c.inPoint + (r.end - c.start) * speed,
-          fadeIn: 0,
-          linkId: undefined
-        }
-        shiftClipAnims(right, -(r.end - c.start))
+        // covers the range — split into two; right halves of a pair stay linked pairwise
+        const right = splitClipAt(tr, c, r.end, rightLinks)
         c.duration = r.start - c.start
-        c.fadeOut = 0
         out.push(c, right)
       } else if (c.start < r.start) {
         c.duration = r.start - c.start
@@ -1943,13 +1934,26 @@ export const useEditor = create<EditorState>((set, get) => ({
     s.pushHistory('hRippleDelete')
     set((st) => {
       const p = cloneProject(st.project)
+      // every freed span in ORIGINAL positions, rippling its track plus the twins'
+      // tracks of what follows (or a pair desyncs); spans that overlap on shared
+      // tracks (the two halves of a deleted pair) merge, so nothing moves twice
+      const ev: Array<{ a: number; b: number; ids: Set<string> }> = []
       for (const tr of p.tracks) {
         if (tr.locked) continue
         const gone = tr.clips.filter((c) => want.has(c.id))
         if (!gone.length) continue
         tr.clips = tr.clips.filter((c) => !want.has(c.id))
-        for (const [a, b] of freedSpans(gone, tr.clips).reverse()) shiftAfter(p, b, a - b, [tr.id])
+        for (const [a, b] of freedSpans(gone, tr.clips)) ev.push({ a, b, ids: new Set([tr.id]) })
       }
+      for (const e of ev) e.ids = new Set(rippleTracks(p, e.ids, e.b))
+      ev.sort((x, y) => x.a - y.a)
+      const merged: typeof ev = []
+      for (const e of ev) {
+        const m = merged.find((m) => e.a < m.b - 1e-6 && e.b > m.a + 1e-6 && [...e.ids].some((id) => m.ids.has(id)))
+        if (m) { m.a = Math.min(m.a, e.a); m.b = Math.max(m.b, e.b); e.ids.forEach((id) => m.ids.add(id)) }
+        else merged.push(e)
+      }
+      for (const e of merged.sort((x, y) => y.b - x.b)) shiftAfter(p, e.b, e.a - e.b, e.ids)
       return { project: p, selection: st.selection.filter((id) => !want.has(id)) }
     })
   },

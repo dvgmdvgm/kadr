@@ -25,7 +25,7 @@ globalThis.localStorage = {
   setItem: (k, v) => mem.set(k, String(v)),
   removeItem: (k) => mem.delete(k)
 }
-const { useEditor, newProject } = await import(
+const { useEditor, newProject, withLinked } = await import(
   'data:text/javascript;base64,' + Buffer.from(out).toString('base64')
 )
 
@@ -110,6 +110,35 @@ else {
     s().project.markers.map((m) => m.time).join() === '1,2,6', s().project.markers.map((m) => m.time).join())
   s().undo()
   check('one Ctrl+Z restores an extract', JSON.stringify(s().project) === before)
+}
+
+// ---- E2f: a ripple never desyncs a pair; a range cut keeps the right halves linked
+{
+  // an unlinked V1 clip before an A/V pair: its delete must move the pair's
+  // audio too, and a clip deleted together with its own track's neighbour
+  // must not double-shift what follows
+  const p = newProject(); p.fps = 30; p.assets = []
+  p.tracks = [
+    tr('V1', 'video', [mk('x', 0, 2), mk('pv', 2, 3, { linkId: 'P' })]),
+    tr('A1', 'audio', [mk('pa', 2, 3, { linkId: 'P' }), mk('b', 6, 1)])
+  ]
+  s().setProject(p); s().select(['x']); s().rippleDelete()
+  const st = starts()
+  check('ripple delete moves a following pair on both its tracks',
+    near(st.pv, 0) && near(st.pa, 0) && near(st.b, 4), JSON.stringify(st))
+}
+for (const op of ['deleteRange', 'extractRange']) {
+  fresh()
+  s().setRange({ start: 1, end: 2 }) // inside pair 1 (V1/A1 0–3)
+  s()[op]()
+  const [v, a] = ['V1', 'A1'].map((id) => s().project.tracks.find((t) => t.id === id).clips
+    .filter((c) => c.linkId !== 'L2' && c.linkId !== 'L3').sort((x, y) => x.start - y.start))
+  const ok = v.length === 2 && a.length === 2 && v[0].linkId === a[0].linkId &&
+    !!v[1].linkId && v[1].linkId === a[1].linkId && v[1].linkId !== v[0].linkId
+  // a drag moves withLinked(...) of the grabbed clip: the right audio must come along
+  const moved = ok && withLinked(s().project, [v[1].id]).sort().join() === [v[1].id, a[1].id].sort().join()
+  check(`a range cut keeps the right halves of a pair linked (${op})`, moved,
+    JSON.stringify([v, a].map((cs) => cs.map((c) => [c.start, c.linkId]))))
 }
 
 // ---- close gaps -----------------------------------------------------------------
