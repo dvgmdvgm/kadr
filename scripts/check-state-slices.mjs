@@ -79,7 +79,7 @@ check('an unknown track is refused by name', /no track "V9"/.test(threw(() => sl
   const rebuilt = { ...sliceState(src, { fields: ['meta'] }) }
   delete rebuilt.projectPath
   rebuilt.tracks = project.tracks.map((t) => sliceState(src, { tracks: [t.id] }).tracks[0])
-  const rest = STATE_FIELDS.filter((f) => !['meta', 'tracks', 'selection', 'voiceDefects', 'exportPresets'].includes(f))
+  const rest = STATE_FIELDS.filter((f) => !['meta', 'tracks', 'selection', 'voiceDefects', 'exportPresets', 'words'].includes(f))
   Object.assign(rebuilt, sliceState(src, { fields: rest }))
   const ordered = Object.fromEntries(Object.keys(project).map((k) => [k, rebuilt[k]]))
   check('meta + one slice per track + the other fields = the project, exactly',

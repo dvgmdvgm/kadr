@@ -52,7 +52,10 @@ rhythm, readability or physical sense — not a technical failure. So:
   file paths, texts — SRT/TXT docs you can Read/Edit as files, markers — the
   user's numbered anchors, respect them; `kind:"beat"|"section"|"pause"` ones
   are the music map — and meta, bins, voiceRuns, defects, voiceDefects,
-  selection, exportPresets). A reply is never cut: one over 100 KB is refused
+  selection, exportPresets, and `words` — every transcript's words in
+  TIMELINE seconds `{t0, t1, w, p, docId, clipId}`, once per clip that shows
+  them; ask with a `range`, and cut or trim on these, never on SRT cue
+  times). A reply is never cut: one over 100 KB is refused
   and names a narrower slice — take it. All times are seconds. Asset
   waveform/thumbnail blobs are stripped; never echo whole project objects
   back from kadr_eval (a result over 4 MB is refused). Every tool has a

@@ -422,6 +422,17 @@ export interface TextDoc {
   offset?: number
   /** detected language, informational */
   language?: string
+  /** the transcription's words (SRT docs only), in this doc's cue time — source
+      seconds for an asset-bound doc; `placeWords` maps them to the timeline */
+  words?: TextWord[]
+}
+
+/** One transcribed word (seconds in its doc's cue time; p = whisper probability). */
+export interface TextWord {
+  t0: number
+  t1: number
+  w: string
+  p?: number
 }
 
 /** One subtitle cue (seconds). */

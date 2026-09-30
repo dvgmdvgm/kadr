@@ -5,6 +5,7 @@
 // still too big is refused with a narrower one to ask for.
 import type { Clip, Project, TimelineMarker, Track } from '@shared/types'
 import { projectDuration } from '../state/store'
+import { placeWords } from './words'
 
 /** a reply larger than this is refused, not cut (chars of compact JSON) */
 export const STATE_BUDGET = 100_000
@@ -25,14 +26,14 @@ export interface StateSource {
 export interface StateArgs {
   /** track ids or names — those tracks whole (clipped to `range` when given) */
   tracks?: string[]
-  /** project seconds: clips overlapping it; markers and voice defects in it */
+  /** project seconds: clips overlapping it; markers, voice defects and words in it */
   range?: { start: number; end: number }
   /** sections to include; with tracks/range, `assets` are those the sliced clips use */
   fields?: StateField[]
 }
 
 export const STATE_FIELDS = ['meta', 'tracks', 'assets', 'bins', 'texts', 'markers', 'voiceRuns',
-  'defects', 'claudeChats', 'selection', 'voiceDefects', 'exportPresets'] as const
+  'defects', 'claudeChats', 'selection', 'voiceDefects', 'exportPresets', 'words'] as const
 export type StateField = typeof STATE_FIELDS[number]
 /** project keys that are not `meta`: each is a field of the same name */
 const PROJECT_FIELDS = new Set(['tracks', 'assets', 'bins', 'texts', 'markers', 'voiceRuns', 'defects', 'claudeChats'])
@@ -61,6 +62,7 @@ function summary(src: StateSource) {
     counts: {
       assets: p.assets.length, bins: p.bins?.length ?? 0, texts: p.texts?.length ?? 0, markers,
       voiceRuns: p.voiceRuns?.length ?? 0, voiceDefects: src.voiceDefects.length,
+      words: (p.texts ?? []).reduce((n, d) => n + (d.words?.length ?? 0), 0),
       exportPresets: src.exportPresets.length
     },
     more: 'summary only — pass tracks (ids or names), range {start,end} and/or fields ' +
@@ -101,7 +103,13 @@ export function sliceState(src: StateSource, args: StateArgs = {}): unknown {
       out.assets = used ? p.assets.filter((a) => used.has(a.id)) : p.assets
     } else if (f === 'markers') out.markers = range ? (p.markers ?? []).filter((m) => markerIn(m, range)) : p.markers ?? []
     else if (f === 'voiceDefects') out.voiceDefects = range ? src.voiceDefects.filter((d) => overlaps(d.timeline[0], d.timeline[1], range)) : src.voiceDefects
-    else if (f === 'selection') out.selection = src.selection
+    else if (f === 'texts') out.texts = (p.texts ?? []).map(({ words, ...d }) => (words ? { ...d, wordCount: words.length } : d))
+    else if (f === 'words') {
+      // project seconds, from every doc's source-time words (card I4)
+      const clipIds = names && tracks && new Set(tracks.flatMap((t) => t.clips.map((c: Clip) => c.id)))
+      out.words = placeWords(p).filter((w) =>
+        (!range || overlaps(w.t0, w.t1, range)) && (!clipIds || (w.clipId != null && clipIds.has(w.clipId))))
+    } else if (f === 'selection') out.selection = src.selection
     else if (f === 'exportPresets') out.exportPresets = src.exportPresets
     else out[f] = (p as unknown as Record<string, unknown>)[f] ?? []
   }

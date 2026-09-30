@@ -81,6 +81,11 @@ mixes audio and muxes/transcodes per preset.
   is small, a one-track slice is that track whole, the slices cover the
   project exactly once, and the real bridge never cuts a reply and answers a
   stuck eval with a timeout at the deadline);
+  `check-words.mjs` (I4: the transcription's words are kept on its SRT doc,
+  `TextDoc.words`, in source seconds like the voice defects; `placeWords` in
+  `src/engine/words.ts` maps them through clip trim and speed to exactly where
+  defects over the same span land, once per linked A/V pair; they survive a
+  save/load and `kadr_state` gives them by slice, `fields: ["words"]`);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -359,6 +364,10 @@ mixes audio and muxes/transcodes per preset.
   pip `nvidia-*` wheels' DLL folders are registered) and redoes the job on
   the CPU if the GPU load or its first kernel fails before any segment went
   out; the session log names the interpreter and the device.
+  THE WORDS STAY (I4): `transcribeFlow` keeps whisper's word timestamps on
+  the SRT doc (`TextDoc.words` {t0, t1, w, p}, the doc's own cue time — source
+  seconds for an asset-bound doc, so edits never stale them; ~50 bytes a
+  word, a 1-hour talk ≈ 450 KB in the project). The SRT file is unchanged.
 - `shared/envelope.ts` + `electron/envelope.ts` — loudness envelope of a
   timeline range (Blender "Bake Sound to F-Curves" semantics: channels
   summed, |s|, one-pole follower with 5 ms attack / 200 ms release, frame

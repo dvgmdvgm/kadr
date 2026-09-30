@@ -2055,7 +2055,9 @@ Ctrl+Shift+K вне терминала, есть в палитре команд)
 `tracks` (id или имена) — эти дорожки целиком; `range {start, end}` —
 клипы, задевающие отрезок; `fields` — разделы (`meta`, `tracks`, `assets`,
 `bins`, `texts`, `markers`, `voiceRuns`, `defects`, `claudeChats`,
-`selection`, `voiceDefects`, `exportPresets`). Ответ никогда не обрезается:
+`selection`, `voiceDefects`, `exportPresets`, `words` — слова транскриптов
+в секундах таймлайна, по разу на каждый клип, который их показывает).
+Ответ никогда не обрезается:
 срез больше 100 КБ отклоняется с подсказкой, какой срез уже.
 
 ### kadr_eval
@@ -2106,6 +2108,9 @@ presetId, start/end, motionBlur, frameBlending. Тот же WYSIWYG-конвей
 реплике. Пишет SRT+TXT рядом с исходником, регистрирует в проекте,
 возвращает пути и превью реплик. Файлы Claude может читать и править
 напрямую — панель субтитров подхватит.
+Слова с таймингом остаются в проекте (в документе SRT, в секундах
+исходника — правки клипа их не сбивают) и читаются через
+`kadr_state({fields: ["words"], range})`.
 
 ### kadr_fragment_create
 

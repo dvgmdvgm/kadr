@@ -10,6 +10,7 @@ import { gainKeys as gainKeysOf } from '@shared/gainKeys'
 import { overlapFades, trackHeard } from './player'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
+import { docWords, glueWords } from './words'
 import { tr } from '../i18n'
 import {
   srtTime, cuesToSrt, cuesInRange, chaptersInRange, chapterMarks, type ExportExtras
@@ -104,19 +105,9 @@ export function segmentsToRichCues(
     }
   }
   for (const seg of segments) {
-    const raw = seg.words?.filter((w) => w.word.trim() !== '') ?? []
     // whisper splits compounds into continuation tokens without a leading
     // space ("мини" + "-программами") — glue them back into one word
-    const words: { start: number; end: number; word: string }[] = []
-    for (const w of raw) {
-      const prev = words[words.length - 1]
-      if (prev && !w.word.startsWith(' ')) {
-        prev.word += w.word
-        prev.end = w.end
-      } else {
-        words.push({ start: w.start, end: w.end, word: w.word })
-      }
-    }
+    const words = glueWords(seg)
     if (!words.length) {
       cues.push({
         start: Math.max(0, seg.start + offset),
@@ -335,7 +326,8 @@ export async function transcribeFlow(opts: TranscribeFlowOpts): Promise<Transcri
     offset: docOffset,
     language: result.language
   })
-  const doc = mkDoc(srtPath, 'srt')
+  // the words ride on the SRT doc only: the TXT twin would double the bytes
+  const doc: TextDoc = { ...mkDoc(srtPath, 'srt'), words: docWords(result.segments, cueOffset) }
   const txtDoc = mkDoc(txtPath, 'txt')
   st().addTexts([doc, txtDoc])
   return { doc, txtDoc, srtPath, txtPath, segments: result.segments, language: result.language }

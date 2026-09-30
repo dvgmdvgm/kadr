@@ -101,12 +101,12 @@ server.registerTool('kadr_state', {
     'Read the LIVE state of the Kadr project open in the editor. WITH NO ARGUMENTS IT IS A SUMMARY: ' +
     'project {id, name, size, fps, duration}, projectPath, playhead, range (the blue in/out span, or ' +
     'null), selection (the first 100 ids) + selectionCount, tracks with their clip counts and span, ' +
-    'counts of assets / markers by kind / texts / voice defects. Read it first, then ask for SLICES: ' +
+    'counts of assets / markers by kind / texts / transcript words / voice defects. Read it first, then ask for SLICES: ' +
     'tracks (ids or names) → those tracks whole; range {start, end} → the clips overlapping it on ' +
-    'every (or the named) track, plus markers and voiceDefects in it when asked; fields → sections: ' +
+    'every (or the named) track, plus markers, voiceDefects and words in it when asked; fields → sections: ' +
     'meta (id, name, size, fps, background…), tracks, assets (with tracks/range: only those the sliced ' +
     'clips use), bins, texts, markers, voiceRuns, defects, claudeChats, selection, voiceDefects, ' +
-    'exportPresets. A reply is NEVER cut: one over 100 KB is refused with a narrower slice to ask ' +
+    'exportPresets, words. A reply is NEVER cut: one over 100 KB is refused with a narrower slice to ask ' +
     'for. All times are in seconds. tracks[0] is the topmost ' +
     'video track (drawn last). Clip: {id, kind: media|text, assetId, start, duration, inPoint, ' +
     'speed, gain, muted, transform, fit? (contain|cover|stretch; absent = contain), flipX?, flipY?, mask?, maskShapes?, effects[], transitionIn/Out?, fadeIn/Out?, ' +
@@ -120,7 +120,10 @@ server.registerTool('kadr_state', {
     'project.bins are the media bin\'s folders ({id, name, parentId|null}); an asset\'s binId names ' +
     'its folder (absent = the root) — the user\'s own grouping of the footage. ' +
     'project.texts lists transcript/subtitle documents (TextDoc {id, name, path, format: srt|txt, ' +
-    'assetId?, offset?}) — path is a real file you can Read/Edit; see kadr_transcribe to create them. ' +
+    'assetId?, offset?, wordCount?}) — path is a real file you can Read/Edit; see kadr_transcribe to create them. ' +
+    'words[] (fields:["words"], best with a range) are the transcript WORDS in TIMELINE seconds ' +
+    '({t0, t1, w, p: whisper probability, docId, clipId?}) — the same word once per clip that shows it, ' +
+    'none where the clip trimmed it away; cut and trim on these, never on SRT cue times. ' +
     'project.voiceRuns are ElevenLabs voice-overs ({id, assetId, scriptPath, scriptHash, tempo, runDir?}) ' +
     'and project.defects their suspected defects. THESE ARE NOT MARKERS AND NOT THE RANGE: a defect ' +
     'belongs to one audio clip, its src/phrase times are SOURCE seconds of that clip\'s asset, and ' +
@@ -131,9 +134,9 @@ server.registerTool('kadr_state', {
   inputSchema: {
     tracks: z.array(z.string().min(1)).min(1).optional().describe('track ids or names: those tracks whole'),
     range: z.object({ start: z.number(), end: z.number() }).strict().optional()
-      .describe('project seconds: the clips overlapping it (markers/voiceDefects in it when asked in fields)'),
+      .describe('project seconds: the clips overlapping it (markers/voiceDefects/words in it when asked in fields)'),
     fields: z.array(z.enum(['meta', 'tracks', 'assets', 'bins', 'texts', 'markers', 'voiceRuns',
-      'defects', 'claudeChats', 'selection', 'voiceDefects', 'exportPresets'])).min(1).optional()
+      'defects', 'claudeChats', 'selection', 'voiceDefects', 'exportPresets', 'words'])).min(1).optional()
       .describe('sections to return; with tracks/range alone the reply is their clips')
   }
 }, async ({ tracks, range, fields }) => {
@@ -417,6 +420,7 @@ server.registerTool('kadr_transcribe', {
     '[start, end) in project seconds (everything audible there, mixed like an export). Writes ' +
     '<name>.srt and <name>.txt next to the source media and registers them in project.texts ' +
     '(each entry has the absolute file path — you can Read/Edit those files directly; the ' +
+    'word timings are kept in the project: kadr_state({fields:["words"], range}); the ' +
     'editor subtitle panel picks up external edits). For ranges, timecodes "absolute" = ' +
     'project-timeline seconds, "relative" = from the range start; for whole files cue times are ' +
     'source-media seconds. Runs at roughly realtime speed for model large-v3 — expect a long call.',
