@@ -3,11 +3,33 @@ import { create } from 'zustand'
 import { useEditor, uid } from '@/state/store'
 import { baseOf } from '@shared/paths'
 import type { TextDoc } from '@shared/types'
+import type { MediaScan, SeqRun } from '@shared/sequences'
 import { logError, logWarn } from './log'
 import { trf, tr } from '../i18n'
 
 /** files/URLs currently being imported (drop or dialog) — drives the '…' hint */
 export const useImportUi = create<{ active: number }>(() => ({ active: 0 }))
+
+/** the answer of the import summary: the runs' fps, and per run whether it comes in as one clip */
+export interface ImportChoice { fps: number; clips: boolean[] }
+/** H6: a folder or a numbered run asks first (ImportSummary.tsx); `scan` null = nothing on screen */
+export const useImportSummary = create<{ scan: MediaScan | null; answer: ((c: ImportChoice | null) => void) | null }>(
+  () => ({ scan: null, answer: null }))
+let summaryQueue: Promise<unknown> = Promise.resolve()
+/** one summary at a time: a second drop waits for the first answer */
+function askImportSummary(scan: MediaScan): Promise<ImportChoice | null> {
+  const asked = summaryQueue.then(() => new Promise<ImportChoice | null>((resolve) => {
+    useImportSummary.setState({
+      scan,
+      answer: (c) => {
+        useImportSummary.setState({ scan: null, answer: null })
+        resolve(c)
+      }
+    })
+  }))
+  summaryQueue = asked
+  return asked
+}
 
 /**
  * Import files by absolute path: probe each into a bin asset (paths already
@@ -38,7 +60,24 @@ async function importFilesInner(
   // 3D models are not timeline media: they go into the project's kadr-lib/models
   const models = paths.filter(isModelPath)
   if (models.length) await importModels(models).catch((e) => logWarn(tr('lgImport'), String((e as Error)?.message ?? e)))
-  for (const path of paths.filter((p) => !isModelPath(p))) {
+  // folders are walked in main, numbered stills gathered into runs (card H6)
+  let scan: MediaScan
+  try {
+    scan = await window.kadr.scanMedia(paths.filter((p) => !isModelPath(p)))
+  } catch (err) {
+    logError(tr('lgImport'), tr('lmScanFail'), err)
+    return assetIds
+  }
+  const files = [...scan.files]
+  const runs: SeqRun[] = []
+  let fps = 0
+  if (scan.folders || scan.sequences.length || scan.skipped) {
+    const c = await askImportSummary(scan)
+    if (!c) return assetIds
+    fps = c.fps
+    scan.sequences.forEach((s, i) => { if (c.clips[i]) runs.push(s); else files.push(...s.files) })
+  }
+  for (const path of files) {
     const ext = path.split('.').pop()?.toLowerCase()
     if (ext === 'srt' || ext === 'txt') {
       textDocs.push({
@@ -61,6 +100,19 @@ async function importFilesInner(
       assetIds.push(id)
     } catch (err) {
       logError(tr('lgImport'), trf('lmReadFail', { path }), err)
+    }
+  }
+  for (const run of runs) {
+    try {
+      const path = await window.kadr.buildSequence(run, fps)
+      const existing = st().project.assets.find((a) => a.path === path)
+      if (existing) { assetIds.push(existing.id); continue }
+      const { asset } = await window.kadr.probeMedia(path)
+      const id = uid()
+      st().addAsset({ id, ...asset, name: run.name })
+      assetIds.push(id)
+    } catch (err) {
+      logError(tr('lgImport'), trf('lmSequenceFail', { name: run.name }), err)
     }
   }
   if (textDocs.length) st().addTexts(textDocs)

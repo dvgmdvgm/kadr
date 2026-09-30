@@ -92,6 +92,9 @@ const api: KadrApi = {
   },
 
   openMediaDialog: () => ipcRenderer.invoke('media:open-dialog'),
+  openFolderDialog: () => ipcRenderer.invoke('media:open-folder-dialog'),
+  scanMedia: (paths) => ipcRenderer.invoke('media:scan', paths),
+  buildSequence: (run, fps) => ipcRenderer.invoke('media:sequence', run, fps),
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
   fileUrl: (path) => {
     // Windows paths (D:\dir\file) must become /D:/dir/file — a raw drive

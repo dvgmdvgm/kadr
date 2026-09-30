@@ -18,7 +18,7 @@ import './styles.css'
 import { wireAutosave, autosaveNow, activity } from './engine/autosave'
 import { autoCaptions, captionsTsx } from './engine/captions'
 import { reverseClip } from './engine/reverse'
-import { importFiles, wireDropDiagnostics } from './engine/mediaImport'
+import { importFiles, wireDropDiagnostics, useImportUi, useImportSummary } from './engine/mediaImport'
 import { snapshotFrame, contactSheet } from './engine/snapshot'
 import { runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi } from './engine/checks'
 import { importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, wireModels, prepareForFragment } from './engine/models'
@@ -100,7 +100,7 @@ wireFonts()
   runAction, useKeymap, setActionKeys, usePaletteUi,
   // the settings (shared/settings.ts): `settings.effective(key)`, `settings.set(key, value | null)`
   settings: useSettings.getState(), setting,
-  reverseClip, importFiles, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
+  reverseClip, importFiles, useImportUi, useImportSummary, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,
   useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,

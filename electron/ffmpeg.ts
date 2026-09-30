@@ -512,6 +512,11 @@ export async function makeDecoded(
     '-movflags', '+faststart',
     out
   ]
+  return runProgress(args, duration, onProgress, 'decode')
+}
+
+/** ffmpeg with `-progress pipe:1`, its out_time reported as a share of `duration` */
+function runProgress(args: string[], duration: number, onProgress: ((p: number) => void) | undefined, what: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let err = ''
@@ -531,9 +536,50 @@ export async function makeDecoded(
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(`decode ffmpeg exited ${code}: ${err.slice(0, 500)}`))
+      else reject(new Error(`${what} ffmpeg exited ${code}: ${err.slice(0, 500)}`))
     })
   })
+}
+
+/** does the first frame of a run carry alpha (RGBA PNG, EXR with A, …)? */
+export async function sequenceHasAlpha(firstFrame: string): Promise<boolean> {
+  const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-select_streams', 'v:0',
+    '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', firstFrame])
+  return /^(yuva|rgba|argb|abgr|bgra|gbrap|ya8|ya16)/.test(stdout.trim())
+}
+
+/**
+ * A numbered run of stills (card H6) as ONE clip at `fps`, through ffmpeg's
+ * image2 demuxer: a full-resolution H.264 mp4 the fast decode path reads
+ * (BT.709, padded to even), or near-lossless VP9+alpha WebM when the frames
+ * carry alpha (the exporter packs it like any alpha source). EXR is linear
+ * light — shown through the sRGB curve.
+ */
+export async function makeSequence(
+  run: { pattern: string; first: number; count: number },
+  fps: number,
+  out: string,
+  opts: { alpha: boolean },
+  onProgress?: (p: number) => void
+): Promise<void> {
+  const ntsc = Math.round(fps * 1001)
+  const rate = ntsc % 1000 === 0 && Math.abs(ntsc / 1001 - fps) < 1e-9 ? `${ntsc}/1001` : String(fps)
+  const args = [
+    '-y', '-v', 'error', '-progress', 'pipe:1',
+    '-f', 'image2', '-framerate', rate, '-start_number', String(run.first),
+    ...(/\.exr$/i.test(run.pattern) ? ['-apply_trc', 'iec61966_2_1'] : []),
+    '-i', run.pattern, '-frames:v', String(run.count), '-an',
+    ...(opts.alpha ? [
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-crf', '12', '-b:v', '0', '-cpu-used', '4', '-row-mt', '1'
+    ] : [
+      '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p',
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '14',
+      '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
+      '-movflags', '+faststart'
+    ]),
+    out
+  ]
+  return runProgress(args, run.count / fps, onProgress, 'sequence')
 }
 
 /**

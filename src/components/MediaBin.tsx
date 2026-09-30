@@ -114,8 +114,8 @@ export function MediaBin() {
   const shownSel = sel.filter((id) => shownIds.has(id))
   const hasContent = assets.length > 0 || bins.length > 0
 
-  async function importMedia() {
-    const paths = await window.kadr.openMediaDialog()
+  async function importMedia(folders = false) {
+    const paths = await (folders ? window.kadr.openFolderDialog() : window.kadr.openMediaDialog())
     if (!paths.length) return
     setBusy(true)
     try {
@@ -445,7 +445,11 @@ export function MediaBin() {
             <Icon name="folderPlus" size={13} />
           </button>
         )}
-        <button data-act="import" onClick={importMedia} disabled={busy || importing}>
+        <button className="ghost icon-only" data-act="import-folder" title={t('impFolderHint')}
+                aria-label={t('impFolder')} onClick={() => importMedia(true)} disabled={busy || importing}>
+          <Icon name="folderOpen" size={13} />
+        </button>
+        <button data-act="import" onClick={() => importMedia()} disabled={busy || importing}>
           {busy || importing ? '…' : t('import')}
         </button>
       </div>

@@ -5,8 +5,11 @@ import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders
+  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders,
+  makeSequence, sequenceHasAlpha
 } from './ffmpeg'
+import { scanMedia } from './mediaScan'
+import { frameOf } from '@shared/sequences'
 import { rawCodec, rawTempExt, seqPattern, isSeqFrame } from '@shared/rawEncode'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
@@ -372,7 +375,7 @@ app.on('before-quit', (e) => {
 // ---------------------------------------------------------------------------
 
 const MEDIA_FILTERS = [
-  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'srt', 'txt', 'stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
+  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'exr', 'tif', 'tiff', 'dpx', 'tga', 'srt', 'txt', 'stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
   { name: '3D (STL, 3MF, STEP, OBJ, glTF)', extensions: ['stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
   { name: 'All files', extensions: ['*'] }
 ]
@@ -774,6 +777,49 @@ function registerIpc() {
     await fs.rename(out + '.part', out)
     return out
   }
+
+  // Folder import and image sequences (card H6): folders are walked here, never
+  // in the page (10 000 files must not freeze it)
+  ipcMain.handle('media:open-folder-dialog', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      properties: ['openDirectory', 'multiSelections'],
+      defaultPath: await lastDir('media')
+    })
+    if (r.canceled || !r.filePaths.length) return []
+    void rememberDir('media', r.filePaths[0])
+    return r.filePaths
+  })
+  ipcMain.handle('media:scan', (_e, paths: string[]) => scanMedia(paths.map(String)))
+  // A run becomes ONE clip: an intermediate the fast decode path reads, stored
+  // BY PATH like a download (the asset's path IS it — a rebuildable cache that
+  // the Storage panel may clear would take the clip offline with no way back).
+  // Keyed by the run, the fps and the first and last frames' size + mtime.
+  ipcMain.handle('media:sequence', async (_e, run: { pattern: string; first: number; count: number; name: string }, fps: number) => {
+    const firstFile = frameOf(run.pattern, run.first)
+    const [a, b] = await Promise.all([fs.stat(firstFile), fs.stat(frameOf(run.pattern, run.first + run.count - 1))])
+    const alpha = await sequenceHasAlpha(firstFile)
+    const tag = createHash('sha1')
+      .update(JSON.stringify([run.pattern, run.first, run.count, fps, a.size, a.mtimeMs, b.size, b.mtimeMs]))
+      .digest('hex').slice(0, 10)
+    const ext = alpha ? 'webm' : 'mp4'
+    // flat in imported/: the Storage panel attributes each FILE there to the asset whose path it is
+    const dir = await importedDir()
+    const base = String(run.name || 'sequence').replace(/[^\w.-]+/g, '_').replace(/\.[^.]*$/, '').slice(-80)
+    const out = join(dir, `seq-${tag}-${base}.${ext}`)
+    try {
+      if ((await fs.stat(out)).size > 0) return out // the same run at the same fps, built before
+    } catch { /* not built yet */ }
+    const tmp = join(dir, `seq-${tag}-${base}.part.${ext}`)
+    try {
+      await makeSequence(run, fps, tmp, { alpha }, (p) => win?.webContents.send('proxy:progress', { path: run.pattern, progress: p }))
+      await fs.rename(tmp, out)
+    } catch (err) {
+      fs.unlink(tmp).catch(() => { /* nothing to clean */ })
+      throw err
+    }
+    win?.webContents.send('proxy:progress', { path: run.pattern, progress: 1 })
+    return out
+  })
 
   // Media dragged out of a browser arrives as an http(s) URL — download it
   // into userData/imported (cached by URL hash) and let the normal probe

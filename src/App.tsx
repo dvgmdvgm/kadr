@@ -22,6 +22,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { RelinkDialog } from './components/RelinkDialog'
 import { RecentMenuButton } from './components/RecentProjects'
 import { TemplateMenuButton, TemplatePicker, useTemplatePick } from './components/Templates'
+import { ImportSummary } from './components/ImportSummary'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
 import { Modal } from './components/Modal'
@@ -469,6 +470,7 @@ export default function App() {
       <DiscardPrompt />
       <RestorePrompt />
       <TemplatePicker onPick={(p) => void startProject(p)} />
+      <ImportSummary />
       <RelinkDialog />
       {claudeOpen && <ClaudePanel key={project.id} onClose={() => setClaudeOpen(false)} />}
       {debugOpen && <DebugPanel onClose={() => setPanel(null)} />}

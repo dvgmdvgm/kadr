@@ -2,6 +2,7 @@
 // All times are in seconds, all dimensions in pixels.
 
 import type { RelinkWanted } from './relinkMatch'
+import type { MediaScan, SeqRun } from './sequences'
 import type { GainKey } from './gainKeys'
 import type { SettingsSnapshot, SettingValue } from './settings'
 import type { RawEncodeOpts } from './rawEncode'
@@ -1225,6 +1226,12 @@ export interface FragmentParamDecl {
 
 export interface KadrApi {
   openMediaDialog(): Promise<string[]>
+  /** «Импорт папки» (H6): folders, several at once */
+  openFolderDialog(): Promise<string[]>
+  /** folders walked in main to known media, numbered stills gathered into runs (electron/mediaScan.ts) */
+  scanMedia(paths: string[]): Promise<MediaScan>
+  /** a run as ONE clip at `fps` — the path of its intermediate in userData/imported (cached) */
+  buildSequence(run: Pick<SeqRun, 'pattern' | 'first' | 'count' | 'name'>, fps: number): Promise<string>
   probeMedia(path: string): Promise<ProbeResult>
   /** one pass over many paths: the size of each, null where there is no file (offline media) */
   statMany(paths: string[]): Promise<(number | null)[]>

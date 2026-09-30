@@ -51,6 +51,10 @@ mixes audio and muxes/transcodes per preset.
   in `shared/bins.ts` — deleting a folder never deletes an asset, a parentId
   cycle or a missing folder is healed on load, a folder never moves into
   itself, and the rows the bin draws);
+  `check-sequence-detect.mjs` wants ffmpeg for its last part (H6: numbered
+  stills are one run only by contiguous numbering, a common stem, folder and
+  extension, one padding style; a folder walk in main; a 240-frame PNG run
+  becomes one 10 s H.264 clip at 24 fps, an RGBA run a VP9+alpha WebM);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -619,7 +623,16 @@ mixes audio and muxes/transcodes per preset.
   `dropPayload` (reads dataTransfer SYNCHRONOUSLY: files → uri-list /
   x-moz-url / DownloadURL → portal key), `importDrop` (paths → URLs →
   raw blobs), window-level catch-all drop in App.tsx, drop forensics to
-  `window.__dragLog` + `userData/drop-log.jsonl`.
+  `window.__dragLog` + `userData/drop-log.jsonl`. FOLDERS AND IMAGE
+  SEQUENCES (H6): every import goes through `media:scan` — folders are walked
+  in MAIN (`electron/mediaScan.ts`; 10 000 files in ~50 ms, the page never
+  waits) to known media, and numbered stills are gathered into runs
+  (`shared/sequences.ts`). A folder, a run or a skipped file brings up
+  `ImportSummary` first (counts, the runs, one fps). A ticked run is built by
+  `media:sequence` (image2 → H.264 BT.709 mp4, or VP9+alpha WebM for RGBA;
+  EXR through the sRGB curve) into `userData/imported/seq-<hash>-<name>` —
+  REFERENCED, since that file IS the asset's path; a rebuildable cache the
+  Storage panel may clear would take the clip offline with no way back.
 - `src/engine/offline.ts` + `electron/mediaStat.ts` + `shared/relinkMatch.ts`
   — OFFLINE MEDIA: a moved or renamed source used to be a silent black clip
   and an export that failed at the mux. The offline set is RUNTIME ONLY (asset
