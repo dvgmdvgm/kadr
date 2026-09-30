@@ -114,6 +114,9 @@ mixes audio and muxes/transcodes per preset.
   `check-limiter.mjs` (the export master limiter) and
   `check-sfx-labels.mjs` (sound labels vs /brag's 228) and `check-hdr.mjs`
   (the HDR → SDR maths and ffmpeg's own filter chain against the formula);
+  `check-stream-colour.mjs` wants ffmpeg (J9: an H.264/HEVC stream's colour
+  description read from the SPS VUI and the colr box, mapped to the matrix
+  the preview's `<video>` uses — the export re-wraps its frames by it);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -911,6 +914,18 @@ mixes audio and muxes/transcodes per preset.
     frame goes through Chromium's colour-managed upload, which rewrites
     mid-tones and would lift the matte (128 → 143). `KADR_DISABLE_ALPHA_PACK`
     forces the old path.
+  * THE YUV MATRIX FOLLOWS THE ELEMENT (J9, `shared/streamColour.ts`):
+    WebCodecs decodes every H.264/HEVC stream not FULLY described (primaries,
+    transfer AND matrix) as BT.709 and fills `VideoFrame.colorSpace` with
+    that guess, while `<video>` guesses by height (under 720 → BT.601) and
+    also reads the `colr` box. An untagged or matrix-only SD clip exported
+    up to 41/255 off the preview (24 dB). `Mp4FrameSource` now decides from
+    the STREAM — the SPS VUI (parsed from avcC) and `colr` — and re-wraps
+    by the element's rule; a fully described SPS is left to the decoder,
+    which both obey. Measured on 26 media rows (Chromium 148, Windows):
+    every H.264 row, SD and HD, untagged / matrix-only / full / colr-only /
+    VUI-only, is pixel-identical preview vs export. Test:
+    `node scripts/check-stream-colour.mjs` (ffmpeg).
   * MOOV AT THE END (any file not written with faststart) is picked up by
     fetching the file's tail (`pumpTail`) instead of dropping to element
     seeks.
