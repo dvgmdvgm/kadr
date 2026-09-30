@@ -3,15 +3,12 @@
 // algorithm (Web Audio API, "StereoPannerNode" processing) as an ffmpeg `pan`
 // matrix, or per sample as `aeval` when the pan moves. It is an equal-power
 // balance: a channel panned across keeps L² + R², and centre leaves a stereo
-// source untouched. A mono source is upmixed to stereo FIRST (the mix's
-// aformat, the panner's explicit 2-channel input), then panned.
+// source untouched. A mono source is upmixed to stereo FIRST, at unity on both sides (the mix's
+// `pan=stereo|c0=c0|c1=c0`, K10; the panner's explicit 2-channel input), then panned.
 import type { GainKey } from './gainKeys'
 import { gainExpr } from './gainKeys'
 
 export const clampPan = (p: number): number => (Number.isFinite(p) ? Math.max(-1, Math.min(1, p)) : 0)
-
-/** ffmpeg's mono → stereo upmix (swresample puts a centre channel at −3 dB in each side) */
-export const MONO_UPMIX = Math.SQRT1_2
 
 /**
  * The node's stereo algorithm as a matrix [ll, rl, lr, rr]:

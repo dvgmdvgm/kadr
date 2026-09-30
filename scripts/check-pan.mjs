@@ -30,7 +30,7 @@ globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) 
 const P = await load(`export * from './shared/pan'`)
 const { collectRangeAudio } = await load(`export { collectRangeAudio } from './src/engine/subtitles'`)
 const { panAt } = await load(`export { panAt } from './src/engine/player'`)
-const { ExportMuxer, FFMPEG } = await load(`export { ExportMuxer, FFMPEG } from './electron/ffmpeg'`)
+const { ExportMuxer, FFMPEG, probeMedia } = await load(`export { ExportMuxer, FFMPEG, probeMedia } from './electron/ffmpeg'`)
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -73,6 +73,9 @@ const law = (p, l, r) => { const [ll, rl, lr, rr] = P.panMatrix(p); return [ll *
   const proj = (c, tr = {}) => ({ assets, tracks: [{ id: 't', kind: 'audio', gain: 1, muted: false, clips: [c], ...tr }] })
   const [s0] = collectRangeAudio(proj(clip({})), 0, 10)
   check('no pan anywhere: the segment carries none (the mix is what it was)', s0 && s0.pan === undefined && s0.panKeys === undefined, JSON.stringify(s0))
+  check('an asset from before K10 (no channel count) gives segments none — main asks ffprobe', s0.channels === undefined)
+  const [sm] = collectRangeAudio({ ...proj(clip({})), assets: [{ ...assets[0], channels: 1 }] }, 0, 10)
+  check('the asset\'s channel count rides on its segments (K10)', sm.channels === 1, JSON.stringify(sm))
   const [s1] = collectRangeAudio(proj(clip({ pan: { value: 0.5 } }), { pan: { value: 0.75 } }), 0, 10)
   check('clip pan + track pan, clamped to hard right', s1.pan === 1, String(s1.pan))
   const [s2] = collectRangeAudio(proj(clip({ pan: { value: -0.25 } }), { pan: { value: -0.25 } }), 0, 10)
@@ -94,7 +97,7 @@ try {
   const noise = join(dir, 'noise.wav'), mono = join(dir, 'mono.wav')
   execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'anoisesrc=d=3:c=white:a=0.25:seed=5:r=48000', '-f', 'lavfi', '-i', 'anoisesrc=d=3:c=white:a=0.25:seed=9:r=48000',
     '-filter_complex', '[0][1]join=inputs=2:channel_layout=stereo', '-c:a', 'pcm_f32le', noise])
-  execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=f=440:d=3:r=48000,volume=0.5', '-ac', '1', '-c:a', 'pcm_f32le', mono])
+  execFileSync(FFMPEG, ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'sine=f=440:d=3:r=48000,volume=4', '-ac', '1', '-c:a', 'pcm_f32le', mono])
   const src = f32Of(noise), srcMono = f32Of(mono)
 
   const mix = async (segs, dur, name, job = {}) => {
@@ -137,8 +140,24 @@ try {
   }
   {
     const pcm = await mix([seg({ path: mono, pan: -0.5 })], 2, 'pmono.wav')
-    const w = worstVsLaw(pcm, srcMono, () => -0.5, P.MONO_UPMIX)
-    check('a mono source is upmixed first (ffmpeg: −3 dB a side), then panned', w < 1e-5, `worst ${w.toExponential(1)}`)
+    const w = worstVsLaw(pcm, srcMono, () => -0.5, 1)
+    check('a mono source is upmixed first (at unity, as WebAudio does), then panned', w < 1e-5, `worst ${w.toExponential(1)}`)
+  }
+  // K10: a mono tone at −6 dBFS peak (sine's own amplitude is 1/8), pan centre — each channel carries the source's own level,
+  // through the single-graph mix and through the premix (> PREMIX_THRESHOLD segments) alike
+  const monoDb = db(Math.sqrt(srcMono.subarray(0, 2 * SR).reduce((a, x) => a + x * x, 0) / (2 * SR)))
+  exp.monoC = await mix([seg({ path: mono })], 2, 'mc.wav')
+  {
+    const [l, r] = [db(chRms(exp.monoC, 0)), db(chRms(exp.monoC, 1))]
+    check('a mono source at centre exports at its own level on each channel (K10)', Math.abs(l - monoDb) < 0.1 && Math.abs(r - monoDb) < 0.1, `L ${l.toFixed(2)} R ${r.toFixed(2)} source ${monoDb.toFixed(2)} dBFS`)
+    const many = Array.from({ length: 65 }, () => seg({ path: mono, gain: 1 / 65 }))
+    const pm = await mix(many, 2, 'mpre.wav')
+    const pl = db(chRms(pm, 0)), pr = db(chRms(pm, 1))
+    check('the premix upmixes mono the same way (K10)', Math.abs(pl - monoDb) < 0.1 && Math.abs(pr - monoDb) < 0.1, `L ${pl.toFixed(2)} R ${pr.toFixed(2)} dBFS`)
+    const probed = (await probeMedia(mono)).asset.channels, probedSt = (await probeMedia(noise)).asset.channels
+    check('the import probe keeps the channel count (K10)', probed === 1 && probedSt === 2, `${probed} / ${probedSt}`)
+    const told = await mix([seg({ path: mono, channels: 1 })], 2, 'mtold.wav')
+    check('a segment that says it is mono is upmixed the same way', Math.abs(db(chRms(told, 0)) - monoDb) < 0.1, `L ${db(chRms(told, 0)).toFixed(2)} dBFS`)
   }
 
   // ---- the preview: the real StereoPannerNode, set up as src/engine/audio.ts does ----
@@ -162,6 +181,7 @@ const run = async (chans, pan, keys) => {
   for (const p of PANS) res[p] = await run([L, R], p)
   res.sweep = await run([L, R], 0, sweep)
   res.mono = await run([M], -0.5)
+  res.monoC = await run([M], 0)
   console.log('RESULT ' + JSON.stringify(res))
 })()
 `, 'browser')
@@ -201,11 +221,12 @@ app.whenReady().then(() => {
     // WebAudio ramps per render quantum at a-rate, so allow the step between two samples of the sweep
     const ws = worstVsLaw(inter(res.sweep), src, (t) => -1 + t)
     check('preview and export use the same pan law — keyframed sweep', ws < 1e-3, `preview vs law ${ws.toExponential(1)}`)
-    // the law is the same; the UPMIX is not — WebAudio copies mono at unity where
-    // ffmpeg puts it at −3 dB a side. Older than K4 (a mono clip at centre shows it),
-    // not fixed here: neither side knows a source's channel count (journal, K4 finding)
+    // K10: both sides upmix mono at unity (the export was −3 dB a side before)
     const wm = worstVsLaw(inter(res.mono), srcMono, () => -0.5, 1)
-    check('preview and export use the same pan law — a mono source (upmix, then pan)', wm < 1e-5, `preview vs law ${wm.toExponential(1)}; KNOWN: preview upmixes mono 3.01 dB above the export`)
+    check('preview and export use the same pan law — a mono source (upmix, then pan)', wm < 1e-5, `preview vs law ${wm.toExponential(1)}`)
+    const pc = inter(res.monoC)
+    const dl = db(chRms(pc, 0)) - db(chRms(exp.monoC, 0)), dr = db(chRms(pc, 1)) - db(chRms(exp.monoC, 1))
+    check('a mono source at centre: preview and export per channel within 0.1 dB (K10)', Math.abs(dl) < 0.1 && Math.abs(dr) < 0.1, `preview − export: L ${dl.toFixed(2)} R ${dr.toFixed(2)} dB`)
   }
 
   // ---- the master fader ------------------------------------------------------------

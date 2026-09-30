@@ -74,7 +74,8 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
     width: video?.width || 0,
     height: video?.height || 0,
     fps: fps || 30,
-    hasAudio: !!audio
+    hasAudio: !!audio,
+    ...(audio?.channels ? { channels: audio.channels } : {})
   }
   // the relink search («Искать в папке») finds a renamed file by size + duration
   const size = Number(info.format?.size)
@@ -847,11 +848,40 @@ function segmentInput(s: AudioSegment): string[] {
 /** afade's curve, from the same table the preview uses (shared/fadeCurves.ts); linear = the default, no argument */
 const curveArg = (c?: AudioSegment['fadeInCurve']) => (c && c !== 'lin' && AFADE_CURVE[c] ? `:curve=${AFADE_CURVE[c]}` : '')
 
+/** K10: first audio stream's channel count per path + mtime (0 = unreadable) */
+const channelCache = new Map<string, number>()
+async function audioChannels(path: string): Promise<number> {
+  let key: string
+  try { key = `${path}|${(await fsp.stat(path)).mtimeMs}` } catch { return 0 }
+  let n = channelCache.get(key)
+  if (n === undefined) {
+    try {
+      const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=channels', '-of', 'csv=p=0', path])
+      n = parseInt(stdout, 10) || 0
+    } catch { n = 0 }
+    channelCache.set(key, n)
+  }
+  return n
+}
+
+/** K10: fill in the channel count of segments whose asset predates it (one ffprobe per path — ~1 s a spawn on Windows) */
+async function withChannels(segs: AudioSegment[]): Promise<AudioSegment[]> {
+  const paths = [...new Set(segs.filter((s) => !s.channels).map((s) => s.path))]
+  const found = new Map<string, number>()
+  for (let i = 0; i < paths.length; i += 8) {
+    const n = await Promise.all(paths.slice(i, i + 8).map(audioChannels))
+    n.forEach((c, j) => found.set(paths[i + j], c))
+  }
+  return paths.length ? segs.map((s) => (s.channels ? s : { ...s, channels: found.get(s.path) || undefined })) : segs
+}
+
 /** per-segment filter chain shared by the single-graph mix and the premix */
 function segmentChain(s: AudioSegment): string[] {
   const speed = s.speed || 1
   const outDur = s.duration / speed // timeline-domain length after atempo
   return [
+    // K10: aformat alone upmixes mono at −3 dB a side (swresample's M_SQRT1_2); WebAudio copies it at unity
+    ...(s.channels === 1 ? ['pan=stereo|c0=c0|c1=c0'] : []),
     'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo',
     `volume=${s.gain.toFixed(4)}`,
     ...(retimed(s) ? [...atempoChain(speed), `atrim=end_sample=${Math.round(outDur * 48000)}`] : []),
@@ -970,7 +1000,7 @@ export class ExportMuxer {
     // with ~1000 SFX clips builds a filter graph past that and spawn() fails
     // with E2BIG. The graph goes through a script file instead of argv.
     let filterScript: string | null = null
-    let segs = job.audioSegments
+    let segs = await withChannels(job.audioSegments)
     const hasVideo = !job.preset.audioOnly
 
     // G9: a loudness target measures the mix before it is written — on ONE

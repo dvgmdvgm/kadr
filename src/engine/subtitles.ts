@@ -208,6 +208,7 @@ export function collectRangeAudio(
           gain: (gainKeys ? 1 : evalAnim(clip.gain, local)) * track.gain,
           ...(gainKeys ? { gainKeys } : {}),
           ...pan,
+          ...(asset.channels ? { channels: asset.channels } : {}),
           speed,
           fadeIn: fiLocal,
           fadeOut: foLocal,

@@ -157,7 +157,8 @@ try {
     const spans = []
     for (let t = 1; t < LEN - 3; t += 4) spans.push([t, t + 2.5])
     const curve = M.duckCurve(spans, {})
-    const p = { assets: [{ id: 'b', kind: 'audio', path: bed, duration: LEN, hasAudio: true }],
+    // channels: an asset imported since K10 knows them — no ffprobe spawn (~1 s on Windows) inside the timing
+    const p = { assets: [{ id: 'b', kind: 'audio', path: bed, duration: LEN, hasAudio: true, channels: 2 }],
       tracks: [{ id: 't', kind: 'audio', gain: 1, clips: [{ id: 'c', kind: 'media', assetId: 'b', start: 0, duration: LEN, inPoint: 0, speed: 1, gain: M.duckGain({ value: 1 }, 0, LEN, curve) }] }] }
     const t0 = Date.now()
     await mixdownWav(collectRangeAudio(p, 0, LEN), LEN, join(dir, 'bedmix.wav'))

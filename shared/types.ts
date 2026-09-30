@@ -32,6 +32,8 @@ export interface MediaAsset {
   height: number
   fps: number
   hasAudio: boolean
+  /** K10: channels of the first audio stream, from the probe (absent on assets imported before it was kept) */
+  channels?: number
   /** bytes, from the probe (absent on assets imported before it was kept) —
       the relink search matches a renamed file by size + duration */
   size?: number
@@ -1117,6 +1119,8 @@ export interface AudioSegment {
   /** absent = linear */
   fadeInCurve?: FadeCurve
   fadeOutCurve?: FadeCurve
+  /** K10: the source's channel count (the asset's; main asks ffprobe when absent) — 1 is upmixed at unity */
+  channels?: number
 }
 
 export interface ExportProgress {

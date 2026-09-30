@@ -43,7 +43,8 @@ mixes audio and muxes/transcodes per preset.
   0.3 LU / 0.3 dB of ebur128 — integrated through both gates, momentary,
   short-term, true peak at 48 and 44.1 kHz); `check-pan.mjs` wants ffmpeg
   and the installed electron (K4: the real StereoPannerNode and the export
-  chain against the one pan law — static, keyframed, mono, hard left silent
+  chain against the one pan law — static, keyframed, mono (K10: at its own
+  level on each channel, preview = export, premix too), hard left silent
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
@@ -284,10 +285,15 @@ mixes audio and muxes/transcodes per preset.
   premix gets it too. `Project.masterGain` (linear, absent = 1) is the master
   GainNode in the preview and a `volume` in front of the export's limiter;
   analysis mixdowns and a loudness target (which sets the level itself)
-  ignore it. KNOWN, older than K4: WebAudio upmixes a MONO source at unity,
-  ffmpeg's aformat at −3 dB a side, so a mono clip previews 3.01 dB above its
-  export; neither side knows a source's channel count yet. Test:
-  `node scripts/check-pan.mjs`.
+  ignore it. A MONO source is upmixed at UNITY on both sides (K10): WebAudio
+  copies it into each channel, while ffmpeg's aformat alone puts it −3 dB a
+  side (swresample's M_SQRT1_2, `clev` does not reach it) — a mono voice-over
+  used to export 3.01 dB under what was heard. The import probe keeps
+  `MediaAsset.channels`, segments carry it, `ExportMuxer.run` asks ffprobe only
+  for an asset from before that (once per path + mtime — a spawn costs ~1 s on
+  Windows), and `segmentChain` puts `pan=stereo|c0=c0|c1=c0` in front of the
+  aformat of a 1-channel source, in the premix too. A named-channel `pan`
+  (FL=FL+FC) would need no probe, but 5.1 wants FC at −3 dB, so it cannot. Test: `node scripts/check-pan.mjs`.
   TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
   carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
   scheduler roughly QUADRATICALLY in N: that mix ran at a quarter of realtime —
