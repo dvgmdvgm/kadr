@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor } from '@/state/store'
-import { useProxyProgress } from '@/engine/proxy'
+import { useProxyProgress, wantsProxy, rebuildProxy } from '@/engine/proxy'
 import { useOffline, openRelink } from '@/engine/offline'
 import { importFiles, dropPayload, dragHasMedia, dropUsable, importDrop, useImportUi } from '@/engine/mediaImport'
 import { useTextUi } from './TextTools'
@@ -8,6 +8,7 @@ import { useTtsUi } from './TtsDialog'
 import { useT, trf } from '@/i18n'
 import { Icon, Spinner } from './icons'
 import { Modal } from './Modal'
+import { CtxMenu } from './CtxMenu'
 import { RecentList } from './RecentProjects'
 import { useModelsUi, insertModelFragment, prepareForFragment } from '@/engine/models'
 import { chromiumCanDecode } from '@/engine/codecs'
@@ -94,6 +95,23 @@ export function MediaBin() {
   const [query, setQuery] = useState('')
   const [unusedOnly, setUnusedOnly] = useState(false)
   const [scrub, setScrub] = useState<{ id: string; frac: number } | null>(null)
+  // H7: the item's context menu (transcribe, prepare for a fragment, the proxy choice)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  useEffect(() => {
+    if (!menu) return
+    const off = () => setMenu(null)
+    // capture: a panel that stops pointerdown (the preview, the timeline) must still close it
+    const down = (e: PointerEvent) => { if (!(e.target as Element | null)?.closest?.('.bin-menu')) off() }
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') off() }
+    window.addEventListener('pointerdown', down, true)
+    window.addEventListener('keydown', esc)
+    window.addEventListener('blur', off)
+    return () => {
+      window.removeEventListener('pointerdown', down, true)
+      window.removeEventListener('keydown', esc)
+      window.removeEventListener('blur', off)
+    }
+  }, [menu])
   const uses = useMemo(() => usageCounts(tracks), [tracks])
   const shown = useMemo(() => binView(assets, { query, sort, desc, unusedOnly }, uses),
     [assets, query, sort, desc, unusedOnly, uses])
@@ -248,6 +266,10 @@ export function MediaBin() {
     },
     onDragEnd: () => setDropOn(null),
     onClick: (e: React.MouseEvent) => clickTile(e, a.id),
+    onContextMenu: (e: React.MouseEvent) => {
+      e.preventDefault()
+      setMenu({ x: e.clientX, y: e.clientY, id: a.id })
+    },
     onDoubleClick: () => {
       const s = useEditor.getState()
       s.insertClipFromAsset(a.id, null, s.playhead)
@@ -413,6 +435,60 @@ export function MediaBin() {
     </div>
   )
 
+  /** H7: the item menu. The proxy rows take the shown selection when the item is in it */
+  const itemMenu = () => {
+    const a = menu && assets.find((x) => x.id === menu.id)
+    if (!menu || !a) return null
+    const close = () => setMenu(null)
+    const targets = (shownSel.length > 1 && shownSel.includes(a.id) ? shownSel : [a.id])
+      .map((id) => assets.find((x) => x.id === id))
+      .filter((x): x is MediaAsset => x?.kind === 'video')
+    const mode = a.proxyMode ?? 'auto'
+    const setMode = (m: 'auto' | 'always' | 'never') => {
+      close()
+      const change = targets.filter((x) => (x.proxyMode ?? 'auto') !== m)
+      if (!change.length) return
+      const st = useEditor.getState()
+      st.pushHistory('hProxyMode')
+      for (const x of change) st.updateAsset(x.id, { proxyMode: m === 'auto' ? undefined : m })
+    }
+    // an undecodable codec has no original the preview could show
+    const undecodable = !chromiumCanDecode(a.codec)
+    return (
+      <CtxMenu x={menu.x} y={menu.y} className="bin-menu">
+        {a.hasAudio && (
+          <button data-act="bin-menu-transcribe" onClick={() => {
+            close()
+            useTextUi.getState().openTranscribe({ kind: 'asset', assetId: a.id })
+          }}>{t('transcribe')}</button>
+        )}
+        {a.kind === 'video' && (
+          <button data-act="bin-menu-fragment-media" title={t('fragmentMediaHint')}
+                  onClick={() => { close(); void prepareForFragment(a.id) }}>{t('binMenuFragmentMedia')}</button>
+        )}
+        {a.kind === 'video' && (
+          <>
+            <div className="ctx-title">{t('binMenuProxy')}</div>
+            {(['auto', 'always', 'never'] as const).map((m) => (
+              <button key={m} data-act={`proxy-${m}`} role="menuitemradio" aria-checked={mode === m}
+                      disabled={m === 'never' && undecodable}
+                      title={m === 'never' && undecodable ? t('proxyNeverUndecodable') : t(`proxyHint_${m}`)}
+                      onClick={() => setMode(m)}>
+                <span className="ctx-check">{mode === m && <Icon name="check" size={13} />}</span>
+                {t(`proxy_${m}`)}
+              </button>
+            ))}
+            <button data-act="proxy-rebuild" disabled={!wantsProxy(a) || proxyJobs[a.id] !== undefined}
+                    title={t('proxyRebuildHint')}
+                    onClick={() => { close(); for (const x of targets) rebuildProxy(x.id) }}>
+              <span className="ctx-check" />{t('proxyRebuild')}
+            </button>
+          </>
+        )}
+      </CtxMenu>
+    )
+  }
+
   const toolButton = (icon: 'grid' | 'list', label: string, on: boolean, act: () => void) => (
     <button className={`ghost icon-only${on ? ' toggled' : ''}`} title={label} aria-label={label}
             aria-pressed={on} onClick={act}>
@@ -507,6 +583,7 @@ export function MediaBin() {
         </div>
       )}
       <ModelsSection />
+      {itemMenu()}
       {confirmIds && (
         <Modal
           title={t('binConfirmTitle')}

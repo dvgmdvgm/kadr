@@ -50,6 +50,9 @@ export interface MediaAsset {
   probeV?: number
   /** light 540p copy used by the preview; export always reads `path` */
   proxyPath?: string
+  /** the bin's per-asset proxy choice (H7); absent = auto, the global rule
+      (shared/proxyChoice.ts) */
+  proxyMode?: 'always' | 'never'
   /** this asset is a reversed render of a source range of another asset */
   reverseOf?: { assetId: string; start: number; duration: number }
   /** the bin folder it sits in (H5); absent = the bin's root */
@@ -1305,7 +1308,7 @@ export interface KadrApi {
   /** Build (or reuse) a preview proxy; resolves with the proxy file path.
       Alpha sources get a VP9+alpha WebM proxy instead of H.264. */
   requestProxy(path: string, duration: number,
-    opts?: { alpha?: boolean; codec?: string }): Promise<string>
+    opts?: { alpha?: boolean; codec?: string; rebuild?: boolean }): Promise<string>
   onProxyProgress(cb: (p: { path: string; progress: number }) => void): () => void
   /** Full-resolution intermediate for sources Chromium cannot decode
       (e.g. HEVC without VAAPI, ProRes): H.264, or VP9+alpha WebM for alpha

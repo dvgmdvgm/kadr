@@ -417,7 +417,7 @@ let proxyChain: Promise<unknown> = Promise.resolve()
 async function requestProxy(
   srcPath: string,
   duration: number,
-  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string; rebuild?: boolean }
 ): Promise<string> {
   const stat = statSync(srcPath)
   // an HDR source is tone-mapped to SDR in its proxy (electron/hdr.ts)
@@ -427,6 +427,8 @@ async function requestProxy(
   const key = mediaCacheKey(srcPath, stat.size, stat.mtimeMs, proxySuffix(opts?.alpha, !!hdr))
   const ext = opts?.alpha ? 'webm' : 'mp4'
   const out = join(proxyDir(), `${key}.${ext}`)
+  // «Пересобрать прокси» (H7): the cached copy goes first
+  if (opts?.rebuild) await fs.rm(out, { force: true })
   try {
     await fs.access(out)
     return out
@@ -653,7 +655,7 @@ async function rememberDir(kind: string, filePath: string) {
 
 function registerIpc() {
   ipcMain.handle('proxy:request', (_e, srcPath: string, duration: number,
-    opts?: { alpha?: boolean; codec?: string }) =>
+    opts?: { alpha?: boolean; codec?: string; rebuild?: boolean }) =>
     requestProxy(srcPath, duration, opts)
   )
 

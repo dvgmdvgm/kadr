@@ -3,6 +3,7 @@ import { Compositor, type LayerDraw, type LayerGeom } from '@/gl/compositor'
 import { glowParams } from '@/gl/glow'
 import { getCaptureFrame } from './fragmentCapture'
 import { chromiumCanDecode } from './codecs'
+import { playsProxy } from '@shared/proxyChoice'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -170,9 +171,10 @@ const pools = new Set<MediaPool>()
 /** how many media elements the preview holds (debug panel, tests) */
 export function previewPoolStats() {
   let elements = 0
-  for (const p of pools) elements += p.size
+  const sources: string[] = []
+  for (const p of pools) { elements += p.size; sources.push(...p.sources()) }
   return {
-    pools: pools.size, elements, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift),
+    pools: pools.size, elements, sources, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift),
     fps: frameMeter.fps, dropped: frameMeter.dropped
   }
 }
@@ -241,6 +243,11 @@ export class MediaPool {
     return this.items.size
   }
 
+  /** the URLs its elements are pointed at (previewPoolStats: which file plays) */
+  sources() {
+    return [...this.srcs.values()]
+  }
+
   setSourceOverride(clipId: string, path: string | null) {
     if (path) this.overrides.set(clipId, path)
     else this.overrides.delete(clipId)
@@ -252,9 +259,11 @@ export class MediaPool {
     // the original is used for source quality (snapshots) unless it cannot be
     // shown right: undecodable (HEVC) or HDR (the proxy is the tone-mapped one)
     // with proxies switched off, only a source that cannot be shown right still plays its proxy
-    const needsProxy = !chromiumCanDecode(asset.codec) || !!asset.hdr
-    const useProxy = !override && this.opts.proxy && !!asset.proxyPath &&
-      (needsProxy || (previewPrefs.proxies && !this.sourceQuality))
+    // the bin's per-asset choice (H7) overrides the global toggle both ways
+    const useProxy = !override && this.opts.proxy && !!asset.proxyPath && playsProxy(asset, {
+      proxies: previewPrefs.proxies, canDecode: chromiumCanDecode(asset.codec),
+      sourceQuality: this.sourceQuality
+    })
     const url = window.kadr.fileUrl(override ?? (useProxy ? asset.proxyPath! : asset.path))
     if (!el) {
       if (asset.kind === 'image') {

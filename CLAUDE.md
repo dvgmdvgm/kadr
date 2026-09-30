@@ -55,6 +55,10 @@ mixes audio and muxes/transcodes per preset.
   stills are one run only by contiguous numbering, a common stem, folder and
   extension, one padding style; a folder walk in main; a 240-frame PNG run
   becomes one 10 s H.264 clip at 24 fps, an RGBA run a VP9+alpha WebM);
+  `check-proxy-choice.mjs` (H7: the bin's per-asset «Прокси: авто / всегда
+  / никогда» — `MediaAsset.proxyMode`, `shared/proxyChoice.ts` — overrides
+  the global toggle and threshold both ways, except that an undecodable
+  codec keeps its proxy);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
