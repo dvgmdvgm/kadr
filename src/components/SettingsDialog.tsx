@@ -518,6 +518,13 @@ function Export({ t }: { t: T }) {
         <Choice k="export.chapters" label={t('exChapters')} width={240}
                 options={[['off', t('exNone')], ['markers', t('exChMarkers')], ['sections', t('exChSections')]]} />
       </Row>
+      <Row label={t('exAudioBitrate')} keys={['export.audioBitrate']} shown="0" unit={t('kbpsUnit')} detail={t('exZeroPreset')}>
+        <Num k="export.audioBitrate" label={t('exAudioBitrate')} />
+      </Row>
+      <Row label={t('exLoudness')} keys={['export.loudness']} shown={t('exLoudOff')} detail={t('exLoudHint')}>
+        <Choice k="export.loudness" label={t('exLoudness')} width={240}
+                options={[['off', t('exLoudOff')], ['-14', t('exLoud14')], ['-16', t('exLoud16')], ['-23', t('exLoud23')]]} />
+      </Row>
       <Row label={t('setFileName')} keys={['export.fileName']} shown="{project}" detail={t('setFileNameHint')}>
         <Text k="export.fileName" label={t('setFileName')} mono />
       </Row>

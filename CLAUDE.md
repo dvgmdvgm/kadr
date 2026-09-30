@@ -31,6 +31,10 @@ mixes audio and muxes/transcodes per preset.
   `check-chapters.mjs` wants ffmpeg (G7: SRT cues and marker chapters moved
   into the export range and clipped to it, then muxed: ffmetadata chapters and
   title, a mov_text track, the `.srt`/`.vtt` sidecar);
+  `check-loudness-target.mjs` wants ffmpeg (G9: a −14/−16/−23 LUFS export
+  of quiet, loud, peaky and unreachable mixes to WAV, M4A and MP3 lands
+  within 0.5 LU by ebur128 with the true peak ≤ −1 dBTP, and the reported
+  numbers are the file's);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
@@ -351,7 +355,22 @@ mixes audio and muxes/transcodes per preset.
   delays by its look-ahead (239 samples at 48 kHz / 5 ms) and never flushes
   it, so the chain pads 239 samples in front and trims them after — bit
   identical and the same length below the limit. Analysis mixdowns pass
-  `master: false`. THE PREVIEW IS LIMITED THE SAME WAY: `shared/previewLimiter.ts`
+  `master: false`. THE LOUDNESS TARGET (G9, `ExportPreset.loudness`, the
+  dialog's «Громкость»; absent = the chain above, string for string) premixes
+  the mix to one float WAV even under `PREMIX_THRESHOLD` and meters it with
+  ebur128 (`loudnessOf`; loudnorm's pass took 21.5 s where ebur128 takes 4.6 s
+  on 19 minutes) — then `fitLoudness` puts a linear `volume=…dB` in front of
+  the limiter and corrects gain AND ceiling through the real chain, ≤ 5
+  passes: the limiter holds SAMPLE peaks, the ceiling is a TRUE peak
+  (`TP_AIM` −1.5), and gain the limiter eats whole (sparse full-scale hits
+  over silence) stops the search instead of crushing the mix. The FILE is
+  metered after the encode, and the codec moves what the chain measured: a
+  lossy decode can go over −1 dBTP (impulses through AAC 128k: −0.9) and
+  cutting the top octave takes loudness away (white noise, AAC 128k: 1.6 LU),
+  so up to two re-encodes lower the ceiling under the overshoot and move the
+  gain by the drift. The measured
+  LUFS/dBTP ride the `done` progress event. 19 min / 200 clips: 25 → 42 s.
+  Test: `node scripts/check-loudness-target.mjs`. THE PREVIEW IS LIMITED THE SAME WAY: `shared/previewLimiter.ts`
   ports alimiter (n7.1, asc and auto-level off) line by line and runs as an
   AudioWorklet between the preview's master and its analyser, so the meter
   and `audioStats().peakDb` read after it; `useSettings.previewLimiter`

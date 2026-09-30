@@ -1,5 +1,5 @@
 // ffmpeg/ffprobe helpers running in the main process.
-import { masterLimiterChain } from '@shared/audioMaster'
+import { masterLimiterChain, MASTER_LIMIT, TP_AIM, TP_CEILING } from '@shared/audioMaster'
 import { execFile, spawn, ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import { promises as fsp } from 'fs'
@@ -308,6 +308,71 @@ export function measureLoudness(
       } catch (e) { reject(e as Error) }
     })
   })
+}
+
+/**
+ * G9: integrated loudness (LUFS) and true peak (dBTP) of `input` through
+ * `chain`, from the ebur128 filter's summary — 4.7× faster than a loudnorm pass
+ * over the same 19-minute mix (4.6 s vs 21.5 s: loudnorm resamples to 192 kHz
+ * for everything, ebur128 only for the peak), and the meter the platforms'
+ * numbers are read with. Only the summary is kept: the per-frame log above it
+ * grows with the length. Silence reads −Infinity.
+ */
+function loudnessOf(input: string[], chain: string[] = []): Promise<{ i: number; tp: number }> {
+  const args = ['-nostats', ...input, '-vn', '-af', [...chain, 'ebur128=peak=true'].join(','), '-f', 'null', '-']
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    let tail = ''
+    child.stderr!.on('data', (c) => { tail = (tail + c).slice(-4096) })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      const sum = tail.slice(tail.lastIndexOf('Summary:'))
+      const num = (re: RegExp) => {
+        const v = re.exec(sum)?.[1]
+        return v === undefined ? NaN : /inf/i.test(v) ? -Infinity : parseFloat(v)
+      }
+      const i = num(/I:\s*(-?[\d.]+|-inf)\s*LUFS/)
+      const tp = num(/True peak:\s*Peak:\s*(-?[\d.]+|-inf)/)
+      if (code !== 0 || Number.isNaN(i) || Number.isNaN(tp)) {
+        reject(new Error(`ebur128 produced no measurement (exit ${code}): ${tail.slice(-300)}`))
+      } else resolve({ i: i <= -70 ? -Infinity : i, tp })
+    })
+  })
+}
+
+/**
+ * G9: the gain (dB) and limiter ceiling that put `file` (the premixed float
+ * WAV) at `target` LUFS with its true peak under TP_AIM. A plain gain is not
+ * enough: where the limiter has to take the peaks the loudness drops with them,
+ * and the limiter holds SAMPLE peaks, while the ceiling is a TRUE peak. So the
+ * result is measured through the real chain and both are corrected, a few
+ * passes at most — each one is a read of one WAV, not a re-mix.
+ * A silent mix has no loudness to move: gain 0.
+ */
+async function fitLoudness(file: string, target: number): Promise<{ gainDb: number; limit: number; i: number; tp: number }> {
+  const input = ['-i', file]
+  const m0 = await loudnessOf(input)
+  if (!(m0.i > -70)) return { gainDb: 0, limit: MASTER_LIMIT, i: m0.i, tp: m0.tp }
+  let gainDb = target - m0.i
+  let limitDb = 20 * Math.log10(MASTER_LIMIT)
+  let last: { gainDb: number; limitDb: number; i: number } | null = null
+  let { i, tp } = m0
+  for (let pass = 0; pass < 5; pass++) {
+    const m = await loudnessOf(input, masterLimiterChain(10 ** (limitDb / 20), gainDb))
+    ;({ i, tp } = m)
+    const off = target - m.i
+    const over = m.tp - TP_AIM
+    if (Math.abs(off) <= 0.2 && over <= 0) break
+    // more gain that the limiter eats whole (sparse full-scale hits over
+    // silence) only squashes harder: the mix cannot get there — stop, and the
+    // done message says how loud it came out
+    if (last && last.limitDb === limitDb && off > 0 && m.i - last.i < 0.3 * (gainDb - last.gainDb)) break
+    last = { gainDb, limitDb, i: m.i }
+    gainDb += off
+    if (over > 0) limitDb -= over + 0.1
+  }
+  // i, tp: what the chain last measured — i near the target means the chain reached it
+  return { gainDb, limit: 10 ** (limitDb / 20), i, tp }
 }
 
 export interface PackedAlphaPlan {
@@ -813,7 +878,9 @@ export class ExportMuxer {
   /**
    * @param videoTemp path to the renderer-produced video-only mp4 ('' for audio-only)
    */
-  async run(job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void): Promise<void> {
+  async run(
+    job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void
+  ): Promise<{ i: number; tp: number } | null> {
     const args: string[] = ['-y', '-v', 'error', '-progress', 'pipe:1']
     // Linux caps a single argv string at 128 KB (MAX_ARG_STRLEN): a timeline
     // with ~1000 SFX clips builds a filter graph past that and spawn() fails
@@ -822,9 +889,12 @@ export class ExportMuxer {
     let segs = job.audioSegments
     const hasVideo = !job.preset.audioOnly
 
+    // G9: a loudness target measures the mix before it is written — on ONE
+    // premixed file, so every measuring pass reads a WAV instead of re-mixing
+    const target = job.master !== false && job.preset.loudness != null && segs.length > 0 ? job.preset.loudness : null
     // big timelines: sum the clips ourselves, then mux that one stream
     let premix: string | null = null
-    if (segs.length > PREMIX_THRESHOLD) {
+    if (segs.length > PREMIX_THRESHOLD || target !== null) {
       premix = join(TMP_DIR || tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
       try {
         await premixSegments(segs, job.duration, premix,
@@ -835,6 +905,19 @@ export class ExportMuxer {
         throw err
       }
       segs = [{ path: premix, inPoint: 0, duration: job.duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0 }]
+    }
+    let fit = { gainDb: 0, limit: MASTER_LIMIT, i: -Infinity, tp: -Infinity }
+    if (target !== null && premix) {
+      try {
+        fit = await fitLoudness(premix, target)
+      } catch (err) {
+        await fsp.unlink(premix).catch(() => { /* already gone */ })
+        throw err
+      }
+      if (this.cancelled) {
+        await fsp.unlink(premix).catch(() => { /* already gone */ })
+        throw new Error('cancelled')
+      }
     }
     const muxBase = premix ? 0.5 : 0 // mux progress after a premix continues from its half
     let metaFile: string | null = null
@@ -868,6 +951,7 @@ export class ExportMuxer {
     }
 
     const filters: string[] = []
+    let reMaster: ((limit: number, gainDb: number) => Promise<void>) | null = null
     if (segs.length > 0) {
       const labels: string[] = []
       segs.forEach((s, i) => {
@@ -890,7 +974,7 @@ export class ExportMuxer {
       // exports (shared/audioMaster.ts) — a plain sum of a loud master and a
       // few hits used to reach the encoder at +10 dBFS and be hard-clipped.
       // Analysis mixdowns (job.master === false) stay untouched.
-      const master = job.master === false ? [] : masterLimiterChain()
+      const master = job.master === false ? [] : masterLimiterChain(fit.limit, fit.gainDb)
       const tail = master.length ? ',' + master.join(',') : ''
       if (segs.length === 1) {
         filters.push(`${labels[0]}anull${tail}[aout]`)
@@ -904,6 +988,10 @@ export class ExportMuxer {
       filterScript = join(TMP_DIR || tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
       await fsp.writeFile(filterScript, filters.join(';\n'))
       args.push('-filter_complex_script', filterScript)
+      // a target's retry rewrites only the master's ceiling (see below)
+      const script = filterScript
+      reMaster = (limit, gainDb) => fsp.writeFile(script, filters.join(';\n')
+        .replace(tail, ',' + masterLimiterChain(limit, gainDb).join(',')))
     }
 
     if (hasVideo) {
@@ -927,7 +1015,7 @@ export class ExportMuxer {
     if (/\.(mp4|mov|m4v|m4a)$/i.test(job.outputPath)) args.push('-movflags', '+faststart')
     args.push('-t', String(job.duration), job.outputPath)
 
-    return new Promise((resolve, reject) => {
+    const encode = () => new Promise<void>((resolve, reject) => {
       const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
       this.child = child
       let err = ''
@@ -945,22 +1033,50 @@ export class ExportMuxer {
         }
       })
       child.stderr!.on('data', (c) => { err += c })
-      child.on('error', (e) => {
-        cleanupTemps()
-        reject(e)
-      })
+      child.on('error', reject)
       child.on('close', (code) => {
         this.child = null
-        cleanupTemps()
         if (this.cancelled) reject(new Error('cancelled'))
-        else if (code === 0) {
-          // the sidecar goes beside the finished file only: `<name>.srt` / `<name>.vtt`
-          if (!x?.sidecar || !x.cues) return resolve()
-          const side = job.outputPath.replace(/\.[^./\\]+$/, '') + '.' + x.sidecar
-          fsp.writeFile(side, x.sidecar === 'vtt' ? cuesToVtt(x.cues) : cuesToSrt(x.cues)).then(resolve, reject)
-        } else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
+        else if (code === 0) resolve()
+        else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
       })
     })
+    try {
+      await encode()
+      // what the FILE measures (after the codec), for the done message
+      let heard = target === null ? null : await loudnessOf(['-i', job.outputPath])
+      if (heard && !isFinite(heard.i)) heard = null // a silent mix: nothing to report
+      // the codec moves what the chain measured: a lossy decode overshoots the
+      // true peak (square bursts through AAC 48k: −0.9 dBTP), and cutting the top
+      // octave takes loudness away (white noise through AAC 128k: 1.6 LU short).
+      // Once more, the ceiling lowered by the overshoot and the gain moved by the
+      // drift — the drift only when the chain itself had reached the target
+      // the ceiling starts under where the chain's peaks really were: a limiter
+      // that never touched them would not move them by being lowered
+      let limitDb = Math.min(20 * Math.log10(fit.limit), fit.tp)
+      let gainDb = fit.gainDb
+      const reached = Math.abs(fit.i - target!) <= 0.5
+      // at most 2 re-encodes; a codec that still overshoots after that (AAC at
+      // 48 kbit/s on square bursts — not a rate the dialog offers) is reported as measured
+      for (let again = 0; again < 2 && heard && reMaster && !this.cancelled; again++) {
+        const over = heard.tp - TP_CEILING
+        const drift = reached ? target! - heard.i : 0
+        if (over <= 0 && Math.abs(drift) <= 0.5) break
+        if (over > 0) limitDb -= over + 0.3
+        if (Math.abs(drift) > 0.5) gainDb += drift
+        await reMaster(10 ** (Math.min(limitDb, 20 * Math.log10(fit.limit)) / 20), gainDb)
+        await encode()
+        heard = await loudnessOf(['-i', job.outputPath])
+      }
+      // the sidecar goes beside the finished file only: `<name>.srt` / `<name>.vtt`
+      if (x?.sidecar && x.cues) {
+        const side = job.outputPath.replace(/\.[^./\\]+$/, '') + '.' + x.sidecar
+        await fsp.writeFile(side, x.sidecar === 'vtt' ? cuesToVtt(x.cues) : cuesToSrt(x.cues))
+      }
+      return heard
+    } finally {
+      cleanupTemps()
+    }
   }
 }
 

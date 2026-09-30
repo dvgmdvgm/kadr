@@ -987,7 +987,7 @@ export interface TtsResult {
 export interface ExportPreset {
   id: string
   name: string
-  container: 'mp4' | 'webm' | 'mkv' | 'mov' | 'png' | 'mp3'
+  container: 'mp4' | 'webm' | 'mkv' | 'mov' | 'png' | 'mp3' | 'wav' | 'm4a'
   /** WebCodecs codec string for the renderer-side encoder */
   codec: string
   /** ffmpeg vcodec for the final pass; 'copy' keeps the WebCodecs stream */
@@ -1009,6 +1009,8 @@ export interface ExportPreset {
   fit?: 'fit' | 'fill' | 'stretch'
   /** G6: the codec (shared/rawEncode.ts VIDEO_CODECS); absent = what ffmpegVideo says (H.264 or VP9) */
   videoCodec?: 'h264' | 'hevc' | 'av1' | 'vp9' | 'prores422' | 'prores4444' | 'png'
+  /** G9: the mix's integrated loudness target, LUFS (shared/audioMaster.ts); absent = the mix as it is */
+  loudness?: number
 }
 
 export interface ExportJob {
@@ -1054,6 +1056,8 @@ export interface ExportProgress {
   message?: string
   /** the video phase: frames in the whole export (fps = progress rate × frames) */
   frames?: number
+  /** done, with a loudness target (G9): what the exported file measures — LUFS, dBTP */
+  loudness?: { i: number; tp: number }
 }
 
 // ---------------------------------------------------------------------------

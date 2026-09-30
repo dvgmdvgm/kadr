@@ -1054,9 +1054,9 @@ function registerIpc() {
       const job = st.rawEncoded
         ? { ...st.job, preset: { ...st.job.preset, ffmpegVideo: 'copy' as const } }
         : st.job
-      await st.muxer.run(job, st.videoTemp, sendProgress)
+      const loudness = await st.muxer.run(job, st.videoTemp, sendProgress)
       lastExport = st.job.outputPath
-      sendProgress({ phase: 'done', progress: 1 })
+      sendProgress({ phase: 'done', progress: 1, ...(loudness && { loudness }) })
       await cleanupExport()
     } catch (err: any) {
       const cancelled = err?.message === 'cancelled'

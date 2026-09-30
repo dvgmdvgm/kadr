@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { ExportPreset, ExportProgress } from '@shared/types'
 import {
   PRESETS, presetName, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
-  saveExportPreset, renameExportPreset, deleteExportPreset
+  saveExportPreset, renameExportPreset, deleteExportPreset, AUDIO_BITRATES, lossyAudio
 } from '@/presets'
+import { LOUDNESS_TARGETS } from '@shared/audioMaster'
 import { fileNameFrom, withOutput } from '@shared/exportPresets'
 import { chaptersInRange, chapterMarks, youtubeChapters, youtubeProblems, embedsSubs } from '@shared/exportExtras'
 import {
@@ -23,7 +24,7 @@ import { size as fmtSize } from './StoragePanel'
 type Status =
   | { kind: 'idle' }
   | { kind: 'running'; phase: ExportProgress['phase']; progress: number; est: ReturnType<typeof etaOf> }
-  | { kind: 'done' }
+  | { kind: 'done'; loudness?: { i: number; tp: number } }
   | { kind: 'error'; message: string }
   | { kind: 'cancelled' }
 
@@ -56,6 +57,10 @@ export function ExportDialog() {
     fit: String(effective('export.fit', snap).value) as OutputFit
   }
   const custom = out.width > 0 || out.height > 0 || out.fps > 0 || out.bitrate > 0
+  // G9: the audio bitrate over the preset's (0 = the preset's) and the loudness target
+  const audioKbps = num('export.audioBitrate')
+  const loudSel = String(effective('export.loudness', snap).value)
+  const loudness = loudSel === 'off' ? undefined : Number(loudSel)
   const put = useSettings.getState().set
   // the preset name being typed: null = not editing; `mode` says what OK does
   const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
@@ -68,6 +73,8 @@ export function ExportDialog() {
   const [title, setTitle] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const handle = useRef<ExportHandle | null>(null)
+  // G9: the target the finished export is held against (the dialog may change after the start)
+  const doneTarget = useRef<number | undefined>(undefined)
   // G8: the progress events of the current phase, for the moving-average fps and ETA
   const track = useRef<{ phase: string; s: EtaSample[] }>({ phase: '', s: [] })
   const progressed = (p: ExportProgress) => {
@@ -81,7 +88,7 @@ export function ExportDialog() {
 
   useEffect(() => {
     return window.kadr.onExportProgress((p) => {
-      if (p.phase === 'done') setStatus({ kind: 'done' })
+      if (p.phase === 'done') setStatus({ kind: 'done', loudness: p.loudness })
       else if (p.phase === 'error') setStatus({ kind: 'error', message: p.message ?? '' })
       else if (p.phase === 'cancelled') setStatus({ kind: 'cancelled' })
       else progressed(p)
@@ -113,7 +120,14 @@ export function ExportDialog() {
   // one chosen on another machine (or not probed yet) encodes on the CPU — the select says so
   const videoEncoder: VideoEncoder = spec.hw && works(chosenEncoder) ? chosenEncoder : 'x264'
   const hw = videoEncoder !== 'x264'
-  const job: ExportPreset = rated ? { ...shaped, rateControl: quality, crf, x264Preset, videoEncoder } : shaped
+  const video: ExportPreset = rated ? { ...shaped, rateControl: quality, crf, x264Preset, videoEncoder } : shaped
+  const lossy = lossyAudio(video)
+  const job: ExportPreset = {
+    ...video,
+    ...(lossy && audioKbps > 0 && { audioBitrate: `${audioKbps}k` }),
+    ...(loudness !== undefined && { loudness })
+  }
+  const kbps = parseInt(job.audioBitrate)
   const crfMax = vcodec === 'vp9' || vcodec === 'av1' ? 63 : 51
   // a codec with no encoder in this ffmpeg (HEVC without libx265 and without a GPU) is shown, not offered
   const codecMissing = (c: VideoCodec) => !!hwEncoders && !pickEncoder(c, 'x264', hwEncoders)
@@ -141,6 +155,7 @@ export function ExportDialog() {
     // a preset IS a codec, size, rate and bitrate: choosing one drops the dialog's own
     resetOutput()
     put('export.codec', null)
+    put('export.audioBitrate', null)
     const p = allPresets().find((x) => x.id === id)
     // a user preset carries its render options
     if (p && isUserPreset(p)) {
@@ -152,6 +167,7 @@ export function ExportDialog() {
       put('export.x264Preset', p.x264Preset ?? 'faster')
       put('export.videoEncoder', p.videoEncoder ?? 'x264')
       put('export.fit', p.fit ?? 'fit')
+      put('export.loudness', p.loudness === undefined ? 'off' : String(p.loudness))
     }
   }
 
@@ -171,6 +187,7 @@ export function ExportDialog() {
     if (!out) return
     s.setPlaying(false)
     track.current = { phase: '', s: [] }
+    doneTarget.current = job.loudness
     setStatus({ kind: 'running', phase: 'video', progress: 0, est: null })
     const h = startExport(
       s.project,
@@ -233,6 +250,8 @@ export function ExportDialog() {
            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
   )
   const sec = t('secUnit')
+  // −14.0: a true minus, one decimal
+  const db = (v: number) => (isFinite(v) ? v.toFixed(1).replace('-', '−') : '−∞')
   const value = (label: string, v: string) => (
     <div className="insp-field"><span>{label}</span><span className="export-value">{v}</span></div>
   )
@@ -254,13 +273,22 @@ export function ExportDialog() {
         </div>
       </div>
     ) : status.kind === 'done' ? (
-      <div className="export-ok">
-        <Icon name="check" /> {t('exportDone')}
-        <button className="ghost" onClick={() => void window.kadr.exportReveal(false)}>
-          <Icon name="folderOpen" /> {t('exReveal')}
-        </button>
-        <button className="ghost" onClick={() => void window.kadr.exportReveal(true)}>{t('exOpen')}</button>
-      </div>
+      <>
+        <div className="export-ok">
+          <Icon name="check" /> {t('exportDone')}
+          <button className="ghost" onClick={() => void window.kadr.exportReveal(false)}>
+            <Icon name="folderOpen" /> {t('exReveal')}
+          </button>
+          <button className="ghost" onClick={() => void window.kadr.exportReveal(true)}>{t('exOpen')}</button>
+        </div>
+        {/* G9: what the file measures; short of the target (sparse full-scale hits) says so */}
+        {status.loudness && (
+          <div className="dim">{trf('exLoudDone', { i: db(status.loudness.i), tp: db(status.loudness.tp) })}</div>
+        )}
+        {status.loudness && doneTarget.current !== undefined && status.loudness.i < doneTarget.current - 0.5 && (
+          <div className="dim">{trf('exLoudShort', { t: db(doneTarget.current) })}</div>
+        )}
+      </>
     ) : status.kind === 'cancelled' ? (
       <div className="dim">{t('exportCancelled')}</div>
     ) : status.kind === 'error' ? (
@@ -459,9 +487,30 @@ export function ExportDialog() {
       )}
 
       <div className="insp-section">{t('exAudio')}</div>
-      {vcodec === 'png' && !preset.audioOnly
-        ? <div className="dim">{t('exSeqNoAudio')}</div>
-        : value(t('exCodec'), audioCodecLabel(job))}
+      {vcodec === 'png' && !preset.audioOnly ? <div className="dim">{t('exSeqNoAudio')}</div> : (
+        <>
+          {value(t('exCodec'), audioCodecLabel(job, !lossy))}
+          {lossy && (
+            <div className="insp-field">
+              <span>{t('exAudioBitrate')}</span>
+              <select aria-label={t('exAudioBitrate')} value={kbps} disabled={running}
+                      onChange={(e) => put('export.audioBitrate', Number(e.target.value))}>
+                {[...new Set([...AUDIO_BITRATES, kbps])].sort((a, b) => a - b).map((n) => (
+                  <option key={n} value={n}>{n} {t('kbpsUnit')}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="insp-field" title={t('exLoudHint')}>
+            <span>{t('exLoudness')}</span>
+            <select aria-label={t('exLoudness')} value={loudSel} disabled={running}
+                    onChange={(e) => put('export.loudness', e.target.value)}>
+              <option value="off">{t('exLoudOff')}</option>
+              {LOUDNESS_TARGETS.map((n) => <option key={n} value={String(n)}>{t(`exLoud${-n}` as 'exLoud14')}</option>)}
+            </select>
+          </div>
+        </>
+      )}
 
       <div className="insp-section">{t('exRange')}</div>
       {value(t('duration'), range

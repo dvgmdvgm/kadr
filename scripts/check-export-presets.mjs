@@ -88,6 +88,14 @@ run('a user preset keeps its encoder (G5)', () => {
   check('a user preset keeps its encoder (G5)', r.length === 1 && r[0].videoEncoder === 'nvenc', JSON.stringify(r))
 })
 
+run('a user preset keeps its loudness target and a WAV container (G9)', () => {
+  const w = userPreset({ ...yt, container: 'wav', audioCodec: 'pcm_s24le', audioOnly: true, loudness: -14 },
+    { motionBlur: true, frameBlending: true, fastEncoder: false }, 'Master', 'user-w')
+  const r = sanitizeUserPresets(JSON.parse(JSON.stringify([w, { ...w, id: 'user-bad', loudness: '-14; rm' }])), builtinIds)
+  check('a user preset keeps its loudness target and a WAV container (G9)',
+    r.length === 1 && r[0].loudness === -14 && r[0].container === 'wav', JSON.stringify(r))
+})
+
 run('unknown fields are not carried', () => {
   const good = userPreset(yt, { motionBlur: true, frameBlending: true, fastEncoder: false }, 'Ok', 'user-ok')
   const r = sanitizeUserPresets([{ ...good, evil: '<script>' }], builtinIds)

@@ -1,17 +1,27 @@
 import { create } from 'zustand'
 import type { ExportPreset } from '@shared/types'
 import { sanitizeUserPresets, userPreset, type ExportOptions, type UserExportPreset } from '@shared/exportPresets'
-import { tr, type TKey } from './i18n'
+import { tr, trf, type TKey } from './i18n'
 import { saveUserStore } from './engine/userStore'
 
 /** The name shown for a preset: the three that describe themselves in words are translated. */
-const NAME_KEY: Record<string, TKey> = { source: 'presetSource', webm: 'presetWebm', mp3: 'presetMp3' }
+const NAME_KEY: Record<string, TKey> = {
+  source: 'presetSource', webm: 'presetWebm', mp3: 'presetMp3', wav: 'presetWav', m4a: 'presetM4a'
+}
 export const presetName = (p: ExportPreset): string => (NAME_KEY[p.id] ? tr(NAME_KEY[p.id]) : p.name)
 
-const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3', pcm_s16le: 'PCM' }
-/** the export dialog's read-only audio line: «AAC · 192 kbit/s» (the video codec is a select since G6) */
-export const audioCodecLabel = (p: ExportPreset): string =>
-  `${AUDIO_CODEC[p.audioCodec] ?? p.audioCodec} · ${parseInt(p.audioBitrate)} ${tr('kbpsUnit')}`
+const AUDIO_CODEC: Record<string, string> = { aac: 'AAC', libopus: 'Opus', libmp3lame: 'MP3', pcm_s16le: 'PCM', pcm_s24le: 'PCM' }
+/** the export dialog's read-only audio line: «AAC · 192 kbit/s», PCM by its depth: «PCM · 24 bit · 48 kHz» */
+export const audioCodecLabel = (p: ExportPreset, rate = true): string => {
+  const pcm = /^pcm_s(\d+)/.exec(p.audioCodec)
+  if (pcm) return `PCM · ${trf('exPcmBits', { n: pcm[1] })} · 48 ${tr('khzUnit')}`
+  const name = AUDIO_CODEC[p.audioCodec] ?? p.audioCodec
+  // the dialog shows a lossy codec's bitrate as a select of its own (G9)
+  return rate ? `${name} · ${parseInt(p.audioBitrate)} ${tr('kbpsUnit')}` : name
+}
+/** G9: the bitrates offered for a lossy audio codec (kbit/s) */
+export const AUDIO_BITRATES = [128, 160, 192, 256, 320] as const
+export const lossyAudio = (p: ExportPreset): boolean => !p.audioCodec.startsWith('pcm_')
 
 export const PRESETS: ExportPreset[] = [
   {
@@ -104,6 +114,36 @@ export const PRESETS: ExportPreset[] = [
     videoBitrate: 0,
     audioCodec: 'libmp3lame',
     audioBitrate: '320k',
+    audioOnly: true
+  },
+  // G9: the mix as a master (24-bit PCM) and as AAC in an MP4 audio file
+  {
+    id: 'wav',
+    name: 'WAV (audio only)',
+    container: 'wav',
+    codec: 'avc',
+    ffmpegVideo: 'copy',
+    width: 'project',
+    height: 'project',
+    fps: 'project',
+    videoBitrate: 0,
+    audioCodec: 'pcm_s24le',
+    // not a setting: 48 kHz × 24 bit × 2 channels — what the size estimate counts
+    audioBitrate: '2304k',
+    audioOnly: true
+  },
+  {
+    id: 'm4a',
+    name: 'M4A AAC (audio only)',
+    container: 'm4a',
+    codec: 'avc',
+    ffmpegVideo: 'copy',
+    width: 'project',
+    height: 'project',
+    fps: 'project',
+    videoBitrate: 0,
+    audioCodec: 'aac',
+    audioBitrate: '256k',
     audioOnly: true
   }
 ]

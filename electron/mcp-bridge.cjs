@@ -341,8 +341,9 @@ server.registerTool('kadr_export', {
     'Render the current Kadr project (or a time range of it) to a file and wait for completion. ' +
     'Uses the same WYSIWYG pipeline as the editor (GPU composite, effects, transitions, audio mix). ' +
     'presetId comes from kadr_state.exportPresets (default: first mp4). For audio-only output pick ' +
-    'an audioOnly preset (mp3). A user preset (user: true) also brings its motion blur, frame ' +
-    'blending (unless given here) and x264 rate control (CRF). Returns when the file is fully written.',
+    'an audioOnly preset (mp3, wav, m4a). A user preset (user: true) also brings its motion blur, frame ' +
+    'blending (unless given here), x264 rate control (CRF) and loudness target (LUFS). ' +
+    'Returns when the file is fully written.',
   inputSchema: {
     outputPath: z.string().describe('absolute output file path; extension should match the preset container'),
     presetId: z.string().optional(),

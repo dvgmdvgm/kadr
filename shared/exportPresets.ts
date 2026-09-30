@@ -26,7 +26,7 @@ const dim = (v: unknown) => v === 'project' || (typeof v === 'number' && Number.
 const FIELDS: Record<keyof UserExportPreset, (v: unknown) => boolean> = {
   id: (v) => str(v) && (v as string).length > 0,
   name: (v) => str(v) && (v as string).trim().length > 0,
-  container: (v) => ['mp4', 'webm', 'mkv', 'mov', 'png', 'mp3'].includes(v as string),
+  container: (v) => ['mp4', 'webm', 'mkv', 'mov', 'png', 'mp3', 'wav', 'm4a'].includes(v as string),
   codec: str,
   ffmpegVideo: str,
   width: dim,
@@ -43,6 +43,7 @@ const FIELDS: Record<keyof UserExportPreset, (v: unknown) => boolean> = {
   x264Preset: (v) => v === undefined || str(v),
   fit: (v) => v === undefined || v === 'fit' || v === 'fill' || v === 'stretch',
   videoEncoder: (v) => v === undefined || ['x264', 'nvenc', 'qsv', 'amf'].includes(v as string),
+  loudness: (v) => v === undefined || (typeof v === 'number' && v >= -40 && v <= -5),
   motionBlur: bool,
   frameBlending: bool,
   fastEncoder: bool,

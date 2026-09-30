@@ -131,6 +131,10 @@ export const SETTINGS = {
   'export.subsEmbed': { type: 'boolean', default: false, section: 'export' },
   /** G7: chapters from the user's markers or the song's sections */
   'export.chapters': { type: 'enum', options: ['off', 'markers', 'sections'], default: 'off', section: 'export' },
+  /** G9: the mix's integrated loudness, LUFS (shared/audioMaster.ts LOUDNESS_TARGETS); off = as mixed */
+  'export.loudness': { type: 'enum', options: ['off', '-14', '-16', '-23'], default: 'off', section: 'export' },
+  /** G9: a lossy audio codec's bitrate, kbit/s, over the preset's; 0 = the preset's */
+  'export.audioBitrate': { type: 'number', min: 0, max: 320, default: 0, section: 'export' },
   /** the name the save dialog proposes: {project} {preset} {date} (shared/exportPresets.ts fileNameFrom) */
   'export.fileName': { type: 'string', default: '{project}', section: 'export' },
   /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */
