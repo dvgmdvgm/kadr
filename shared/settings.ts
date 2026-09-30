@@ -8,7 +8,10 @@
 // the source); `legacy` is the localStorage key the value was migrated from.
 
 export type SettingValue = boolean | number | string
-export type SettingSection = 'general' | 'editing' | 'playback' | 'tools'
+export type SettingSection = 'general' | 'editing' | 'playback' | 'tools' | 'claude'
+
+/** `claude.permissionMode`'s choices (electron/claudeArgs.ts re-checks them) */
+export const PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'plan'] as const
 
 export interface SettingDef {
   type: 'boolean' | 'number' | 'string' | 'enum'
@@ -34,7 +37,20 @@ export const SETTINGS = {
   /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export */
   'playback.previewLimiter': { type: 'boolean', default: true, section: 'playback', legacy: 'kadr.previewLimiter' },
   'tools.ffmpeg': { type: 'string', default: 'ffmpeg', section: 'tools', restart: true, env: 'KADR_FFMPEG' },
-  'tools.ffprobe': { type: 'string', default: 'ffprobe', section: 'tools', restart: true, env: 'KADR_FFPROBE' }
+  'tools.ffprobe': { type: 'string', default: 'ffprobe', section: 'tools', restart: true, env: 'KADR_FFPROBE' },
+  // the panel's claude (electron/claudeArgs.ts); each takes effect on the next panel open
+  /** the CLI to run; wins over claude-env.json `command`; empty = `claude` */
+  'claude.command': { type: 'string', default: '', section: 'claude', env: 'KADR_CLAUDE_CMD' },
+  /** one line, APPENDED after Kadr's flags (`splitArgs`) */
+  'claude.extraArgs': { type: 'string', default: '', section: 'claude' },
+  /** `--model`; empty = the user's own default */
+  'claude.model': { type: 'string', default: '', section: 'claude' },
+  /** `--permission-mode`; 'default' adds no flag. No bypassPermissions: the agent has a shell */
+  'claude.permissionMode': { type: 'enum', options: PERMISSION_MODES, default: 'default', section: 'claude' },
+  /** `--strict-mcp-config`: only Kadr's bridge and claude-mcp.json, not the user's global servers */
+  'claude.strictMcp': { type: 'boolean', default: true, section: 'claude' },
+  /** transcripts travel inside the .kadr (off: sending the file sends no conversations) */
+  'claude.embedChats': { type: 'boolean', default: true, section: 'claude' }
 } satisfies Record<string, SettingDef>
 
 export type SettingKey = keyof typeof SETTINGS

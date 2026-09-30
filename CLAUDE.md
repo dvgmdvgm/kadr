@@ -156,9 +156,20 @@ mixes audio and muxes/transcodes per preset.
 - `electron/claude.ts` — embedded Claude Code: node-pty PTY running the
   user's `claude` CLI inside a watchdog wrapper (kills its process group
   if Electron dies hard), per-session HTTP bridge (POST /eval →
-  `webContents.executeJavaScript`); extra env/command via
+  `webContents.executeJavaScript`); extra env via
   `userData/claude-env.json`, extra MCP servers via
-  `userData/claude-mcp.json`; `sweepStaleSessions()` clears leftovers of
+  `userData/claude-mcp.json`. SESSION OPTIONS are settings (`claude.*`):
+  `command` (env `KADR_CLAUDE_CMD`; wins over the JSON's), `model`,
+  `permissionMode` (default/acceptEdits/auto/plan — NEVER
+  bypassPermissions: the agent has a shell; the enum refuses it and
+  `claudeArgs` drops every skip/bypass spelling from extra args too),
+  `strictMcp` (default ON: `--strict-mcp-config`, so the user's global MCP
+  servers stay out and only the bridge + claude-mcp.json load), and
+  `extraArgs`, one line APPENDED after Kadr's flags. A legacy `args` in
+  claude-env.json still REPLACES them (a wrapper that may not be claude);
+  `claude:status` reports it for the settings row's warning, together with
+  `claude auth status --json` (no tokens; its tree is killed at 15 s — a
+  .cmd shim's node outlives execFile's own timeout). `sweepStaleSessions()` clears leftovers of
   hard-killed runs at startup (after the page loads). On Windows there is no
   /proc: one PowerShell `Win32_Process` listing, and a process is killed
   (`taskkill /T`) only if its command line carries a Kadr path AND its parent
@@ -207,7 +218,9 @@ mixes audio and muxes/transcodes per preset.
 - `electron/chats.ts` — the project's Claude chats. `Project.claudeChats`
   holds session ids; the panel resumes the newest (`--resume`) or starts one
   with a known id (`--session-id`), and its header picks between them. Both
-  project writers embed the transcripts as `claudeTranscripts: {id: jsonl}`;
+  project writers embed the transcripts as `claudeTranscripts: {id: jsonl}`
+  unless `claude.embedChats` is off (then only the ids go — sending the
+  file sends no conversations; they resume from Claude's own store);
   `project:read` takes them out again and keeps them in main — THEY NEVER
   REACH THE RENDERER, whose project is deep-copied on every edit. Claude Code
   only resumes from `<config>/projects/<slug of cwd>/<id>.jsonl`, so right
@@ -220,7 +233,7 @@ mixes audio and muxes/transcodes per preset.
   transcript is behind); ids with no transcript are dropped on save. Undo/
   redo carry the CURRENT chat list over, since a chat is not an edit. The
   panel is keyed by project id, so opening another project brings up ITS
-  chats. An args override in claude-env.json runs something that may not be
+  chats. A legacy args replace in claude-env.json runs something that may not be
   claude, so it gets no chat flags and its sessions are not tracked. NOT
   TRACKED either: a session switched inside the TUI (`/clear`, `/resume`) —
   claude gives it an id the panel never sees; «New chat» is the way.
@@ -235,8 +248,9 @@ mixes audio and muxes/transcodes per preset.
   machine; at startup `removeManagedSkills` deletes the `kadr-*` copies
   carrying the old `<!-- managed by Kadr` mark, never a folder without it
   (the user's own). The plugin's files are LF (`.gitattributes`): the old
-  front-matter regex skipped every skill on a CRLF checkout. An `args`
-  override in claude-env.json replaces the flag too (no skills).
+  front-matter regex skipped every skill on a CRLF checkout. A legacy
+  `args` replace in claude-env.json drops the flag too (no skills);
+  `claude.extraArgs` appends and keeps it.
 - `electron/mcp-bridge.cjs` — MCP stdio server (SDK) that claude receives
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
   kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /

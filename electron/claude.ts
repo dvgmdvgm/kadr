@@ -11,16 +11,21 @@ import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
 import type { IPty } from 'node-pty'
 import { ensureInStore, listChats } from './chats'
-import { claudeArgs, removeManagedSkills } from './claudeArgs'
+import { claudeArgs, removeManagedSkills, splitArgs } from './claudeArgs'
+import type { SettingsStore } from './settings'
+import type { ClaudeStatus } from '../shared/types'
 import { WIN_PROCESS_QUERY, parseWinProcs, pickWinOrphans } from './orphanSweep'
 import { WORKSPACE } from './fragments'
 import { turnTracker } from '../shared/agentTurn'
 
 // The session inherits this process's environment MINUS the markers of any
 // Claude session that launched the editor (see SESSION_MARKERS). Anything extra the
-// user's claude needs (proxies, custom PATH…) plus command/args overrides
-// live in userData/claude-env.json: { "command": "...", "args": [...],
-// "env": { "HTTPS_PROXY": "...", ... } }. If you proxy claude, exclude
+// user's claude needs (proxies, custom PATH…) lives in userData/claude-env.json:
+// { "env": { "HTTPS_PROXY": "...", ... } }. The command, model, permission mode,
+// strict MCP and extra args are settings (`claude.*`, shared/settings.ts); a
+// legacy "command"/"args" in that file still works — `args` REPLACES Kadr's
+// flags there (a wrapper that may not be claude), and `claude:status` reports
+// it so the settings row can warn. If you proxy claude, exclude
 // localhost (NO_PROXY) so the kadr MCP bridge is reached directly.
 // Extra MCP servers for the embedded session only (media search, etc.) go in
 // userData/claude-mcp.json: { "mcpServers": { name: { command, args, env } } } —
@@ -306,6 +311,43 @@ async function userConfig(): Promise<ClaudeConfig> {
   }
 }
 
+/** main's settings store, handed over by registerClaudeIpc */
+let settings: SettingsStore | null = null
+
+/** The CLI to run: the `claude.command` setting (or KADR_CLAUDE_CMD), else the legacy JSON, else claude. */
+async function claudeBin(cfg: ClaudeConfig): Promise<string> {
+  const set = settings?.effective('claude.command')
+  const name = (set && set.source !== 'default' && String(set.value)) || cfg.command || 'claude'
+  return (await which(name)) ?? name
+}
+
+/** For the settings row: auth status (no tokens spent) and the legacy replace. */
+async function claudeStatus(): Promise<ClaudeStatus> {
+  const cfg = await userConfig()
+  const legacyArgs = Array.isArray(cfg.args) ? cfg.args : null
+  const bin = await claudeBin(cfg)
+  return new Promise((resolve) => {
+    // a .cmd shim needs a shell on Windows (node refuses to run it directly); the args are fixed
+    const shell = WIN && /\.(cmd|bat)$/i.test(bin)
+    const p = execFile(shell ? `"${bin}"` : bin, ['auth', 'status', '--json'],
+      { shell, env: sessionEnv(cfg.env), windowsHide: true },
+      (err, stdout) => {
+        clearTimeout(t)
+        try {
+          const j = JSON.parse(stdout)
+          resolve({ loggedIn: !!j.loggedIn, authMethod: j.authMethod, legacyArgs })
+        } catch {
+          resolve({ loggedIn: null, error: String(err?.message ?? stdout).slice(0, 300), legacyArgs })
+        }
+      })
+    // execFile's own timeout kills only the shell, and the .cmd's node lived on: take the tree
+    const t = setTimeout(() => {
+      if (WIN && p.pid) execFile('taskkill', ['/pid', String(p.pid), '/t', '/f'], { windowsHide: true }, () => {})
+      else p.kill('SIGKILL')
+    }, 15000)
+  })
+}
+
 async function spawnSession(
   win: BrowserWindow,
   cols: number,
@@ -315,8 +357,7 @@ async function spawnSession(
 ): Promise<{ ok: boolean; port?: number; chatId?: string; error?: string }> {
   await killSession() // a reopen without a close in between
   const cfg = await userConfig()
-  const cmdName = process.env.KADR_CLAUDE_CMD || cfg.command || 'claude'
-  const bin = (await which(cmdName)) ?? cmdName
+  const bin = await claudeBin(cfg)
 
   const turns = turnTracker()
   let bridge: { server: Server; port: number; token: string }
@@ -353,16 +394,21 @@ async function spawnSession(
 
   let dir = cwd || app.getPath('home')
   try { await fs.access(dir) } catch { dir = app.getPath('home') }
-  // chats: electron/chats.ts; an args override may not run claude, so no chat flags
+  // chats: electron/chats.ts; a legacy args replace may not run claude, so no chat flags
   const chat = cfg.args ? undefined : chatId ?? randomUUID()
   if (chat && chatId) await ensureInStore(chatId, dir)
-  if (cfg.args) console.warn('[claude] claude-env.json args override: no --plugin-dir, so no kadr: skills (until D8 appends args)')
+  if (cfg.args) console.warn('[claude] claude-env.json "args" replaces Kadr\'s flags: no --plugin-dir, no --mcp-config (use the claude.extraArgs setting to append)')
+  const opt = (k: 'claude.model' | 'claude.permissionMode' | 'claude.strictMcp' | 'claude.extraArgs') => settings?.effective(k).value
   const args = claudeArgs({
     mcpConfig: mcpCfgPath,
     pluginDir: join(app.getAppPath(), 'electron', 'claude-plugin'),
     systemHint: SYSTEM_HINT,
     chat: chat ? { resume: !!chatId, id: chat } : undefined,
-    override: cfg.args
+    model: String(opt('claude.model') ?? ''),
+    permissionMode: String(opt('claude.permissionMode') ?? 'default'),
+    strictMcp: opt('claude.strictMcp') !== false,
+    extraArgs: splitArgs(String(opt('claude.extraArgs') ?? '')),
+    replace: cfg.args
   })
 
   try {
@@ -473,7 +519,9 @@ function closeSession(): Promise<void> {
   return job
 }
 
-export function registerClaudeIpc(getWin: () => BrowserWindow | null) {
+export function registerClaudeIpc(getWin: () => BrowserWindow | null, store: SettingsStore) {
+  settings = store
+  ipcMain.handle('claude:status', () => claudeStatus())
   // skills load per session through --plugin-dir; drop copies older versions put in ~/.claude/skills
   void removeManagedSkills(join(app.getPath('home'), '.claude', 'skills'))
     .then((r) => { if (r.length) console.log(`[claude] removed global skill copies: ${r.join(', ')}`) })

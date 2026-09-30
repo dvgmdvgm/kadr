@@ -316,7 +316,7 @@ app.whenReady().then(() => {
   registerBackupIpc()
   void pruneDecodedCache()
   void sweepPartFiles()
-  registerClaudeIpc(() => win)
+  registerClaudeIpc(() => win, settings)
   registerTranscribeIpc(() => win)
   registerTtsIpc(() => win)
   registerVoiceIpc(() => win)
@@ -894,13 +894,13 @@ function registerIpc() {
   })
 
   ipcMain.handle('project:write', async (_e, path: string, project: Project) => {
-    await atomicWrite(path, JSON.stringify(await withTranscripts(project), null, 1))
+    await atomicWrite(path, JSON.stringify(await withTranscripts(project, settings.effective('claude.embedChats').value === true), null, 1))
   })
 
   // periodic safety net: a versioned backup in userData/backups (electron/backups.ts),
   // and <name>.autosave.kadr next to a saved project for those who open it by hand
   ipcMain.handle('project:autosave', async (_e, project: Project, mainPath: string | null) => {
-    const json = JSON.stringify(await withTranscripts(project), null, 1)
+    const json = JSON.stringify(await withTranscripts(project, settings.effective('claude.embedChats').value === true), null, 1)
     const out = await writeBackup(json, mainPath, project)
     if (mainPath) await atomicWrite(join(dirname(mainPath), `${basename(mainPath, '.kadr')}.autosave.kadr`), json)
     return out

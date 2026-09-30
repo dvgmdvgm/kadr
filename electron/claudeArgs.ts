@@ -13,20 +13,47 @@ export interface ClaudeArgsInput {
   mcpConfig: string
   systemHint: string
   pluginDir: string
-  /** a chat to resume, or the id a new one starts with; absent with an override */
+  /** a chat to resume, or the id a new one starts with; absent with a replace */
   chat?: { resume: boolean; id: string }
-  /** claude-env.json `args`: replaces everything, plugin included (D8 makes it append) */
-  override?: string[]
+  /** settings `claude.*` (shared/settings.ts); empty model / 'default' mode add no flag */
+  model?: string
+  permissionMode?: string
+  strictMcp?: boolean
+  /** `claude.extraArgs`, split: APPENDED after Kadr's flags, never instead of them */
+  extraArgs?: string[]
+  /** legacy claude-env.json `args`: replaces everything (a wrapper that may not be claude) */
+  replace?: string[]
 }
 
+/** extra-arg spellings that would switch permission checks off */
+const isBypass = (s: string) =>
+  /^--(allow-)?dangerously-skip-permissions$/.test(s) || /^--permission-mode=bypassPermissions$/.test(s)
+
 export function claudeArgs(a: ClaudeArgsInput): string[] {
-  if (a.override) return a.override
+  if (a.replace) return a.replace
+  const extra: string[] = []
+  const x = a.extraArgs ?? []
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] === '--permission-mode' && x[i + 1] === 'bypassPermissions') { i++; continue }
+    if (!isBypass(x[i])) extra.push(x[i])
+  }
+  // the setting's enum (shared/settings.ts) already refuses it; never bypassPermissions: the agent has a shell
+  const mode = a.permissionMode === 'bypassPermissions' ? undefined : a.permissionMode
   return [
     '--mcp-config', a.mcpConfig,
     '--plugin-dir', a.pluginDir,
     '--append-system-prompt', a.systemHint,
-    ...(a.chat ? [a.chat.resume ? '--resume' : '--session-id', a.chat.id] : [])
+    ...(a.model ? ['--model', a.model] : []),
+    ...(mode && mode !== 'default' ? ['--permission-mode', mode] : []),
+    ...(a.strictMcp ? ['--strict-mcp-config'] : []),
+    ...(a.chat ? [a.chat.resume ? '--resume' : '--session-id', a.chat.id] : []),
+    ...extra
   ]
+}
+
+/** `claude.extraArgs` as typed in one line: spaces split, '…' and "…" group. */
+export function splitArgs(line: string): string[] {
+  return [...line.matchAll(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)].map((m) => m[0].replace(/"([^"]*)"|'([^']*)'/g, '$1$2'))
 }
 
 /** the line every skill Kadr once copied carried — only such folders are removed */

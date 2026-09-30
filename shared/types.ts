@@ -275,6 +275,16 @@ export interface ClaudeChatInfo {
   updated: number
 }
 
+/** the panel's claude as the settings row shows it (IPC `claude:status`) */
+export interface ClaudeStatus {
+  /** `claude auth status`: null when the probe could not tell (not claude, timed out) */
+  loggedIn: boolean | null
+  authMethod?: string
+  error?: string
+  /** claude-env.json `args`, which REPLACE Kadr's flags — the row warns */
+  legacyArgs: string[] | null
+}
+
 // ---------------------------------------------------------------------------
 // Pose presets: a named snapshot of one keyframe's worth of mask/transform
 // values, stored app-wide (userData JSON), shared across projects.
@@ -1369,6 +1379,8 @@ export interface KadrApi {
   claudeInput(data: string): void
   claudeResize(cols: number, rows: number): void
   claudeClose(): Promise<void>
+  /** auth status of the configured CLI (spends no tokens) and the legacy args replace */
+  claudeStatus(): Promise<ClaudeStatus>
   onClaudeData(cb: (data: string) => void): () => void
   onClaudeExit(cb: (code: number) => void): () => void
 }
