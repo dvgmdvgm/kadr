@@ -104,7 +104,7 @@ export function logTime(t: number): string {
  * INFO, still in the panel for whoever looks and silent for everyone else.
  * (One such notice used to fire on every preview detach — the observers there
  * were left behind in the editor's document; that cause is fixed at the
- * source in AudioMeter/FragmentOverlays/FragmentGizmo. This stays because the
+ * source in AudioMeter/FragmentOverlays/ClipGizmo. This stays because the
  * notice can also come from layout work that is not ours.)
  */
 const RESIZE_NOTICE = /^ResizeObserver loop /

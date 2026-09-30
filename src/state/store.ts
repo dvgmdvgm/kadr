@@ -867,6 +867,9 @@ interface EditorState {
   range: TimeRange | null
   /** clip whose animation/mask panel is open (double-click) */
   animClipId: string | null
+  /** «Привязка к таймлайну»: editing a static parameter records a key at the
+      playhead — the animation editor and the preview gizmo alike */
+  animLinked: boolean
   /** video track whose Track Motion editor is open */
   motionTrackId: string | null
   /** absolute time of a keyframe being dragged in a mini-timeline,
@@ -1167,6 +1170,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   exportOpen: false,
   range: null,
   animClipId: null,
+  animLinked: false,
   motionTrackId: null,
   kfMarker: null,
   clipboard: [],

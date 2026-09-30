@@ -1,5 +1,5 @@
 import type { Project, Clip, Track, MediaAsset } from '@shared/types'
-import { Compositor, type LayerDraw } from '@/gl/compositor'
+import { Compositor, type LayerDraw, type LayerGeom } from '@/gl/compositor'
 import { glowParams } from '@/gl/glow'
 import { getCaptureFrame } from './fragmentCapture'
 import { chromiumCanDecode } from './codecs'
@@ -447,6 +447,54 @@ export function drawFrame(
   }
 }
 
+/** where a clip sits at timeline time t: its transform plus its track's motion */
+export function clipPlacement(clip: Clip, track: Track, t: number): Omit<LayerGeom, 'srcWidth' | 'srcHeight'> {
+  const rel = t - clip.start
+  const tr = clip.transform
+  const motion = track.motion
+  return {
+    x: evalAnim(tr.x, rel),
+    y: evalAnim(tr.y, rel),
+    scale: evalAnim(tr.scale, rel),
+    rotation: evalAnim(tr.rotation, rel),
+    rotX: tr.rotX ? evalAnim(tr.rotX, rel) : 0,
+    rotY: tr.rotY ? evalAnim(tr.rotY, rel) : 0,
+    z: tr.z ? evalAnim(tr.z, rel) : 0,
+    // whole-track motion keyframes live in absolute project time
+    outer: motion
+      ? {
+          x: evalAnim(motion.x, t),
+          y: evalAnim(motion.y, t),
+          scale: evalAnim(motion.scale, t),
+          rotation: evalAnim(motion.rotation, t),
+          rotX: evalAnim(motion.rotX, t),
+          rotY: evalAnim(motion.rotY, t),
+          z: evalAnim(motion.z, t)
+        }
+      : undefined
+  }
+}
+
+/**
+ * The layer a visual clip draws at t, without touching a decoder: the size
+ * is the asset's (a proxy or a decoded frame has the same aspect, and the
+ * fit only sees the aspect). Null for audio or a missing asset.
+ */
+export function clipGeom(project: Project, track: Track, clip: Clip, t: number): LayerGeom | null {
+  let srcWidth = project.width
+  let srcHeight = project.height
+  if (clip.kind === 'remotion') {
+    srcWidth = clip.fragmentMeta?.width ?? project.width
+    srcHeight = clip.fragmentMeta?.height ?? project.height
+  } else if (clip.kind !== 'text') {
+    const asset = clip.assetId ? project.assets.find((a) => a.id === clip.assetId) : undefined
+    if (!asset || asset.kind === 'audio' || !asset.width || !asset.height) return null
+    srcWidth = asset.width
+    srcHeight = asset.height
+  }
+  return { srcWidth, srcHeight, ...clipPlacement(clip, track, t) }
+}
+
 function drawClipLayer(
   comp: Compositor,
   project: Project,
@@ -467,27 +515,8 @@ function drawClipLayer(
     const shapes = clip.maskShapes ?? (clip.maskShape ? [clip.maskShape] : [])
     const cropV = (a: { value: number } | undefined) =>
       a ? Math.min(0.5, Math.max(0, evalAnim(a, rel))) : 0
-    const motion = track.motion
     const common = {
-      x: evalAnim(tr.x, rel),
-      y: evalAnim(tr.y, rel),
-      scale: evalAnim(tr.scale, rel),
-      rotation: evalAnim(tr.rotation, rel),
-      rotX: tr.rotX ? evalAnim(tr.rotX, rel) : 0,
-      rotY: tr.rotY ? evalAnim(tr.rotY, rel) : 0,
-      z: tr.z ? evalAnim(tr.z, rel) : 0,
-      // whole-track motion keyframes live in absolute project time
-      outer: motion
-        ? {
-            x: evalAnim(motion.x, t),
-            y: evalAnim(motion.y, t),
-            scale: evalAnim(motion.scale, t),
-            rotation: evalAnim(motion.rotation, t),
-            rotX: evalAnim(motion.rotX, t),
-            rotY: evalAnim(motion.rotY, t),
-            z: evalAnim(motion.z, t)
-          }
-        : undefined,
+      ...clipPlacement(clip, track, t),
       opacity: evalAnim(tr.opacity, rel) * fadeFactor(clip, rel) * trackOpacity,
       crop: m
         ? ([cropV(m.left), cropV(m.top), cropV(m.right), cropV(m.bottom)] as [number, number, number, number])

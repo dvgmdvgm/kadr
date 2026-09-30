@@ -960,26 +960,40 @@ body.kadr-popout .preview {
 }
 .onion-ctl { display: inline-flex; align-items: center; gap: var(--s2); }
 .onion-ctl input[type='range'] { width: 72px; }
-.frag-gizmo {
+/* the preview gizmo (ClipGizmo): the selected clip's outline, a scale
+   corner and a rotate knob; the host never takes the mouse, its parts do */
+.clip-gizmo {
   position: absolute;
-  border: 1px dashed var(--c-fragment);
-  border-radius: var(--r1);
-  cursor: move;
   z-index: 7;
-  touch-action: none;
-  box-shadow: 0 0 0 1px rgb(var(--rgb-fragment) / 0.25);
+  pointer-events: none;
+  overflow: visible;
+  --gz: var(--c-accent);
 }
-.frag-gizmo-handle {
+.clip-gizmo.fragment { --gz: var(--c-fragment); }
+.clip-gizmo svg { position: absolute; inset: 0; overflow: visible; }
+.clip-gizmo polygon {
+  fill: transparent;
+  stroke: var(--gz);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  pointer-events: all;
+  cursor: move;
+  touch-action: none;
+}
+.clip-gizmo line { stroke: var(--gz); stroke-width: 1; }
+.clip-gizmo-handle {
   position: absolute;
-  right: -7px;
-  bottom: -7px;
   width: 13px;
   height: 13px;
-  background: var(--c-fragment);
+  transform: translate(-50%, -50%);
+  background: var(--gz);
   border: 2px solid var(--c-text);
   border-radius: var(--r1);
   cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
 }
+.clip-gizmo-handle.rotate { border-radius: 50%; cursor: grab; }
 
 /* ===========================================================================
    Transcripts, texts, subtitle panel

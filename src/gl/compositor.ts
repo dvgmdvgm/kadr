@@ -458,53 +458,16 @@ export class Compositor {
     gl.uniform1f(this.uPackHalfTexel, l.alphaPacked ? 0.25 / Math.max(1, l.srcHeight) : 0)
     entry.lastUsed = this.frame
 
-    // fit the source into the project frame, then apply the clip scale
-    const fit = Math.min(this.width / l.srcWidth, this.height / l.srcHeight) * l.scale
-    const w = l.srcWidth * fit
-    const h = l.srcHeight * fit
-    const clipRot = makeRot3(l.rotation, l.rotX ?? 0, l.rotY ?? 0)
-    const outer = l.outer
-    const outerRot = outer ? makeRot3(outer.rotation, outer.rotX, outer.rotY) : null
-    const focal = Math.max(this.width, this.height) * 1.2
-
     // corner order matches TRIANGLE_STRIP: TL, BL, TR, BR
     const data = new Float32Array(20)
-    const corners = [
-      [-w / 2, -h / 2, 0, 0],
-      [-w / 2, h / 2, 0, 1],
-      [w / 2, -h / 2, 1, 0],
-      [w / 2, h / 2, 1, 1]
-    ]
-    corners.forEach(([px, py, u, v], i) => {
-      // clip transform: 3D rotation around the layer center, then offset
-      let P = rotApply(clipRot, px, py, 0)
-      P[0] += l.x
-      P[1] += l.y
-      P[2] += l.z ?? 0
-      // whole-track motion around the project center
-      if (outer && outerRot) {
-        P[0] *= outer.scale
-        P[1] *= outer.scale
-        P[2] *= outer.scale
-        P = rotApply(outerRot, P[0], P[1], P[2])
-        P[0] += outer.x
-        P[1] += outer.y
-        P[2] += outer.z
-      }
-      // perspective projection; the clip-space w must be proportional to
-      // the eye depth (f+z)/f — not its inverse — or the GPU interpolates
-      // the texture with inverted weights and the quad warps internally
-      const wclip = Math.max(0.05, (focal + P[2]) / focal)
-      const pw = 1 / wclip
-      const sx = this.width / 2 + P[0] * pw
-      const sy = this.height / 2 + P[1] * pw
-      const ndcX = (sx / this.width) * 2 - 1
-      const ndcY = 1 - (sy / this.height) * 2
-      data[i * 5] = ndcX * wclip
-      data[i * 5 + 1] = ndcY * wclip
-      data[i * 5 + 2] = wclip
-      data[i * 5 + 3] = u
-      data[i * 5 + 4] = v
+    layerQuad(l, this.width, this.height).forEach((q, i) => {
+      const ndcX = (q.sx / this.width) * 2 - 1
+      const ndcY = 1 - (q.sy / this.height) * 2
+      data[i * 5] = ndcX * q.w
+      data[i * 5 + 1] = ndcY * q.w
+      data[i * 5 + 2] = q.w
+      data[i * 5 + 3] = q.u
+      data[i * 5 + 4] = q.v
     })
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
@@ -1024,6 +987,52 @@ function hexToRgb(hex: string | undefined): [number, number, number] {
   const v = parseInt((hex ?? '#000000').replace('#', ''), 16)
   if (!Number.isFinite(v)) return [0, 0, 0]
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255]
+}
+
+/** the part of a layer that decides where it lands on the frame */
+export type LayerGeom = Pick<LayerDraw, 'srcWidth' | 'srcHeight' | 'x' | 'y' | 'scale' | 'rotation' | 'rotX' | 'rotY' | 'z' | 'outer'>
+
+/**
+ * Where a layer's corners land, in project pixels — THE geometry the
+ * compositor draws with, and the one the preview gizmo draws its box from.
+ * Corners TL, BL, TR, BR (the triangle strip's order); `sub` picks a part of
+ * the layer in uv (a text layer's ink), `w` is the clip-space w.
+ */
+export function layerQuad(
+  l: LayerGeom, width: number, height: number, sub: [number, number, number, number] = [0, 0, 1, 1]
+): { sx: number; sy: number; u: number; v: number; w: number }[] {
+  // fit the source into the project frame, then apply the clip scale
+  const fit = Math.min(width / l.srcWidth, height / l.srcHeight) * l.scale
+  const w = l.srcWidth * fit
+  const h = l.srcHeight * fit
+  const clipRot = makeRot3(l.rotation, l.rotX ?? 0, l.rotY ?? 0)
+  const outer = l.outer
+  const outerRot = outer ? makeRot3(outer.rotation, outer.rotX, outer.rotY) : null
+  const focal = Math.max(width, height) * 1.2
+  const [u0, v0, u1, v1] = sub
+  return [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(([u, v]) => {
+    // clip transform: 3D rotation around the layer center, then offset
+    let P = rotApply(clipRot, (u - 0.5) * w, (v - 0.5) * h, 0)
+    P[0] += l.x
+    P[1] += l.y
+    P[2] += l.z ?? 0
+    // whole-track motion around the project center
+    if (outer && outerRot) {
+      P[0] *= outer.scale
+      P[1] *= outer.scale
+      P[2] *= outer.scale
+      P = rotApply(outerRot, P[0], P[1], P[2])
+      P[0] += outer.x
+      P[1] += outer.y
+      P[2] += outer.z
+    }
+    // perspective projection; the clip-space w must be proportional to
+    // the eye depth (f+z)/f — not its inverse — or the GPU interpolates
+    // the texture with inverted weights and the quad warps internally
+    const wclip = Math.max(0.05, (focal + P[2]) / focal)
+    const pw = 1 / wclip
+    return { sx: width / 2 + P[0] * pw, sy: height / 2 + P[1] * pw, u, v, w: wclip }
+  })
 }
 
 /** Row-major 3×3 rotation: Ry, then Rx, then Rz (angles in degrees). */
