@@ -20,6 +20,7 @@ import {
   type SettingDef, type SettingKey, type SettingSection, type SettingValue, type SettingsSnapshot
 } from '@shared/settings'
 import type { ClaudeStatus, ToolCheck } from '@shared/types'
+import { RESOLUTION_PRESETS } from '@shared/projectFormat'
 
 export const useSettingsUi = create<{ open: boolean; setOpen(v: boolean): void }>((set) => ({
   open: false,
@@ -259,7 +260,7 @@ const SECTIONS: [SectionId, TKey][] = [
   ['speech', 'setSecSpeech'], ['claude', 'setSecAI'], ['voice', 'setSecVoice'], ['privacy', 'setSecPrivacy']
 ]
 
-const RESOLUTIONS: [number, number][] = [[1920, 1080], [3840, 2160], [1080, 1920]]
+const RESOLUTIONS = RESOLUTION_PRESETS
 const FPS = [23.976, 24, 25, 29.97, 30, 50, 59.94, 60]
 
 function General({ t }: { t: T }) {

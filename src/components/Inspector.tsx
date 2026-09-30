@@ -10,6 +10,7 @@ import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
 import { fontChoices } from '@/engine/fonts'
 import { audioTwin } from '@/engine/timelineSelect'
+import { RESOLUTION_PRESETS, FPS_PRESETS, exactFps, fpsLabel } from '@shared/projectFormat'
 
 function Num({
   label, value, step = 1, min, max, onChange,
@@ -84,6 +85,17 @@ function ProjectProps() {
   const focus = () => { session.current = ++settingsSession }
   const patch = (p: ProjectSettingsPatch) =>
     useEditor.getState().updateProjectSettings(p, session.current)
+  // a list pick is one undo step of its own
+  const pick = (p: ProjectSettingsPatch) => useEditor.getState().updateProjectSettings(p)
+  const res = RESOLUTION_PRESETS.findIndex(([w, h]) => w === project.width && h === project.height)
+  // a hand-typed 29.97 shows as the 29,97 preset and keeps its value until picked
+  const rate = FPS_PRESETS.findIndex(([n, d]) => n / d === exactFps(project.fps))
+  const [resCustom, setResCustom] = useState(false)
+  const [fpsCustom, setFpsCustom] = useState(false)
+  const transparent = project.background === 'transparent'
+  // unticking «Прозрачный» brings back the colour it replaced
+  const lastOpaque = useRef('#000000')
+  if (!transparent) lastOpaque.current = project.background
 
   return (
     <>
@@ -92,12 +104,56 @@ function ProjectProps() {
         <span>{t('label')}</span>
         <input value={project.name} onFocus={focus} onChange={(e) => patch({ name: e.target.value })} />
       </label>
-      <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
-        onFocus={focus} onCommit={(v) => patch({ width: Math.max(16, Math.round(v / 2) * 2) })} />
-      <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
-        onFocus={focus} onCommit={(v) => patch({ height: Math.max(16, Math.round(v / 2) * 2) })} />
-      <Num label={t('framerate')} value={project.fps} step={1} min={1} max={120}
-        onFocus={focus} onChange={(v) => patch({ fps: v })} />
+      <label className="insp-field">
+        <span>{t('resolution')}</span>
+        <select data-act="project-res" value={resCustom || res < 0 ? 'custom' : String(res)} onChange={(e) => {
+          if (e.target.value === 'custom') { setResCustom(true); return }
+          const [width, height] = RESOLUTION_PRESETS[Number(e.target.value)]
+          setResCustom(false)
+          pick({ width, height })
+        }}>
+          {RESOLUTION_PRESETS.map(([w, h], i) => <option key={i} value={i}>{w} × {h}</option>)}
+          <option value="custom">{t('setResCustom')}</option>
+        </select>
+      </label>
+      {(resCustom || res < 0) && (
+        <>
+          <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
+            onFocus={focus} onCommit={(v) => patch({ width: Math.max(16, Math.round(v / 2) * 2) })} />
+          <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
+            onFocus={focus} onCommit={(v) => patch({ height: Math.max(16, Math.round(v / 2) * 2) })} />
+        </>
+      )}
+      <label className="insp-field">
+        <span>{t('framerate')}</span>
+        <select data-act="project-fps" value={fpsCustom || rate < 0 ? 'custom' : String(rate)} onChange={(e) => {
+          if (e.target.value === 'custom') { setFpsCustom(true); return }
+          const [n, d] = FPS_PRESETS[Number(e.target.value)]
+          setFpsCustom(false)
+          pick({ fps: n / d })
+        }}>
+          {FPS_PRESETS.map(([n, d], i) => <option key={i} value={i}>{fpsLabel(n / d).replace('.', ',')}</option>)}
+          <option value="custom">{t('setResCustom')}</option>
+        </select>
+      </label>
+      {(fpsCustom || rate < 0) && (
+        <Num label={t('framerate')} value={project.fps} step={1} min={1} max={240}
+          onFocus={focus} onCommit={(v) => patch({ fps: Math.min(240, Math.max(1, v)) })} />
+      )}
+      <div className="insp-field">
+        <span>{t('setBg')}</span>
+        <span className="insp-inline">
+          {!transparent && (
+            <input type="color" data-act="project-bg" aria-label={t('setBg')} value={project.background}
+              onFocus={focus} onChange={(e) => patch({ background: e.target.value })} />
+          )}
+          <label className="insp-inline">
+            <input type="checkbox" data-act="project-bg-transparent" checked={transparent}
+              onChange={(e) => pick({ background: e.target.checked ? 'transparent' : lastOpaque.current })} />
+            {t('bgTransparent')}
+          </label>
+        </span>
+      </div>
     </>
   )
 }

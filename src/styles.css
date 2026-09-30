@@ -219,6 +219,11 @@
   --t-pulse: 1100ms;          /* "working on it" breathing */
   --t-off: 0.001ms;           /* reduced motion: keep the change, drop the travel */
   --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* --- the alpha checkerboard under a transparent project background ---- */
+  --checker-a: #9aa0aa;
+  --checker-b: #6c727c;
+  --checker-size: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -805,6 +810,10 @@ body.kadr-popout .preview {
 .preview-frame-box {
   width: min(100cqw, 100cqh * var(--ar), var(--pw));
   height: min(100cqh, 100cqw / var(--ar), var(--ph));
+}
+/* H2: a transparent background — the (alpha) canvas shows what is under it */
+.preview-canvas-wrap canvas.preview-gl.checker {
+  background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / var(--checker-size) var(--checker-size);
 }
 .preview-frame-box {
   position: absolute;

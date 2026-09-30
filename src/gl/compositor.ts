@@ -324,7 +324,9 @@ export class Compositor {
   private ph = 0
 
   /** `alpha`: the drawing buffer keeps coverage (an alpha export, G6) — readPixels
-      then returns PREMULTIPLIED RGBA; the preview's canvas stays opaque */
+      then returns PREMULTIPLIED RGBA. The preview asks for it too (H2): over an
+      opaque background the clear writes alpha 1 and nothing lowers it, so the page
+      sees the same pixels; over 'transparent' the CSS checkerboard shows through */
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, opts?: { alpha?: boolean }) {
     this.canvas = canvas
     const gl = canvas.getContext('webgl2', {

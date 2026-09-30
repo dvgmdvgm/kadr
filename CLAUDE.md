@@ -41,6 +41,9 @@ mixes audio and muxes/transcodes per preset.
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
   the empty bin — newest first, unique by path, capped at 20);
+  `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
+  presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
+  an export reads it back, and every frame lands on the timeline's step);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
   compared beat for beat with librosa's own cues), and with ffmpeg
   `check-limiter.mjs` (the export master limiter) and
@@ -721,6 +724,9 @@ mixes audio and muxes/transcodes per preset.
   it. The canvas content was never black in either run — only what reached
   the screen — so this is invisible to anything that reads back pixels. The
   flag buys at most one frame of latency in return.
+  The preview's context is `alpha: true` (H2): an opaque background clears
+  to alpha 1 and the blend keeps it there, so nothing changes on screen; a
+  `'transparent'` one shows the CSS checkerboard under `.preview-gl`.
 - `src/gl/transitions.ts` / `src/gl/edges.ts` / `src/gl/glow.ts` — GLSL
   registries: 14 overlap transitions, 12 edge (tip) transitions, the smoky
   outer-glow effect.
@@ -749,7 +755,7 @@ mixes audio and muxes/transcodes per preset.
   path (Chromium's fast encoder writes H.264 only), and the raw temp file is
   a container that holds the codec (`rawTempExt`: mov/webm/mp4). VP9 and AV1
   count quality 0–63, the rest 0–51. A project background of `'transparent'`
-  (H2 makes it selectable) on an alpha codec builds the export compositor
+  (the Inspector's «Прозрачный», H2) on an alpha codec builds the export compositor
   with `alpha: true` and clears to (0,0,0,0); the drawing buffer is then
   PREMULTIPLIED (the blend is SRC_ALPHA over the clear), so the raw args
   unpremultiply in planar RGB (`format=gbrap,unpremultiply=inplace=1`) before

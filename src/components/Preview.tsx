@@ -16,6 +16,7 @@ export function Preview() {
   const popped = usePopout((s) => s.win)
   const width = useEditor((s) => s.project.width)
   const height = useEditor((s) => s.project.height)
+  const transparent = useEditor((s) => s.project.background === 'transparent')
   const loading = useEditor((s) => s.previewLoading)
   const gpuLost = useEditor((s) => s.previewGpuLost)
   const quality = useSettings((s) => s.effective('playback.previewQuality').value) as PreviewQuality
@@ -63,7 +64,7 @@ export function Preview() {
           that follows the canvas rect sits the same at any quality */}
       <div className="preview-canvas-wrap"
            style={{ '--pw': `${width}px`, '--ph': `${height}px`, '--ar': width / height } as React.CSSProperties}>
-        <canvas ref={canvasRef} className="preview-gl" />
+        <canvas ref={canvasRef} className={transparent ? 'preview-gl checker' : 'preview-gl'} />
         {(safe || thirds || stats) && (
           <div className="preview-frame-box">
             {thirds && <div className="pg-thirds" data-act="guide-thirds" />}

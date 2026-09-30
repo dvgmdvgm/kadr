@@ -25,6 +25,7 @@ const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) =>
 
 
 import { defaultTextStyle } from '@/engine/text'
+import { exactFps } from '@shared/projectFormat'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -73,7 +74,8 @@ export function newProject(): Project {
     name: 'Untitled',
     width: setting<number>('newProject.width'),
     height: setting<number>('newProject.height'),
-    fps: setting<number>('newProject.fps'),
+    // D's settings list 29.97 as a decimal; the project stores 30000/1001 (H2)
+    fps: exactFps(setting<number>('newProject.fps')),
     background: setting<string>('newProject.background'),
     // V2, V1 over A1: tracks[0] is the top video track
     tracks: [
@@ -116,6 +118,7 @@ export function sanitizeProject(p: Project): Project {
     if (!Number.isFinite(o.value)) o.value = o.keyframes?.[0]?.value ?? fallback
     return o
   }
+  // a hex, or 'transparent' (H2's «Прозрачный», honoured by the compositor and the alpha export)
   if (typeof p.background !== 'string') p.background = '#000000'
   if (!Number.isFinite(p.width) || p.width <= 0) p.width = 1920
   if (!Number.isFinite(p.height) || p.height <= 0) p.height = 1080
@@ -1161,7 +1164,7 @@ const cloneProject = (p: Project): Project => {
   return out as unknown as Project
 }
 
-export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps'>>
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background'>>
 /** the undo step the last settings session pushed: merge only while it is
  *  still the top of the stack (any other edit or an undo splits the session) */
 const settingsMark: { session?: number; entry?: unknown } = {}
