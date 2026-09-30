@@ -39,6 +39,8 @@ export interface MediaAsset {
   /** ffprobe codec_name of the video stream (e.g. 'h264', 'hevc') — decides
       whether Chromium can decode the source or ffmpeg must step in */
   codec?: string
+  /** ffprobe pix_fmt of the video stream — which HEVC profile the platform is asked about (J11) */
+  pixFmt?: string
   /** video carries an alpha channel (yuva pix_fmt or WebM alpha_mode tag) —
       proxies/intermediates must preserve it (VP9+alpha WebM, not H.264) */
   hasAlpha?: boolean

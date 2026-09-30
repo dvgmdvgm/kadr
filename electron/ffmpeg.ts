@@ -9,6 +9,7 @@ import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment
 import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
+import { proxyColourArgs, type FfColour } from '@shared/streamColour'
 import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
 const execFileP = promisify(execFile)
@@ -77,6 +78,7 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
   const size = Number(info.format?.size)
   if (size > 0) asset.size = size
   if (kind === 'video' && video?.codec_name) asset.codec = video.codec_name
+  if (kind === 'video' && video?.pix_fmt) asset.pixFmt = String(video.pix_fmt)
   if (kind === 'video') {
     const b = videoBasics(video)
     if (b.rotation) asset.rotation = b.rotation
@@ -225,10 +227,12 @@ export function makeProxy(
   out: string,
   duration: number,
   onProgress?: (p: number) => void,
-  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string; colour?: FfColour | null }
 ): Promise<void> {
   // vfPre: a conversion before the scale (an HDR source's tone mapping — electron/hdr.ts)
   const pre = opts?.vfPre ? `${opts.vfPre},` : ''
+  // the source's space written in full, or the element guesses BT.601 for ≤540 lines (J11)
+  const tag = proxyColourArgs(opts?.colour ?? null)
   const args = opts?.alpha ? [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     ...alphaInputArgs(opts.codec),
@@ -241,8 +245,8 @@ export function makeProxy(
   ] : [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     '-i', src,
-    '-vf', `${pre}scale=-2:'min(540,ih)'`,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-vf', `${pre}scale=-2:'min(540,ih)',${tag.vf}`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...tag.out,
     '-c:a', 'aac', '-b:a', '96k',
     '-movflags', '+faststart',
     out
@@ -416,14 +420,14 @@ export async function packedAlphaPlan(src: string): Promise<PackedAlphaPlan> {
   }
 }
 
-async function probeColorTags(
+export async function probeColorTags(
   src: string
-): Promise<{ matrix: string; range: string; width: number; height: number; fps: number }> {
+): Promise<{ matrix: string; primaries: string; transfer: string; codec: string; range: string; width: number; height: number; fps: number }> {
   let s: Record<string, string> = {}
   try {
     const { stdout } = await execFileP(FFPROBE, [
       '-v', 'error', '-select_streams', 'v:0', '-print_format', 'json',
-      '-show_entries', 'stream=width,height,r_frame_rate,color_space,color_range', src
+      '-show_entries', 'stream=codec_name,width,height,r_frame_rate,color_space,color_primaries,color_transfer,color_range', src
     ], { maxBuffer: 1024 * 1024 })
     s = (JSON.parse(stdout).streams || [])[0] || {}
   } catch { /* fall through to the heuristic */ }
@@ -432,6 +436,9 @@ async function probeColorTags(
   const fps = Number(num) / (Number(den) || 1)
   return {
     matrix: known(s.color_space),
+    primaries: known(s.color_primaries),
+    transfer: known(s.color_transfer),
+    codec: s.codec_name || '',
     range: known(s.color_range) === 'pc' ? 'pc' : 'tv',
     width: Number(s.width) || 0,
     height: Number(s.height) || 0,

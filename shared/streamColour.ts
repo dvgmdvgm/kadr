@@ -1,8 +1,8 @@
 // Which YUV matrix the preview's <video> uses for an H.264/HEVC stream — so the
 // exporter's WebCodecs frames can be re-wrapped to match it (card J9).
 // Pure — scripts/check-stream-colour.mjs runs it in plain node on real files.
-// HEVC reaches the same path: WebCodecs decodes it on this machine even though
-// the preview plays its proxy (src/engine/codecs.ts).
+// HEVC reaches the same path (the preview plays the original when the platform
+// decodes it — src/engine/codecs.ts, card J11).
 //
 // The two decoders disagree on anything not fully described (Chromium 148,
 // read in its source and measured on this app's own media table):
@@ -170,4 +170,40 @@ export function previewColour(entry: SampleEntryLike, height: number): ColourIni
     return p && t && m ? { primaries: p, transfer: t, matrix: m, fullRange: d!.fullRange } : null
   }
   return heightGuess(height)
+}
+
+/** ffmpeg's spelling of a colour space (-color_primaries / -color_trc / -colorspace) */
+export interface FfColour { primaries: string; trc: string; space: string }
+
+const FF601: FfColour = { primaries: 'smpte170m', trc: 'smpte170m', space: 'smpte170m' }
+const FF709: FfColour = { primaries: 'bt709', trc: 'bt709', space: 'bt709' }
+const known = (v?: string) => !!v && v !== 'unknown' && v !== 'reserved' && v !== 'unspecified'
+
+/**
+ * The space a PROXY must be tagged with to show like its source (card J11). A
+ * proxy is ≤540 lines, so left untagged the element guesses BT.601 for it —
+ * an HD source shown BT.709 played shifted whenever proxies were on. The input
+ * is ffprobe's view of the source (what Chromium's demuxer reads too):
+ * fully described → copied; an HDR source's tone map writes BT.709; VP8/VP9/AV1
+ * are left untagged (the element shows untagged VP9 BT.601 at any height —
+ * measured — so an untagged proxy already matches); everything else gets the
+ * height guess by the SOURCE's height (H.264/HEVC as the element shows them,
+ * undecodable codecs as their export intermediate is re-wrapped).
+ */
+// ponytail: AV1 is grouped with VP9 unmeasured; measure an untagged HD AV1 if one turns up
+export function proxyColour(s: { codec?: string; height: number; space?: string; primaries?: string; transfer?: string; hdr?: boolean }): FfColour | null {
+  if (s.hdr) return FF709
+  if (known(s.space) && known(s.primaries) && known(s.transfer)) return { primaries: s.primaries!, trc: s.transfer!, space: s.space! }
+  if (s.codec === 'vp8' || s.codec === 'vp9' || s.codec === 'av1') return null
+  return s.height < 720 ? FF601 : FF709
+}
+
+/** the filter (append after the scale) and output flags that write `c` in full;
+    without setparams ffmpeg writes the matrix alone, which the element ignores */
+export function proxyColourArgs(c: FfColour | null): { vf: string; out: string[] } {
+  if (!c) return { vf: 'null', out: [] }
+  return {
+    vf: `setparams=color_primaries=${c.primaries}:color_trc=${c.trc}:colorspace=${c.space}`,
+    out: ['-color_primaries', c.primaries, '-color_trc', c.trc, '-colorspace', c.space]
+  }
 }

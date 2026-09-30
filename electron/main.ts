@@ -4,7 +4,7 @@ import { promises as fs, createReadStream, statSync, existsSync, appendFileSync 
 import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
-  probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
+  probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan, probeColorTags,
   ExportMuxer, RawVideoEncoder, meanVolume, detectScenes, probeBasic, configureFfmpeg, detectEncoders,
   makeSequence, sequenceHasAlpha
 } from './ffmpeg'
@@ -27,6 +27,7 @@ import { registerFragmentIpc, cancelFragmentRenders, stopAllCaptures, sweepRende
 import { applyGpuChoice, registerGpuIpc } from './gpu'
 import { registerModelIpc } from './models'
 import { sourceHdr, hdrLut, hdrFilter, fragmentMedia } from './hdr'
+import { proxyColour } from '@shared/streamColour'
 import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
 import { atomicWrite, sweepPartSidecars } from './atomicWrite'
 import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
@@ -443,9 +444,16 @@ async function requestProxy(
     } catch { /* still missing */ }
     const tmp = join(proxyDir(), `${key}.part.${ext}`)
     try {
+      // an H.264 proxy is tagged with the space the preview shows its SOURCE in (J11);
+      // the alpha proxy (VP9) stays as it was
+      let colour = null
+      if (!opts?.alpha) {
+        const t = await probeColorTags(srcPath)
+        colour = proxyColour({ codec: t.codec, height: t.height, space: t.matrix, primaries: t.primaries, transfer: t.transfer, hdr: !!hdr })
+      }
       await makeProxy(srcPath, tmp, duration, (p) => {
         win?.webContents.send('proxy:progress', { path: srcPath, progress: p })
-      }, opts)
+      }, { ...opts, colour })
       await fs.rename(tmp, out)
     } catch (err) {
       fs.unlink(tmp).catch(() => { /* nothing to clean */ })

@@ -35,9 +35,10 @@ export const projectKey = (projectPath: string): string =>
 /** proxies: an alpha proxy is a different artefact (webm), so a different key;
     an HDR source's proxy is tone-mapped to SDR (shared/hdr.ts) — ':sdr' plus
     the conversion's generation, so neither a proxy built before that existed
-    nor one made with an older curve is taken for the current one */
+    nor one made with an older curve is taken for the current one; ':c' = tagged with
+    its source's colour space (J11) — an untagged proxy showed an HD source BT.601 */
 const SDR = `:sdr${HDR_VERSION > 1 ? HDR_VERSION : ''}`
-export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : sdr ? SDR : '')
+export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : (sdr ? SDR : '') + ':c')
 
 /** decoded: packed colour+matte, plain alpha, an HDR source tone-mapped, or none of these */
 export const decodedSuffix = (opts?: { alpha?: boolean; packed?: boolean; sdr?: boolean }) =>

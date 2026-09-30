@@ -58,7 +58,8 @@ mixes audio and muxes/transcodes per preset.
   `check-proxy-choice.mjs` (H7: the bin's per-asset «Прокси: авто / всегда
   / никогда» — `MediaAsset.proxyMode`, `shared/proxyChoice.ts` — overrides
   the global toggle and threshold both ways, except that an undecodable
-  codec keeps its proxy);
+  codec keeps its proxy; J11: HEVC Main/Main10 is decodable when the
+  platform's `canPlayType` says so);
   `check-collect.mjs` (H8: «Собрать проект» copies every path kind — media,
   transcripts, voice-over scripts and run folders, reversed renders, downloads
   and frame-run intermediates — into `<project>/media/` and rewrites them;
@@ -116,7 +117,8 @@ mixes audio and muxes/transcodes per preset.
   (the HDR → SDR maths and ffmpeg's own filter chain against the formula);
   `check-stream-colour.mjs` wants ffmpeg (J9: an H.264/HEVC stream's colour
   description read from the SPS VUI and the colr box, mapped to the matrix
-  the preview's `<video>` uses — the export re-wraps its frames by it);
+  the preview's `<video>` uses — the export re-wraps its frames by it; J11:
+  the tags a proxy is written with);
   `check-decode-determinism.mjs` wants ffmpeg (J10: the real
   `Mp4FrameSource` under node with a reordering fake decoder — every sample
   of a B-frame intermediate is fed once, in decode order, and frame k comes
@@ -208,7 +210,11 @@ mixes audio and muxes/transcodes per preset.
   (`app:open-project`; the launch's own `.kadr` is fetched once over
   `app:argv-project`). Test: `node scripts/check-argv-project.mjs`.
 - `electron/ffmpeg.ts` — ffprobe probing (+ thumbnails + peak/RMS waveform
-  bins), `makeProxy` (540p preview proxies), `makeReversed` (backwards
+  bins), `makeProxy` (540p preview proxies — J11: TAGGED IN FULL with the
+  space the preview shows the source in, `proxyColour` in
+  `shared/streamColour.ts`; left untagged, ≤540 lines fell under the
+  element's height guess and an HD source played BT.601 whenever proxies were
+  on; `:c` in the proxy key rebuilds the old untagged ones), `makeReversed` (backwards
   render of a clip's source range, RAM-bounded chunks), `ExportMuxer`
   (per-segment `volume,atempo*,afade,adelay,asetpts,apad,atrim` → `amix`
   with exact level compensation), `RawVideoEncoder` (fallback raw-frame

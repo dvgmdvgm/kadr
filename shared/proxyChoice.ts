@@ -42,3 +42,22 @@ export function playsProxy(a: Asset, env: Omit<ProxyEnv, 'minSide'>): boolean {
   if (env.sourceQuality) return false
   return a.proxyMode === 'always' || env.proxies
 }
+
+const ALWAYS = new Set(['h264', 'vp8', 'vp9', 'av1'])
+/** HEVC profiles by pixel format — the codec string the platform is asked about */
+const HEVC: Record<string, string> = { yuv420p: 'hvc1.1.6.L93.B0', yuvj420p: 'hvc1.1.6.L93.B0', yuv420p10le: 'hvc1.2.4.L93.B0' }
+
+/**
+ * The preview can show this video's original (card J11). HEVC used to be a
+ * static «no», so every HEVC clip — the snapshot too — played its crf-23 540p
+ * proxy while the export read the original. Now the platform is asked for the
+ * stream's profile; a format outside Main/Main10 (4:2:2, 4:4:4) or an asset
+ * probed before `pixFmt` existed keeps its proxy, as before (the platform
+ * answers «probably» for Rext too, so its word alone is not enough).
+ * Unknown codec (old projects probed before the field existed) → assume yes.
+ */
+export function chromiumDecodes(a: { codec?: string; pixFmt?: string }, canPlay: (mime: string) => boolean): boolean {
+  if (!a.codec || ALWAYS.has(a.codec)) return true
+  const profile = a.codec === 'hevc' && a.pixFmt ? HEVC[a.pixFmt] : undefined
+  return !!profile && canPlay(`video/mp4; codecs="${profile}"`)
+}

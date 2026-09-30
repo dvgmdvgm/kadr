@@ -39,7 +39,7 @@ const SORT_LABEL = { added: 'binSortAdded', name: 'binSortName', duration: 'binS
 function scrubSrc(a: MediaAsset, offline: boolean): string | null {
   if (a.kind !== 'video' || offline || !(a.duration > 0)) return null
   if (a.proxyPath) return window.kadr.fileUrl(a.proxyPath)
-  return chromiumCanDecode(a.codec) && !a.hdr ? window.kadr.fileUrl(a.path) : null
+  return chromiumCanDecode(a) && !a.hdr ? window.kadr.fileUrl(a.path) : null
 }
 
 /** the one decoder of the bin: exists only while a tile is hovered, seeks to the pointer
@@ -456,7 +456,7 @@ export function MediaBin() {
       for (const x of change) st.updateAsset(x.id, { proxyMode: m === 'auto' ? undefined : m })
     }
     // an undecodable codec has no original the preview could show
-    const undecodable = !chromiumCanDecode(a.codec)
+    const undecodable = !chromiumCanDecode(a)
     return (
       <CtxMenu x={menu.x} y={menu.y} className="bin-menu">
         {a.hasAudio && (

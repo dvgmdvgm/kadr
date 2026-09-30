@@ -19,7 +19,7 @@ import { createFile } from 'mp4box'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const src = readFileSync(join(root, 'shared', 'streamColour.ts'), 'utf8')
 const js = transformSync(src, { loader: 'ts', format: 'esm' }).code
-const { avcSpsColour, previewColour } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
+const { avcSpsColour, previewColour, proxyColour, proxyColourArgs } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -114,6 +114,39 @@ try {
     const got = previewColour(entry, height)
     check(name, same(got, want), `got ${show(got)}, want ${show(want)}`)
   }
+
+  // 3 — card J11: a 540p proxy of an HD source falls under the element's height guess
+  // (< 720 → BT.601) while the source shows BT.709. The proxy carries the source's space
+  // in full (setparams + tags — ffmpeg drops primaries/trc without setparams).
+  const P709 = { primaries: 'bt709', trc: 'bt709', space: 'bt709' }
+  const P601 = { primaries: 'smpte170m', trc: 'smpte170m', space: 'smpte170m' }
+  const pc = [
+    ['untagged HD H.264 → BT.709', { codec: 'h264', height: 720 }, P709],
+    ['untagged SD H.264 → BT.601', { codec: 'h264', height: 480 }, P601],
+    ['matrix-only BT.709 SD → BT.601 (guessed, as the element does)', { codec: 'h264', height: 480, space: 'bt709' }, P601],
+    ['fully tagged BT.601 HD → copied', { codec: 'h264', height: 1080, space: 'smpte170m', primaries: 'smpte170m', transfer: 'smpte170m' }, P601],
+    ['fully tagged bt470bg SD → copied verbatim', { codec: 'h264', height: 576, space: 'bt470bg', primaries: 'bt470bg', transfer: 'gamma28' }, { primaries: 'bt470bg', trc: 'gamma28', space: 'bt470bg' }],
+    ['untagged HD HEVC → BT.709', { codec: 'hevc', height: 1080 }, P709],
+    ['untagged HD ProRes → BT.709 (its export intermediate is guessed the same way)', { codec: 'prores', height: 1080 }, P709],
+    ['untagged HD VP9 → untagged proxy (the element shows VP9 BT.601 at any height)', { codec: 'vp9', height: 720 }, null],
+    ['HDR → BT.709 (the tone map writes BT.709)', { codec: 'hevc', height: 2160, hdr: true, space: 'bt2020nc', primaries: 'bt2020', transfer: 'arib-std-b67' }, P709]
+  ]
+  for (const [name, input, want] of pc) {
+    let got
+    try { got = proxyColour(input) } catch (e) { got = String(e) }
+    check(`proxy: ${name}`, same(got, want), `got ${JSON.stringify(got)}`)
+  }
+  // …and the args really write it: an untagged HD file's proxy is fully described in its SPS,
+  // so both decoders obey it instead of guessing by the proxy's 540 lines
+  try {
+    const px = join(dir, 'proxy.mp4')
+    const a = proxyColourArgs(proxyColour({ codec: 'h264', height: 720 }))
+    ff(['-i', f.hdNone, '-vf', `scale=-2:'min(540,ih)',${a.vf}`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', ...a.out, '-movflags', '+faststart', px])
+    const d = sps(px)
+    check('proxy of untagged HD: SPS says BT.709 in full (1/1/1)', d && d.primaries === 1 && d.transfer === 1 && d.matrix === 1, JSON.stringify(d))
+    const { entry, height } = entryOf(px)
+    check('proxy of untagged HD: the preview shows it in the decoder\'s own (BT.709), not the 540p guess', previewColour(entry, height) === null)
+  } catch (e) { check('proxy args', false, String(e)) }
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

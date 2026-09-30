@@ -21,7 +21,7 @@ export function proxyEnv(a: MediaAsset): ProxyEnv {
   return {
     proxies: setting('playback.proxies') === true,
     minSide: setting<number>('playback.proxyMinSide'),
-    canDecode: chromiumCanDecode(a.codec)
+    canDecode: chromiumCanDecode(a)
   }
 }
 

@@ -261,7 +261,7 @@ export class MediaPool {
     // with proxies switched off, only a source that cannot be shown right still plays its proxy
     // the bin's per-asset choice (H7) overrides the global toggle both ways
     const useProxy = !override && this.opts.proxy && !!asset.proxyPath && playsProxy(asset, {
-      proxies: previewPrefs.proxies, canDecode: chromiumCanDecode(asset.codec),
+      proxies: previewPrefs.proxies, canDecode: chromiumCanDecode(asset),
       sourceQuality: this.sourceQuality
     })
     const url = window.kadr.fileUrl(override ?? (useProxy ? asset.proxyPath! : asset.path))

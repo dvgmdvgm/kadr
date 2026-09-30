@@ -690,8 +690,9 @@ function intermediateFallback(asset: MediaAsset): Promise<MediaAsset | null> {
     p = (async () => {
       const { codec, hasAlpha, rotation, hdr } = await videoTraits(asset)
       const turned = !!rotation && rotation % 360 !== 0
-      if (chromiumCanDecode(codec) && !turned && !hdr) return null
-      const why = !chromiumCanDecode(codec) ? `'${codec}' is not decodable by Chromium`
+      const decodes = chromiumCanDecode({ codec, pixFmt: asset.pixFmt })
+      if (decodes && !turned && !hdr) return null
+      const why = !decodes ? `'${codec}' is not decodable by Chromium`
         : turned ? `it is shown rotated ${rotation}°` : `it is HDR (${hdr})`
       console.info(`[kadr] ${asset.name}: ${why} — building a ${hasAlpha ? 'VP9+alpha' : 'H.264'} intermediate`)
       const path = await window.kadr.requestDecoded(asset.path, asset.duration,

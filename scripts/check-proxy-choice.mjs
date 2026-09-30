@@ -71,5 +71,24 @@ run('what the choice cannot override', () => {
   check('source quality: HDR keeps the proxy', playsProxy(video({ hdr: 'hlg' }), { ...on, ...sq }) === true)
 })
 
+// card J11: HEVC is decodable when the PLATFORM says so for the stream's profile —
+// a static «no» sent every HEVC clip to its crf-23 540p proxy (the snapshot too)
+run('which codecs the preview decodes (J11)', () => {
+  const { chromiumDecodes } = mod
+  const asked = []
+  const yes = (mime) => { asked.push(mime); return true }
+  const no = () => false
+  check('h264 always', chromiumDecodes({ codec: 'h264' }, no) === true)
+  check('unknown codec (old project) → assume yes', chromiumDecodes({}, no) === true)
+  check('prores never', chromiumDecodes({ codec: 'prores', pixFmt: 'yuv422p10le' }, yes) === false)
+  check('HEVC Main, platform yes → decodable', chromiumDecodes({ codec: 'hevc', pixFmt: 'yuv420p' }, yes) === true)
+  check('…asked for the Main profile', asked.at(-1)?.includes('hvc1.1.'), asked.at(-1))
+  check('HEVC Main10, platform yes → decodable', chromiumDecodes({ codec: 'hevc', pixFmt: 'yuv420p10le' }, yes) === true)
+  check('…asked for Main10', asked.at(-1)?.includes('hvc1.2.'), asked.at(-1))
+  check('HEVC, platform no → proxy', chromiumDecodes({ codec: 'hevc', pixFmt: 'yuv420p' }, no) === false)
+  check('HEVC 4:2:2 (Rext) → proxy even when the platform says yes', chromiumDecodes({ codec: 'hevc', pixFmt: 'yuv422p10le' }, yes) === false)
+  check('HEVC probed before pixFmt existed → proxy, as before', chromiumDecodes({ codec: 'hevc' }, yes) === false)
+})
+
 console.log(fails ? `\n${fails} FAILED` : '\nall PASS')
 process.exit(fails ? 1 : 0)
