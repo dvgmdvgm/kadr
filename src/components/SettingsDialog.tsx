@@ -355,8 +355,20 @@ function Editing({ t }: { t: T }) {
       <Row label={t('setTrackH')} keys={['editing.trackHeight']} shown="56 px" unit="px">
         <Num k="editing.trackHeight" label={t('setTrackH')} step={1} />
       </Row>
+      <Row label={t('setSnap')} keys={['editing.snap']} shown={t('setOn')}>
+        <Check k="editing.snap" label={t('setSnap')} />
+      </Row>
       <Row label={t('setSnapR')} keys={['editing.snapRadius']} shown="10 px" unit="px">
         <Num k="editing.snapRadius" label={t('setSnapR')} step={1} />
+      </Row>
+      <Row label={t('setSnapEdges')} keys={['editing.snapEdges']} shown={t('setOn')}>
+        <Check k="editing.snapEdges" label={t('setSnapEdges')} />
+      </Row>
+      <Row label={t('setSnapPlayhead')} keys={['editing.snapPlayhead']} shown={t('setOn')}>
+        <Check k="editing.snapPlayhead" label={t('setSnapPlayhead')} />
+      </Row>
+      <Row label={t('setSnapMarkers')} keys={['editing.snapMarkers']} shown={t('setOn')}>
+        <Check k="editing.snapMarkers" label={t('setSnapMarkers')} />
       </Row>
       <Row label={t('setSnapBeats')} keys={['editing.snapBeats']} shown={t('setOn')}>
         <Check k="editing.snapBeats" label={t('setSnapBeats')} />

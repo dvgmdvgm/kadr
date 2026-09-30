@@ -310,8 +310,9 @@ mixes audio and muxes/transcodes per preset.
   a centred window of width W crosses −6 dB of a step W/4 early. Not fixed by
   it: places where the tracker loses its phase outright.
   Beats are markers (`TimelineMarker.kind = 'beat'`) drawn as thin lines;
-  `snapPoints` includes every marker (beats unless the magnet is off,
-  `useSettings.snapBeats`) and takes marker ids in `exclude`.
+  `snapPoints` includes every target the magnet's menu leaves on (`editing.snapEdges/
+  Playhead/Markers/Beats`) and takes marker ids in `exclude`; `snapTo` applies the
+  radius and reads the magnet itself (`editing.snap`, N) live, so N mid-drag works.
   `src/engine/audioReact.ts` bakes the sound under a fragment into
   `audio.json` + `audio.ts` in its folder (per composition frame; τ plays at
   `clip.start + (τ − inPoint)/speed`; ±8 s of context for a steady tempo);

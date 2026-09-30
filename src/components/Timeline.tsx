@@ -4,7 +4,7 @@ import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
 import type { AudioDefect, Clip, MediaAsset, TimelineMarker, Track } from '@shared/types'
 import {
-  useEditor, useSettings, projectDuration, snapPoints, findClip, withLinked, MAX_ZOOM, setting
+  useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, setting
 } from '@/state/store'
 
 /** «Скорость клипа — перетаскивание с»: the modifier that turns an edge drag into a speed change */
@@ -92,19 +92,9 @@ function tickLabel(t: number): string {
   return `${parseFloat(t.toFixed(2))}s`
 }
 
-function snapTime(t: number, points: number[], zoom: number): number {
-  const threshold = snapRadius(zoom)
-  let best = t
-  let bestD = threshold
-  for (const p of points) {
-    const d = Math.abs(p - t)
-    if (d < bestD) {
-      bestD = d
-      best = p
-    }
-  }
-  return best
-}
+/** Ctrl pressed DURING a drag lets go of the magnet while it is held (see Timeline's effect) */
+let snapFree = false
+const snapTime = (t: number, points: number[], zoom: number) => (snapFree ? t : snapTo(t, points, zoom))
 
 /** window-level drag helper: calls move(dx, ev) until pointerup */
 function windowDrag(
@@ -310,6 +300,31 @@ export function Timeline({ height }: { height: number }) {
   useEffect(() => {
     if (zoomSliderRef.current) zoomSliderRef.current.value = String(Math.log(zoom))
   }, [zoom])
+  // Ctrl PRESSED during a drag frees it from the magnet while held. Ctrl held
+  // BEFORE the press already means speed / roll / toggle-select, and its
+  // auto-repeat is ignored, so those gestures keep snapping as before.
+  useEffect(() => {
+    let down = false
+    const press = () => { down = true }
+    const release = () => { down = false; snapFree = false }
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Control') return
+      if (e.type === 'keyup') snapFree = false
+      else if (down && !e.repeat) snapFree = true
+    }
+    window.addEventListener('pointerdown', press, true)
+    window.addEventListener('pointerup', release, true)
+    window.addEventListener('pointercancel', release, true)
+    window.addEventListener('keydown', key, true)
+    window.addEventListener('keyup', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', press, true)
+      window.removeEventListener('pointerup', release, true)
+      window.removeEventListener('pointercancel', release, true)
+      window.removeEventListener('keydown', key, true)
+      window.removeEventListener('keyup', key, true)
+    }
+  }, [])
   const view = useMemo(() => ({ start: sv.left / zoom, end: (sv.left + sv.width - HEADER_W) / zoom }), [sv, zoom])
   const [menu, setMenu] = useState<MenuState | null>(null)
 
@@ -1072,24 +1087,51 @@ function EventTicks({ track }: { track: Track }) {
   )
 }
 
-/** «Биты» — opens the beat dialog; the magnet next to it toggles snapping to them. */
+const SNAP_TARGETS = [
+  ['editing.snapEdges', 'snapEdges'],
+  ['editing.snapPlayhead', 'snapPlayhead'],
+  ['editing.snapMarkers', 'snapMarkers'],
+  ['editing.snapBeats', 'snapBeatsT']
+] as const
+
+/** «Биты» — opens the beat dialog; the magnet next to it is the timeline's
+    snapping (N), and its right-click menu picks what snaps. */
 function BeatButtons() {
   const t = useT()
   const busy = useBeatsUi((s) => s.busy)
-  const hasBeats = useEditor((s) => (s.project.markers ?? []).some((m) => m.kind === 'beat'))
-  const snap = useSettings((s) => s.snapBeats)
+  useSettings((s) => s.snap) // re-render on any settings change
+  const snap = setting<boolean>('editing.snap')
+  const on = SNAP_TARGETS.map(([k]) => setting<boolean>(k))
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!menu) return
+    const off = () => setMenu(null)
+    window.addEventListener('pointerdown', off)
+    return () => window.removeEventListener('pointerdown', off)
+  }, [menu])
   return (
     <>
       <button data-act="beats" title={t('beatsButtonHint')}
               onClick={() => useBeatsUi.getState().setOpen(true)}>
         {busy ? <Spinner /> : <Icon name="beat" />} {t('beatsButton')}
       </button>
-      {hasBeats && (
-        <button className="icon-only beat-snap" data-act="beat-snap"
-                title={t('beatSnap')} aria-label={t('beatSnap')} aria-pressed={snap}
-                onClick={() => useSettings.getState().setSnapBeats(!snap)}>
-          <Icon name="magnet" />
-        </button>
+      <button className="icon-only beat-snap" data-act="tl-snap"
+              title={t('snapHint')} aria-label={t('actSnap')} aria-pressed={snap}
+              onClick={() => useSettings.getState().set('editing.snap', !snap)}
+              onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }) }}>
+        <Icon name="magnet" />
+      </button>
+      {menu && (
+        <CtxMenu x={menu.x} y={menu.y}>
+          <div className="ctx-title dim">{t('snapTargets')}</div>
+          {SNAP_TARGETS.map(([k, label], i) => (
+            <button key={k} data-act={`snap-${label}`} role="menuitemcheckbox" aria-checked={on[i]}
+                    onClick={() => useSettings.getState().set(k, !on[i])}>
+              <span className="ctx-check">{on[i] && <Icon name="check" size={13} />}</span>
+              {t(label)}
+            </button>
+          ))}
+        </CtxMenu>
       )}
     </>
   )

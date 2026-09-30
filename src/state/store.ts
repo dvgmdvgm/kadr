@@ -504,10 +504,10 @@ export function withLinked(p: Project, ids: string[]): string[] {
 }
 
 /**
- * Snap targets for dragging: edges of all clips, the playhead, the user's
- * markers, and — unless switched off (the magnet next to «Биты») — the detected
- * beats. `exclude` takes clip AND marker ids (a dragged marker must not stick
- * to where it started).
+ * Snap targets for dragging, each switchable in the magnet's menu: edges of all
+ * clips (and 0), the playhead, the user's markers, the detected beats.
+ * `exclude` takes clip AND marker ids (a dragged marker must not stick to where
+ * it started). The magnet itself (N) is read live by `snapTo`, so N mid-drag works.
  */
 export function snapPoints(
   p: Project,
@@ -515,9 +515,13 @@ export function snapPoints(
   playhead: number,
   beats: boolean = useSettings.getState().snapBeats
 ): number[] {
+  const on = (k: SettingKey) => setting<boolean>(k)
   const ex = Array.isArray(exclude) ? exclude : [exclude]
-  const pts = [0, playhead]
-  for (const t of p.tracks) {
+  const edges = on('editing.snapEdges')
+  const marks = on('editing.snapMarkers')
+  const pts = edges ? [0] : []
+  if (on('editing.snapPlayhead')) pts.push(playhead)
+  for (const t of edges ? p.tracks : []) {
     for (const c of t.clips) {
       if (ex.includes(c.id)) continue
       pts.push(c.start, c.start + c.duration)
@@ -525,12 +529,30 @@ export function snapPoints(
   }
   for (const m of p.markers ?? []) {
     if (ex.includes(m.id)) continue
-    if (isMusicMarker(m) && !beats) continue
+    if (isMusicMarker(m) ? !beats : !marks) continue
     pts.push(m.time)
     // a pause is snapped to at both ends (a cut lands where the music returns)
     if (m.kind === 'pause' && m.end !== undefined) pts.push(m.end)
   }
   return pts
+}
+
+/**
+ * The nearest point within «Радиус прилипания» (screen px → seconds at `zoom`),
+ * else `t`. Nothing snaps while the magnet (N) is off.
+ */
+export function snapTo(t: number, points: number[], zoom: number): number {
+  if (!setting<boolean>('editing.snap')) return t
+  let best = t
+  let bestD = setting<number>('editing.snapRadius') / zoom
+  for (const p of points) {
+    const d = Math.abs(p - t)
+    if (d < bestD) {
+      bestD = d
+      best = p
+    }
+  }
+  return best
 }
 
 interface SettingsState {

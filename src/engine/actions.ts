@@ -3,7 +3,7 @@
 // keydown handler App.tsx installs. Every hotkey used to be a branch of one
 // if/else in App.tsx that ignored modifiers (Ctrl+D deleted clips).
 import { create } from 'zustand'
-import { useEditor, projectDuration } from '../state/store'
+import { useEditor, useSettings, projectDuration, setting } from '../state/store'
 import {
   ACTIONS, actionFor, keymapDiff, keysOf, ownsKeys, sanitizeKeymap,
   type ActionId, type KeyChord, type KeymapDiff
@@ -53,6 +53,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   'transport.reverse': { run: (s) => { if (stopHeld) s.setPlayhead(s.playhead - 1 / s.project.fps); else s.shuttle(-1) } },
   'transport.stop': { run: (s) => s.setPlaying(false) },
   'transport.loop': { run: (s) => s.toggleLoop() },
+  'edit.snap': { run: () => useSettings.getState().set('editing.snap', !setting<boolean>('editing.snap')) },
   'transport.playInOut': { run: (s) => s.playInOut() },
   'edit.split': { run: (s) => s.splitAtPlayhead() },
   'file.save': { run: () => appCommands.save() },

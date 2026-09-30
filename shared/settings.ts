@@ -58,6 +58,12 @@ export const SETTINGS = {
   'editing.splitScope': { type: 'enum', options: ['selection', 'all'], default: 'selection', section: 'editing' },
   /** uniform lane height for all tracks, px */
   'editing.trackHeight': { type: 'number', min: 32, max: 140, default: 56, section: 'editing', legacy: 'kadr.trackh' },
+  /** the timeline magnet (N): off = nothing snaps */
+  'editing.snap': { type: 'boolean', default: true, section: 'editing' },
+  /** snap targets: clip edges (and the timeline start), the playhead, the user's markers */
+  'editing.snapEdges': { type: 'boolean', default: true, section: 'editing' },
+  'editing.snapPlayhead': { type: 'boolean', default: true, section: 'editing' },
+  'editing.snapMarkers': { type: 'boolean', default: true, section: 'editing' },
   /** clips, the range and markers snap to detected beats */
   'editing.snapBeats': { type: 'boolean', default: true, section: 'editing', legacy: 'kadr.snapBeats' },
   /** «Подтверждать удаление»: deleting a track with clips asks first */

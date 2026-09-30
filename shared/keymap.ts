@@ -47,6 +47,7 @@ export const ACTIONS = [
   { id: 'edit.trimStart', labelKey: 'actTrimStart', context: g, defaultKeys: [k('KeyQ')] },
   { id: 'edit.trimEnd', labelKey: 'actTrimEnd', context: g, defaultKeys: [k('KeyW')] },
   { id: 'edit.link', labelKey: 'actLink', context: g, defaultKeys: [k('KeyU')] },
+  { id: 'edit.snap', labelKey: 'actSnap', context: g, defaultKeys: [k('KeyN')] },
   { id: 'marker.add', labelKey: 'actMarker', context: g, defaultKeys: [k('KeyM')] },
   { id: 'playhead.prevFrame', labelKey: 'actPrevFrame', context: g, defaultKeys: [k('ArrowLeft')], prevent: true },
   { id: 'playhead.nextFrame', labelKey: 'actNextFrame', context: g, defaultKeys: [k('ArrowRight')], prevent: true },
