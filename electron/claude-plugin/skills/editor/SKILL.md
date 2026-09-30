@@ -42,14 +42,23 @@ rhythm, readability or physical sense — not a technical failure. So:
 
 ## LOOK
 
-- `kadr_state` — the structure: tracks (index 0 = topmost video track),
-  clips ({start, duration, inPoint, speed, gain, transform, effects,
-  transitions}), assets with absolute file paths, texts (SRT/TXT docs you can
-  Read/Edit as files), markers (the user's numbered timeline anchors — respect
-  them as reference points; add your own via addMarker(sec) when it helps;
-  `kind:"beat"|"section"|"pause"` markers are the music map, not the user's).
-  All times are seconds. Asset waveform/thumbnail blobs are stripped; never
-  echo whole project objects back (results cap at 4 MB).
+- `kadr_state` — the structure, in two steps. With no arguments it is a
+  SUMMARY (project size/fps/duration, playhead, range, selection, every track
+  with its clip count and span, counts of assets, markers by kind, texts,
+  voice defects) — read it first, always. Then take SLICES of what the task
+  touches: `tracks: ["V1"]` (that track whole: clips {start, duration,
+  inPoint, speed, gain, transform, effects, transitions}), `range: {start,
+  end}` (the clips overlapping it), `fields: [...]` (assets with absolute
+  file paths, texts — SRT/TXT docs you can Read/Edit as files, markers — the
+  user's numbered anchors, respect them; `kind:"beat"|"section"|"pause"` ones
+  are the music map — and meta, bins, voiceRuns, defects, voiceDefects,
+  selection, exportPresets). A reply is never cut: one over 100 KB is refused
+  and names a narrower slice — take it. All times are seconds. Asset
+  waveform/thumbnail blobs are stripped; never echo whole project objects
+  back from kadr_eval (a result over 4 MB is refused). Every tool has a
+  deadline (60 s; the long ones 30 min; kadr_eval takes `timeoutSec`): a
+  «timed out» error means the page may still be running it — look with
+  kadr_state before retrying.
 - `kadr_snapshot` — your eyes: renders the WYSIWYG frame at time t to a PNG
   at source quality (originals decoded, fragments included — heavy 3D too: it
   waits until the fragment has really drawn that frame) and returns its path —
@@ -95,7 +104,7 @@ rhythm, readability or physical sense — not a technical failure. So:
 - Fragments: `kadr_check` (see kadr:motion) before showing the user.
 - After audio edits: for exact numbers export a short range with the mp3
   preset and run ffmpeg loudnorm measurement on it.
-- After timeline restructuring: `kadr_state` again — confirm starts,
+- After timeline restructuring: `kadr_state({tracks})` on the tracks you touched — confirm starts,
   durations and track placement; overlapping audio on one track crossfades
   automatically, overlapping video on one track becomes a transition.
 - "Why didn't that work?" — the session log is on `window.kadrEditor`
@@ -168,7 +177,7 @@ runs.
 |---|---|---|
 | `project.markers` | the user's own anchors, green flags over ALL tracks | `{id, time, label}`, timeline seconds |
 | `project.markers` with `kind:"beat"/"section"/"pause"` | the music map (kadr_beats) | timeline seconds |
-| `range` | the blue in/out fragment (Shift+drag), transient, never saved | not in kadr_state at all |
+| `range` | the blue in/out fragment (Shift+drag), transient, never saved | `range` in the kadr_state summary (not the `range` argument) |
 | `project.defects` | a suspected flaw INSIDE one voice-over clip, violet striped band | `src`/`phrase` in SOURCE seconds of that clip's asset |
 
 Rules that matter:
@@ -179,7 +188,7 @@ Rules that matter:
   These verdicts are also training data for the detector: guessing on their
   behalf teaches it something false.
 - To seek to a defect, use `voiceDefects[].timeline` / `phraseTimeline` from
-  `kadr_state`. Do NOT convert `src` yourself — clip `speed` and `inPoint` are
+  `kadr_state({fields: ["voiceDefects"]})`. Do NOT convert `src` yourself — clip `speed` and `inPoint` are
   in that conversion and getting it wrong points at the wrong second.
 - `phrase` is what a regeneration would replace: whole sentences, cut in the
   middle of the silence around them. `cut: ['silence', ...]` means the seam is

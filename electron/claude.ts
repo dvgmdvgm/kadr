@@ -40,7 +40,7 @@ const SYSTEM_HINT =
   'captions, motion graphics) that live as clips on the timeline — after creating one, edit ' +
   'its TSX entry file directly: the user sees your changes live in the preview, no rendering. ' +
   'Treat user requests as being about this project unless told otherwise. ' +
-  'Imported media file paths are in kadr_state assets — you may read those files ' +
+  'Imported media file paths are in kadr_state({fields: ["assets"]}) — you may read those files ' +
   'directly; the system ffmpeg/ffprobe are available for media work. ' +
   'If other MCP tools can fetch or download media (stock search etc.), files they save ' +
   'can go straight into this project: import via kadr_eval (probeMedia → addAsset → ' +

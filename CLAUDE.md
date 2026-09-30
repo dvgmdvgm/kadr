@@ -77,6 +77,10 @@ mixes audio and muxes/transcodes per preset.
   Enter — project seconds and clip ids, control characters folded to
   spaces so a clip name cannot submit the prompt or end a bracketed paste;
   `src/engine/contextLine.ts`);
+  `check-state-slices.mjs` (I3: kadr_state's summary of a 2000-clip project
+  is small, a one-track slice is that track whole, the slices cover the
+  project exactly once, and the real bridge never cuts a reply and answers a
+  stuck eval with a timeout at the deadline);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -327,6 +331,19 @@ mixes audio and muxes/transcodes per preset.
   kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /
   kadr_audio_react / kadr_sounds / kadr_sound_add / kadr_sound_label /
   kadr_voice_*.
+  NO REPLY IS CUT (I3): a whole-project `kadr_state` outgrew a tool reply and
+  was sliced mid-JSON at 4 MB, which the agent read as a (wrong) whole. It is
+  now a SUMMARY by default (tracks with clip counts, marker counts by kind,
+  selection, playhead, range) and exact slices by `tracks` / `range` /
+  `fields` (`sliceState`, `src/engine/agentState.ts`); a slice over
+  `STATE_BUDGET` (100 KB of compact JSON) is REFUSED with a narrower range to
+  ask for, and any other tool's result over 4 MB is refused too, never cut.
+  EVERY CALL HAS A DEADLINE: 60 s (`KADR_MCP_TIMEOUT_MS`), 30 min for the long
+  tools (export, transcribe, voice, fragments, beats, checks, sheet, 3D
+  import), `kadr_eval` takes `timeoutSec` — /eval runs whatever the page
+  does, and a page that never answered hung the agent with it. The page code
+  keeps running after a timeout; the error says so. Test
+  `node scripts/check-state-slices.mjs` (the real bridge over MCP stdio).
 - `electron/transcribe.ts` + `scripts/transcribe.py` — faster-whisper
   runner (VAD, anti-hallucination thresholds and post-filters, NDJSON
   segments with word timestamps); audio comes from an ExportMuxer mixdown
