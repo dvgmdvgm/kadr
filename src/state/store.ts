@@ -26,6 +26,7 @@ const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) =>
 
 import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
+import { healBins, moveInto, dissolveBin } from '@shared/bins'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -124,6 +125,7 @@ export function sanitizeProject(p: Project): Project {
   if (!Number.isFinite(p.height) || p.height <= 0) p.height = 1080
   if (!Number.isFinite(p.fps) || p.fps <= 0) p.fps = 30
   p.assets ??= []
+  healBins(p)
   p.claudeChats = (p.claudeChats ?? []).filter((id) => typeof id === 'string' && id.length > 0)
   p.markers = (p.markers ?? []).filter(
     (m) => m && typeof m.id === 'string' && Number.isFinite(m.time)
@@ -915,6 +917,13 @@ interface EditorState {
   /** Remove media files from the bin AND every timeline clip that uses them
       (linked twins share the assetId) — one undo entry. */
   removeAssets(assetIds: string[]): void
+  /** H5 bin folders, one undo step each: a new folder (holding these assets) → its id;
+      rename; move assets/folders into a folder (null = root); delete a folder — what it
+      held goes to the root, never away (shared/bins.ts) */
+  addBin(name: string, parentId: string | null, assetIds: string[]): string
+  renameBin(id: string, name: string): void
+  moveToBin(assetIds: string[], binIds: string[], target: string | null): void
+  removeBin(id: string): void
   /** Point assets at other files (relink of offline media): each given asset
       replaces the one with its id — one undo entry. */
   relinkAssets(fresh: MediaAsset[]): void
@@ -1265,10 +1274,50 @@ export const useEditor = create<EditorState>((set, get) => ({
     get().pushHistory('hRelink')
     set((st) => {
       const p = cloneProject(st.project)
-      p.assets = p.assets.map((a) => byId.get(a.id) ?? a)
+      // a relinked file stays in its bin folder (H5); the fresh probe knows nothing of it
+      p.assets = p.assets.map((a) => {
+        const f = byId.get(a.id)
+        return !f ? a : a.binId ? { ...f, binId: a.binId } : f
+      })
       return { project: p }
     })
   },
+  addBin: (name, parentId, assetIds) => {
+    const id = uid()
+    get().pushHistory('hBinNew')
+    set((st) => {
+      const p = cloneProject(st.project)
+      p.bins = [...(p.bins ?? []), { id, name, parentId }]
+      moveInto(p, assetIds, [], id)
+      return { project: p }
+    })
+    return id
+  },
+  renameBin: (id, name) => {
+    const next = name.trim()
+    const b = get().project.bins?.find((x) => x.id === id)
+    if (!b || !next || b.name === next) return
+    get().pushHistory('hBinRename')
+    set((st) => {
+      const p = cloneProject(st.project)
+      p.bins!.find((x) => x.id === id)!.name = next
+      return { project: p }
+    })
+  },
+  moveToBin: (assetIds, binIds, target) => {
+    // tried on a copy first: a drop that moves nothing leaves no undo step
+    const p = cloneProject(get().project)
+    if (!moveInto(p, assetIds, binIds, target)) return
+    get().pushHistory('hBinMove')
+    set({ project: p })
+  },
+  removeBin: (id) => {
+    const p = cloneProject(get().project)
+    if (!dissolveBin(p, id)) return
+    get().pushHistory('hBinDelete')
+    set({ project: p })
+  },
+
   removeAssets: (assetIds) => {
     const ids = new Set(assetIds)
     const s = get()

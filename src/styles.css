@@ -851,6 +851,13 @@ progress::-webkit-progress-value {
 .bin-row:hover .bin-del { display: inline-flex; }
 @container (max-width: 519px) { .bin-c-codec { display: none; } }
 @container (max-width: 399px) { .bin-c-res, .bin-c-fps { display: none; } }
+/* H5: folders — a row in the list and a full-width row in the grid (children indent inline, by depth) */
+.bin-folder { color: var(--c-text); font-weight: 500; cursor: pointer; }
+.bin-folder .bin-c-name .ico { color: var(--c-text-3); vertical-align: -2px; }
+.bin-grid > .bin-folder { grid-column: 1 / -1; border-radius: var(--r1); }
+.bin-folder.drop { background: var(--c-accent-soft); box-shadow: inset 0 0 0 1px var(--c-accent); }
+.bin-list.drop, .bin-grid.drop { box-shadow: inset 0 0 0 1px var(--c-accent); }
+.bin-rename { width: calc(100% - var(--s7)); min-height: 20px; padding: 0 var(--s2); font: inherit; }
 .bin-confirm { max-width: 460px; }
 .bin-confirm p { margin: var(--s4) 0; font-size: var(--fz-md); line-height: 1.5; }
 

@@ -51,6 +51,17 @@ export interface MediaAsset {
   proxyPath?: string
   /** this asset is a reversed render of a source range of another asset */
   reverseOf?: { assetId: string; start: number; duration: number }
+  /** the bin folder it sits in (H5); absent = the bin's root */
+  binId?: string
+}
+
+/** a folder of the media bin (H5): only groups assets, never owns them —
+    deleting one moves what it held to the root */
+export interface BinFolder {
+  id: string
+  name: string
+  /** null = at the root */
+  parentId: string | null
 }
 
 export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold'
@@ -286,6 +297,8 @@ export interface Project {
   background: string
   tracks: Track[]
   assets: MediaAsset[]
+  /** the media bin's folders (H5) */
+  bins?: BinFolder[]
   /** transcripts and other text documents imported into the sources */
   texts?: TextDoc[]
   /** free-floating timeline markers (M key / addMarker), track-independent */

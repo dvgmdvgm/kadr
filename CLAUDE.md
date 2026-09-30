@@ -47,6 +47,10 @@ mixes audio and muxes/transcodes per preset.
   `check-bin-filter.mjs` (H4: the media bin's search — name and extension,
   any case — its stable sort, the «в деле» count with an A/V pair counted
   once, and «Неиспользуемые», all in `shared/binView.ts`);
+  `check-bins.mjs` (H5: the bin's folders, `Project.bins` + `MediaAsset.binId`
+  in `shared/bins.ts` — deleting a folder never deletes an asset, a parentId
+  cycle or a missing folder is healed on load, a folder never moves into
+  itself, and the rows the bin draws);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);

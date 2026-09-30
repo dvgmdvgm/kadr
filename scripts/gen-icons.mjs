@@ -35,7 +35,7 @@ const MAP = {
   square: 'square', circle: 'circle', triangle: 'triangle',
   image: 'image', film: 'film',
   arrowRight: 'arrow-right', download: 'download', save: 'save',
-  folderOpen: 'folder-open', filePlus: 'file-plus',
+  folder: 'folder', folderPlus: 'folder-plus', folderOpen: 'folder-open', filePlus: 'file-plus',
   settings: 'settings-2', search: 'search', crop: 'crop', layers: 'layers', atom: 'atom',
   transition: 'blend', junction: 'git-commit-horizontal',
   gauge: 'gauge', grip: 'grip-vertical', language: 'languages',

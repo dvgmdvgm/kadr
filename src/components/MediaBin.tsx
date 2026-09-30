@@ -12,9 +12,17 @@ import { RecentList } from './RecentProjects'
 import { useModelsUi, insertModelFragment, prepareForFragment } from '@/engine/models'
 import { chromiumCanDecode } from '@/engine/codecs'
 import { binView, usageCounts, BIN_SORTS, type BinSort } from '@shared/binView'
+import { binRows, newBinName, type BinRow } from '@shared/bins'
 import { fmtClock } from '@shared/exportEta'
 import { fpsLabel } from '@shared/projectFormat'
-import type { MediaAsset } from '@shared/types'
+import type { BinFolder, MediaAsset } from '@shared/types'
+
+const NO_BINS: BinFolder[] = []
+/** an in-bin drag (assets and/or folders) — never read by the timeline, which takes kadr/asset */
+const BIN_DRAG = 'kadr/bin-items'
+/** a row inside a folder steps in by one spacing token per level */
+const indent = (depth: number) =>
+  depth ? { paddingLeft: `calc(var(--s4) + ${depth} * var(--s5))` } : undefined
 
 /** a layout convenience remembered per machine (never state that must persist) */
 const pref = (k: string, dflt: string) => {
@@ -89,9 +97,22 @@ export function MediaBin() {
   const uses = useMemo(() => usageCounts(tracks), [tracks])
   const shown = useMemo(() => binView(assets, { query, sort, desc, unusedOnly }, uses),
     [assets, query, sort, desc, unusedOnly, uses])
-  const shownIds = useMemo(() => new Set(shown.map((a) => a.id)), [shown])
+  // H5: folders. Open/closed is a view state of this session, not an edit of the project
+  const bins = useEditor((s) => s.project.bins ?? NO_BINS)
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
+  const [editing, setEditing] = useState<string | null>(null)
+  const renameCancel = useRef(false)
+  const [confirmBin, setConfirmBin] = useState<{ bin: BinFolder; count: number } | null>(null)
+  const [dropOn, setDropOn] = useState<string | null>(null)
+  const filtering = !!query.trim() || unusedOnly
+  const rows = useMemo(() => binRows(bins, shown, assets, { collapsed, filtering }),
+    [bins, shown, assets, collapsed, filtering])
+  // what is on screen, top to bottom — a collapsed folder hides like a filter does
+  const visible = useMemo(() => rows.flatMap((r) => (r.kind === 'asset' ? [r.asset] : [])), [rows])
+  const shownIds = useMemo(() => new Set(visible.map((a) => a.id)), [visible])
   // a filter never lets hidden assets go with a selection-wide delete
   const shownSel = sel.filter((id) => shownIds.has(id))
+  const hasContent = assets.length > 0 || bins.length > 0
 
   async function importMedia() {
     const paths = await window.kadr.openMediaDialog()
@@ -112,14 +133,68 @@ export function MediaBin() {
     e.preventDefault()
     void importDrop(payload, null)
   }
+  // H5: an in-bin drag lands in the folder under the pointer — a folder row, or the folder
+  // of the asset it is over; anywhere else in the bin is the root
+  const dropTarget = (e: React.DragEvent): string | null => {
+    const el = e.target as Element
+    const bin = el.closest?.('[data-bin]')?.getAttribute('data-bin')
+    if (bin) return bin
+    const id = el.closest?.('[data-asset]')?.getAttribute('data-asset')
+    return (id && assets.find((a) => a.id === id)?.binId) || null
+  }
   const dropProps = {
     onDragOver: (e: React.DragEvent) => {
-      if (dragHasMedia(e)) {
+      if (e.dataTransfer.types.includes(BIN_DRAG)) {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'move'
+        const to = dropTarget(e) ?? ''
+        if (to !== dropOn) setDropOn(to)
+      } else if (dragHasMedia(e)) {
         e.preventDefault()
         e.dataTransfer.dropEffect = 'copy'
       }
     },
-    onDrop: onBinDrop
+    onDragLeave: (e: React.DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropOn(null)
+    },
+    onDrop: (e: React.DragEvent) => {
+      const raw = e.dataTransfer.getData(BIN_DRAG)
+      if (!raw) return onBinDrop(e)
+      e.preventDefault()
+      setDropOn(null)
+      try {
+        const { assets: a, bins: b } = JSON.parse(raw) as { assets: string[]; bins: string[] }
+        useEditor.getState().moveToBin(a, b, dropTarget(e))
+      } catch { /* not ours */ }
+    }
+  }
+  const dragItems = (e: React.DragEvent, items: { assets: string[]; bins: string[] }) =>
+    e.dataTransfer.setData(BIN_DRAG, JSON.stringify(items))
+
+  const toggleBin = (id: string) =>
+    setCollapsed((c) => {
+      const n = new Set(c)
+      if (!n.delete(id)) n.add(id)
+      return n
+    })
+  /** a new folder: with the shown selection in it, inside their folder when they share one */
+  const newFolder = () => {
+    const homes = new Set(shownSel.map((id) => assets.find((a) => a.id === id)?.binId ?? null))
+    const parent = homes.size === 1 ? [...homes][0] : null
+    if (!shownSel.length) resetFilter() // an empty folder would be hidden by a filter
+    const id = useEditor.getState().addBin(newBinName(bins, t('binNewFolder')), parent, shownSel)
+    if (parent) setCollapsed((c) => { const n = new Set(c); n.delete(parent); return n })
+    renameCancel.current = false
+    setEditing(id)
+  }
+  const finishRename = (id: string, value: string) => {
+    if (!renameCancel.current) useEditor.getState().renameBin(id, value)
+    renameCancel.current = false
+    setEditing(null)
+  }
+  const requestBinDelete = (bin: BinFolder, count: number) => {
+    if (count > 0 || bins.some((b) => b.parentId === bin.id)) setConfirmBin({ bin, count })
+    else useEditor.getState().removeBin(bin.id)
   }
 
   // click selects, Ctrl toggles, Shift extends from the last clicked item over the SHOWN order
@@ -127,7 +202,7 @@ export function MediaBin() {
     if (e.ctrlKey || e.metaKey) {
       setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
     } else if (e.shiftKey && lastClick.current) {
-      const order = shown.map((a) => a.id)
+      const order = visible.map((a) => a.id)
       const i0 = order.indexOf(lastClick.current)
       const i1 = order.indexOf(id)
       if (i0 >= 0 && i1 >= 0) {
@@ -167,8 +242,11 @@ export function MediaBin() {
     draggable: true,
     onDragStart: (e: React.DragEvent) => {
       e.dataTransfer.setData('kadr/asset', a.id)
-      e.dataTransfer.effectAllowed = 'copy'
+      // into a folder: the whole shown selection when the dragged one is part of it
+      dragItems(e, { assets: shownSel.length > 1 && shownSel.includes(a.id) ? shownSel : [a.id], bins: [] })
+      e.dataTransfer.effectAllowed = 'copyMove'
     },
+    onDragEnd: () => setDropOn(null),
     onClick: (e: React.MouseEvent) => clickTile(e, a.id),
     onDoubleClick: () => {
       const s = useEditor.getState()
@@ -277,8 +355,51 @@ export function MediaBin() {
     )
   }
 
-  const row = (a: MediaAsset) => (
-    <div key={a.id} className={itemClass('bin-row', a)} data-asset={a.id} {...itemProps(a)}>
+  const folderRow = (r: Extract<BinRow<MediaAsset>, { kind: 'bin' }>) => {
+    const b = r.bin
+    const renaming = editing === b.id
+    return (
+      <div key={`bin:${b.id}`} className={`bin-row bin-folder${dropOn === b.id ? ' drop' : ''}`} data-bin={b.id}
+           role="button" tabIndex={0} aria-expanded={r.open} title={t('binFolderHint')}
+           style={indent(r.depth)}
+           draggable={!renaming}
+           onDragStart={(e) => { dragItems(e, { assets: [], bins: [b.id] }); e.dataTransfer.effectAllowed = 'move' }}
+           onDragEnd={() => setDropOn(null)}
+           onClick={() => { if (!renaming) toggleBin(b.id) }}
+           onDoubleClick={() => { renameCancel.current = false; setEditing(b.id) }}
+           onKeyDown={(e) => {
+             if (renaming || e.target !== e.currentTarget) return
+             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleBin(b.id) }
+             else if (e.key === 'F2') { e.preventDefault(); renameCancel.current = false; setEditing(b.id) }
+           }}>
+        <Icon name={r.open ? 'chevronDown' : 'chevronRight'} size={13} />
+        <span className="bin-c-name">
+          <Icon name="folder" size={13} />{' '}
+          {renaming ? (
+            <input className="bin-rename" autoFocus defaultValue={b.name} aria-label={t('binFolderName')}
+                   onFocus={(e) => e.currentTarget.select()}
+                   onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}
+                   onKeyDown={(e) => {
+                     e.stopPropagation()
+                     if (e.key === 'Enter') e.currentTarget.blur()
+                     else if (e.key === 'Escape') { renameCancel.current = true; e.currentTarget.blur() }
+                   }}
+                   onBlur={(e) => finishRename(b.id, e.currentTarget.value)} />
+          ) : b.name}
+        </span>
+        <span className="bin-c-used dim" title={trf('binFolderCount', { n: r.count })}>{r.count}</span>
+        <button className="bin-del" data-act="bin-folder-delete" title={t('binFolderDelete')}
+                aria-label={t('binFolderDelete')}
+                onClick={(e) => { e.stopPropagation(); requestBinDelete(b, r.count) }}>
+          <Icon name="close" size={13} />
+        </button>
+      </div>
+    )
+  }
+
+  const row = (a: MediaAsset, depth: number) => (
+    <div key={a.id} className={itemClass('bin-row', a)} data-asset={a.id} {...itemProps(a)}
+         style={indent(depth)}>
       {a.thumbnail
         ? <img className="bin-row-thumb" src={a.thumbnail} alt="" />
         : <span className="bin-row-thumb bin-audio"><Icon name="audio" size={12} /></span>}
@@ -318,11 +439,17 @@ export function MediaBin() {
             <Icon name="unlink" size={13} /> {t('relinkBtn')}
           </button>
         )}
+        {hasContent && (
+          <button className="ghost icon-only" data-act="bin-new-folder" title={t('binNewFolderHint')}
+                  aria-label={t('binNewFolder')} onClick={newFolder}>
+            <Icon name="folderPlus" size={13} />
+          </button>
+        )}
         <button data-act="import" onClick={importMedia} disabled={busy || importing}>
           {busy || importing ? '…' : t('import')}
         </button>
       </div>
-      {assets.length > 0 && (
+      {hasContent && (
         <div className="bin-tools">
           <input type="search" className="bin-search" data-act="bin-search" placeholder={t('binSearch')}
                  aria-label={t('binSearchLabel')} value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -343,8 +470,8 @@ export function MediaBin() {
           </button>
         </div>
       )}
-      {layout === 'list' && shown.length > 0 ? (
-        <div className="bin-list" {...dropProps}>
+      {layout === 'list' && rows.length > 0 ? (
+        <div className={`bin-list${dropOn === '' ? ' drop' : ''}`} {...dropProps}>
           <div className="bin-row bin-list-head" aria-hidden="true">
             <span className="bin-row-thumb" />
             <span className="bin-c-name">{t('binColName')}</span>
@@ -354,25 +481,25 @@ export function MediaBin() {
             <span className="bin-c-codec">{t('binColCodec')}</span>
             <span className="bin-c-used" title={t('binUnusedHint')}>{t('binColUsed')}</span>
           </div>
-          {shown.map(row)}
+          {rows.map((r) => (r.kind === 'bin' ? folderRow(r) : row(r.asset, r.depth)))}
         </div>
       ) : (
-        <div className="bin-grid" {...dropProps}>
-          {assets.length === 0 && <div className="hint">{t('emptyBin')}</div>}
-          {assets.length === 0 && noClips && (
+        <div className={`bin-grid${dropOn === '' ? ' drop' : ''}`} {...dropProps}>
+          {!hasContent && <div className="hint">{t('emptyBin')}</div>}
+          {!hasContent && noClips && (
             <div className="bin-recent">
               <div className="ctx-title">{t('recentTitle')}</div>
               <RecentList />
             </div>
           )}
-          {assets.length > 0 && shown.length === 0 && (
+          {hasContent && rows.length === 0 && (
             <div className="hint">
               {query.trim() ? trf('binNoMatch', { q: query.trim() }) : t('binNoUnused')}
               <br />
               <button className="ghost" data-act="bin-reset" onClick={resetFilter}>{t('binResetFilter')}</button>
             </div>
           )}
-          {shown.map(tile)}
+          {rows.map((r) => (r.kind === 'bin' ? folderRow(r) : tile(r.asset)))}
         </div>
       )}
       <ModelsSection />
@@ -395,6 +522,27 @@ export function MediaBin() {
               .replace('{files}', String(confirmIds.length))
               .replace('{clips}', String(clipsUsing(confirmIds)))}
           </p>
+          <p className="dim">{t('binConfirmUndo')}</p>
+        </Modal>
+      )}
+      {confirmBin && (
+        <Modal
+          title={trf('binFolderConfirmTitle', { name: confirmBin.bin.name })}
+          className="bin-confirm"
+          onClose={() => setConfirmBin(null)}
+          actions={
+            <>
+              <button onClick={() => setConfirmBin(null)}>{t('cancel')}</button>
+              <button className="primary danger" data-act="bin-folder-confirm" onClick={() => {
+                useEditor.getState().removeBin(confirmBin.bin.id)
+                setConfirmBin(null)
+              }}>
+                <Icon name="trash" /> {t('binFolderDelete')}
+              </button>
+            </>
+          }
+        >
+          <p>{trf('binFolderConfirmBody', { n: confirmBin.count })}</p>
           <p className="dim">{t('binConfirmUndo')}</p>
         </Modal>
       )}

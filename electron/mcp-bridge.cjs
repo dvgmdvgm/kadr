@@ -100,6 +100,8 @@ server.registerTool('kadr_state', {
     'them as anchors the user set for you (\u00abfrom marker 2 to marker 3\u00bb). Markers with ' +
     'kind:"beat" are DETECTED MUSICAL BEATS ({time, strength 0..1, strong}) laid down by kadr_beats — ' +
     'cut and time animations on them; they are snap targets, not the user\'s anchors. ' +
+    'project.bins are the media bin\'s folders ({id, name, parentId|null}); an asset\'s binId names ' +
+    'its folder (absent = the root) — the user\'s own grouping of the footage. ' +
     'project.texts lists transcript/subtitle documents (TextDoc {id, name, path, format: srt|txt, ' +
     'assetId?, offset?}) — path is a real file you can Read/Edit; see kadr_transcribe to create them. ' +
     'project.voiceRuns are ElevenLabs voice-overs ({id, assetId, scriptPath, scriptHash, tempo, runDir?}) ' +
