@@ -15,7 +15,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const js = buildSync({
   stdin: {
     contents: `export { drawFrame, clipGeom } from './src/engine/player'
-      export { layerQuad } from './src/gl/compositor'`,
+      export { layerQuad } from './src/gl/compositor'
+      export { knobAt } from './src/components/animUtils'`,
     resolveDir: root, loader: 'ts'
   },
   bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'error',
@@ -25,7 +26,7 @@ globalThis.window = globalThis.window ?? {}
 globalThis.HTMLVideoElement = globalThis.HTMLVideoElement ?? class {}
 const mem = new Map()
 globalThis.localStorage = globalThis.localStorage ?? { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) }
-const { drawFrame, clipGeom, layerQuad } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
+const { drawFrame, clipGeom, layerQuad, knobAt } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -109,5 +110,21 @@ for (const [W, H] of [[1280, 720], [1080, 1920]]) {
   check('a fragment\'s box is its composition size', fg?.srcWidth === 1080 && fg?.srcHeight === 1080, fg)
 }
 
-console.log(fails ? `\n${fails} FAILED` : '\nall passed')
+// ---- the rotate knob stays inside the preview (card F1f) --------------------
+{
+  // a 1000×562 canvas filling the preview's height; the preview is the canvas
+  // plus 12 px of padding, in the gizmo's own coordinates
+  const bounds = { left: -12, top: -12, right: 1012, bottom: 574 }
+  const inside = (p) => p && p.x >= bounds.left + 9 && p.x <= bounds.right - 9 && p.y >= bounds.top + 9 && p.y <= bounds.bottom - 9
+  const full = knobAt?.({ x: 500, y: 0 }, { x: 500, y: 281 }, bounds)
+  check('the rotate knob stays inside the preview when the box fills it', inside(full) && full.y > 0 && full.x === 500, full)
+  const small = knobAt?.({ x: 500, y: 200 }, { x: 500, y: 281 }, bounds)
+  check('with room above, the knob stays outside the box', small?.x === 500 && small?.y === 178, small)
+  const turned = knobAt?.({ x: 1000, y: 281 }, { x: 500, y: 281 }, bounds)
+  check('a quarter-turned full box brings the knob in from the side', inside(turned) && turned.x < 1000, turned)
+  const lost = knobAt?.({ x: 500, y: -900 }, { x: 500, y: -700 }, bounds)
+  check('a box dragged off the preview still leaves its knob reachable', inside(lost), lost)
+}
+
+console.log(fails ?`\n${fails} FAILED` : '\nall passed')
 process.exit(fails ? 1 : 0)

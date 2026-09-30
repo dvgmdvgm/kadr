@@ -7,7 +7,7 @@ import { clipGeom } from '@/engine/player'
 import { layerQuad, type LayerGeom } from '@/gl/compositor'
 import { getTextLayer } from '@/engine/text'
 import { useT } from '@/i18n'
-import { applyValue, KF_EPS } from './animUtils'
+import { applyValue, KF_EPS, knobAt } from './animUtils'
 
 type Key = 'x' | 'y' | 'scale' | 'rotation'
 type Pt = { x: number; y: number }
@@ -34,7 +34,12 @@ export function ClipGizmo({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
   const selId = useEditor((s) => s.selection[0])
   const project = useEditor((s) => s.project)
   const playhead = useEditor((s) => s.playhead)
-  const [rect, setRect] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
+  // the canvas box, and the preview area around it (`pv`, in the box's own
+  // coordinates) that nothing of the gizmo may paint outside
+  const [rect, setRect] = useState<{
+    left: number; top: number; w: number; h: number
+    pv: { left: number; top: number; right: number; bottom: number }
+  } | null>(null)
   const gesture = useRef<{
     kind: 'move' | 'scale' | 'rotate'
     x0: number
@@ -70,7 +75,11 @@ export function ClipGizmo({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
     const measure = () => {
       const c = el.getBoundingClientRect()
       const p = el.parentElement!.getBoundingClientRect()
-      setRect({ left: c.left - p.left, top: c.top - p.top, w: c.width, h: c.height })
+      const a = (el.closest('.preview') ?? el.parentElement!).getBoundingClientRect()
+      setRect({
+        left: c.left - p.left, top: c.top - p.top, w: c.width, h: c.height,
+        pv: { left: a.left - c.left, top: a.top - c.top, right: a.right - c.left, bottom: a.bottom - c.top }
+      })
     }
     measure()
     // created in the window the canvas is in, and rebuilt when the preview
@@ -107,8 +116,8 @@ export function ClipGizmo({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
   // the knob sits over the picture's top as placed, not the source's (a flipY moves that to the bottom)
   const qt = geom.flipY ? quadOf({ ...geom, flipY: false }) : q
   const topMid = { x: (qt[0].x + qt[2].x) / 2, y: (qt[0].y + qt[2].y) / 2 }
-  const up = Math.hypot(topMid.x - c.x, topMid.y - c.y) || 1
-  const rot = { x: topMid.x + ((topMid.x - c.x) / up) * 22, y: topMid.y + ((topMid.y - c.y) / up) * 22 }
+  // above the box, or inside it when the box fills the preview (card F1f)
+  const rot = knobAt(topMid, c, rect.pv)
 
   let rel = Math.max(0, Math.min(clip.duration, playhead - clip.start))
   // land exactly on the clip edges, as the animation editor does
@@ -200,7 +209,11 @@ export function ClipGizmo({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
   return (
     <div
       className={`clip-gizmo${clip.kind === 'remotion' ? ' fragment' : ''}`}
-      style={{ left: rect.left, top: rect.top, width: rect.w, height: rect.h }}
+      style={{
+        left: rect.left, top: rect.top, width: rect.w, height: rect.h,
+        // a box scaled past the preview is cut at its edge, not drawn over the top bar
+        clipPath: `inset(${rect.pv.top}px ${rect.w - rect.pv.right}px ${rect.h - rect.pv.bottom}px ${rect.pv.left}px)`
+      }}
     >
       <svg width={rect.w} height={rect.h}>
         <polygon

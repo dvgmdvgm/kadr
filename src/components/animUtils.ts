@@ -83,3 +83,24 @@ export function windowDrag(
 }
 
 export { evalAnim }
+
+type P = { x: number; y: number }
+/**
+ * Where the gizmo's rotate knob goes: `gap` px beyond the box's top edge, away
+ * from its centre — or as far inside when that would leave the preview
+ * (`bounds`, in the gizmo's coordinates; `r` keeps the whole knob in), and
+ * clamped into it when neither fits, so the knob is always there to grab.
+ */
+export function knobAt(topMid: P, c: P, bounds: { left: number; top: number; right: number; bottom: number }, gap = 22, r = 9): P {
+  const up = Math.hypot(topMid.x - c.x, topMid.y - c.y) || 1
+  const at = (d: number) => ({ x: topMid.x + ((topMid.x - c.x) / up) * d, y: topMid.y + ((topMid.y - c.y) / up) * d })
+  const fits = (p: P) => p.x >= bounds.left + r && p.x <= bounds.right - r && p.y >= bounds.top + r && p.y <= bounds.bottom - r
+  const out = at(gap)
+  if (fits(out)) return out
+  const inn = at(-gap)
+  if (fits(inn)) return inn
+  return {
+    x: Math.min(bounds.right - r, Math.max(bounds.left + r, out.x)),
+    y: Math.min(bounds.bottom - r, Math.max(bounds.top + r, out.y))
+  }
+}
