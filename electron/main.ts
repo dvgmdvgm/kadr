@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders,
+  ExportMuxer, RawVideoEncoder, meanVolume, detectScenes, probeBasic, configureFfmpeg, detectEncoders,
   makeSequence, sequenceHasAlpha
 } from './ffmpeg'
 import { scanMedia } from './mediaScan'
@@ -672,6 +672,10 @@ function registerIpc() {
 
   ipcMain.handle('media:mean-volume', (_e, srcPath: string, start: number, duration: number) =>
     meanVolume(srcPath, start, duration)
+  )
+
+  ipcMain.handle('media:scenes', (_e, srcPath: string, start: number, duration: number, threshold?: number) =>
+    detectScenes(srcPath, start, duration, threshold)
   )
 
   ipcMain.handle(

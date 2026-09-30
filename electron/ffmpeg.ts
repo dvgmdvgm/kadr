@@ -734,6 +734,24 @@ export async function meanVolume(src: string, start: number, duration: number):
   return { mean: num(/mean_volume:\s*(-?[\d.]+)/), max: num(/max_volume:\s*(-?[\d.]+)/) }
 }
 
+/**
+ * I6: hard cuts in [start, start+duration) of a video file, in SOURCE seconds —
+ * ffmpeg's scdet (score 0..100; `threshold` default 10 as ffmpeg's own), only
+ * the frames it flags printed. Input -ss resets the timestamps, so a flagged
+ * pts_time is relative to `start`. The first frame is never a cut (nothing
+ * before it to differ from).
+ * ponytail: decodes at full resolution; downscale before scdet if 4K scans crawl.
+ */
+export async function detectScenes(src: string, start: number, duration: number, threshold = 10): Promise<number[]> {
+  let out = ''
+  await runStream(FFMPEG, ['-hide_banner', '-nostats', '-v', 'error',
+    ...(start > 0 ? ['-ss', start.toFixed(3)] : []), '-t', duration.toFixed(3), '-i', src,
+    '-map', '0:v:0', '-an', '-sn', '-dn',
+    '-vf', `scdet=threshold=${threshold},metadata=mode=select:key=lavfi.scd.time,metadata=mode=print:file=-`,
+    '-f', 'null', '-'], (c) => { out += c })
+  return [...out.matchAll(/pts_time:(-?[\d.]+)/g)].map((m) => +(start + parseFloat(m[1])).toFixed(6))
+}
+
 export function runStream(bin: string, args: string[], onData: (chunk: Buffer) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })

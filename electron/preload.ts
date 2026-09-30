@@ -170,6 +170,7 @@ const api: KadrApi = {
   saveSnapshot: (dir, baseName, png) => ipcRenderer.invoke('snapshot:save', dir, baseName, png),
   measureLoudness: (path, start, duration) => ipcRenderer.invoke('media:loudness', path, start, duration),
   meanVolume: (path, start, duration) => ipcRenderer.invoke('media:mean-volume', path, start, duration),
+  detectScenes: (path, start, duration, threshold) => ipcRenderer.invoke('media:scenes', path, start, duration, threshold),
   audioEnvelope: (req) => ipcRenderer.invoke('audio:envelope', req),
   audioAnalyze: (req) => ipcRenderer.invoke('audio:analyze', req),
   soundLibrary: (rescan) => ipcRenderer.invoke('sounds:library', !!rescan),

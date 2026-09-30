@@ -90,6 +90,10 @@ mixes audio and muxes/transcodes per preset.
   the voice track alone under music, a transcript word kept; removing them
   shortens the timeline by gaps − 2·pad each as ONE undo step; kadr_silences
   refuses bad input before the page);
+  `check-scenes.mjs` wants ffmpeg (I6: scdet finds a generated clip's 4 hard
+  cuts within a frame, mapped through inPoint and speed to 'scene' markers
+  as ONE undo step, snap targets that survive a load; kadr_scenes refuses
+  bad input before the page);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -341,6 +345,12 @@ mixes audio and muxes/transcodes per preset.
   proposal flags on the timeline — the toolbar's «Паузы» and the palette
   do the same — and cut with `extractRanges`, all of them ONE undo step;
   test `node scripts/check-silences.mjs`) /
+  kadr_scenes (I6, `src/engine/scenes.ts`: ffmpeg `scdet` in main,
+  `media:scenes`, over the source span of every video clip in a clip /
+  range / the timeline; the cuts become `TimelineMarker.kind = 'scene'` —
+  thin lines like beats, snapped under «Маркерам» — replacing the scene
+  markers of that stretch in ONE undo step; also the palette's «Найти
+  склейки в видео»; test `node scripts/check-scenes.mjs`) /
   kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /
   kadr_fragment_create / kadr_typecheck / kadr_check / kadr_fragment_media /
   kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /

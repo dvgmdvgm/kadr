@@ -13,6 +13,7 @@ import { useEditor, findClip, withLinked, defaultTextStyle } from '@/state/store
 import { toFrame } from './timelineMath'
 import { upsertKf } from '@/components/animUtils'
 import { applySilences, findSilences, type FindSilencesArgs } from './silences'
+import { findScenes, type FindScenesArgs } from './scenes'
 
 const st = () => useEditor.getState()
 
@@ -153,4 +154,11 @@ export async function silences(a: FindSilencesArgs & { apply?: 'confirmed' | 'al
   }
   const found = await findSilences(a)
   return { proposals: found.map(({ id, start, end }) => ({ id, start, end })), seconds: +found.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+}
+
+/** kadr_scenes: hard cuts of the video as 'scene' markers (replacing the old
+    ones over the stretch) — one undo step, none when they did not change. */
+export async function scenes(a: FindScenesArgs) {
+  const found = await findScenes(a)
+  return { scenes: found, count: found.length }
 }

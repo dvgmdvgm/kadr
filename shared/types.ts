@@ -271,9 +271,11 @@ export interface TimelineMarker {
    * analysis (Биты) and are replaced together when a stretch is analysed
    * again: 'beat' = a beat (thin line, no flag), 'section' = a part of the
    * song from `time` to `end` (a band under the ruler), 'pause' = where the
-   * music stops, `time`..`end`. All are snap targets.
+   * music stops, `time`..`end`. 'scene' = a hard cut found in the picture
+   * (I6, ffmpeg scdet; a thin line like a beat, replaced by the next scene
+   * search over its stretch). All are snap targets.
    */
-  kind?: 'beat' | 'section' | 'pause'
+  kind?: 'beat' | 'section' | 'pause' | 'scene'
   /** beats: strength 0..1 (brag's cue intensity) */
   strength?: number
   /** beats: an accent — among the strongest beats of the piece */
@@ -1344,6 +1346,8 @@ export interface KadrApi {
   measureLoudness(path: string, start: number, duration: number): Promise<{ i: number; tp: number }>
   /** plain mean/peak dBFS — for short spans where R128 has not settled */
   meanVolume(path: string, start: number, duration: number): Promise<{ mean: number; max: number }>
+  /** Hard cuts (ffmpeg scdet, score 0..100) in a source range, source seconds. */
+  detectScenes(path: string, start: number, duration: number, threshold?: number): Promise<number[]>
   /** Blender-compatible loudness envelope of a mixed range, one value per frame (see shared/envelope.ts). */
   audioEnvelope(req: EnvelopeRequest): Promise<number[]>
   /** Tempo, beat grid and band energies of a mixed range (see shared/audioAnalysis.ts). */

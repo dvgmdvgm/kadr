@@ -66,6 +66,7 @@
   --c-handle: #6fd3ff;        /* speed / extend grips */
   --c-mask: #ff8a5c;
   --c-beat: #ff6fb5;           /* detected musical beats: 7.6:1 on the canvas */
+  --c-scene: #e9e3cf;          /* detected picture cuts (I6) */
 
   --clip-video: #2b3f63;
   --clip-video-2: #22334f;
@@ -117,6 +118,7 @@
   --rgb-audio-level: 255 214 90;
   --rgb-mask: 220 60 60;
   --rgb-beat: 255 111 181;
+  --rgb-scene: 233 227 207;
 
   /* --- fills that are one colour and nothing else ----------------------- */
   --c-on-solid: #ffffff;          /* text on a filled accent/danger button */
@@ -1778,6 +1780,26 @@ div.tr-error {
 /* the first beat of a bar (bar analysis): heavier, with its number on the ruler */
 .tl-beat.down { width: 2px; background: rgb(var(--rgb-beat) / 0.45); }
 .tl-beat.down::before { height: 14px; left: -1px; width: 4px; background: var(--c-beat); }
+/* a hard cut found in the picture (I6): a thin line like a beat, a longer
+   tick on the ruler — passive, a snap target */
+.tl-scene {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgb(var(--rgb-scene) / 0.35);
+  z-index: 1;
+  pointer-events: none;
+}
+.tl-scene::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -1px;
+  width: 3px;
+  height: 12px;
+  background: var(--c-scene);
+}
 .tl-bar-num {
   position: absolute;
   top: 1px;

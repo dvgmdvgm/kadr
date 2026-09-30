@@ -87,8 +87,8 @@ const TOOLS = [
   {
     name: 'kadr_marker',
     fn: 'marker',
-    description: 'Add a timeline marker at t (project s) with a label (default: the next number). kind is for music-map markers only (beat|section|pause; section and pause need end) — leave it out for an anchor. One undo step.',
-    input: { t: sec, label: z.string().optional(), kind: z.enum(['beat', 'section', 'pause']).optional(), end: sec.optional() },
+    description: 'Add a timeline marker at t (project s) with a label (default: the next number). kind is for analysis markers only (beat|section|pause from the music map, section and pause need end; scene = a picture cut) — leave it out for an anchor. One undo step.',
+    input: { t: sec, label: z.string().optional(), kind: z.enum(['beat', 'section', 'pause', 'scene']).optional(), end: sec.optional() },
     check: (a) => {
       if ((a.kind === 'section' || a.kind === 'pause') && !(a.end > a.t)) return `${a.kind} needs end > t`
       if (a.end !== undefined && !(a.kind === 'section' || a.kind === 'pause')) return 'end is for section and pause markers'
@@ -108,6 +108,19 @@ const TOOLS = [
     check: (a) => {
       const range = a.start !== undefined || a.end !== undefined
       if (a.apply !== undefined && Object.keys(a).length > 1) return 'apply takes no other parameters (it cuts proposals already found)'
+      if (range && !(a.start !== undefined && a.end !== undefined && a.end > a.start)) return 'start and end are both needed, end > start'
+      if (range && a.clipId) return 'pass either clipId or start+end'
+    }
+  },
+  {
+    name: 'kadr_scenes',
+    fn: 'scenes',
+    helper: true,
+    ms: 30 * 60_000,
+    description: 'Scene cuts: hard cuts in the VIDEO of clipId, start+end, else the in/out range, else the whole timeline (ffmpeg scdet; threshold = score 0..100 a change must pass, default 10 — lower finds softer cuts). They become markers of kind "scene" (replacing the scene markers of that stretch), snap targets for edits. One undo step. Returns their times (project s).',
+    input: { clipId: id.optional(), start: sec.optional(), end: sec.optional(), threshold: z.number().gt(0).max(100).optional() },
+    check: (a) => {
+      const range = a.start !== undefined || a.end !== undefined
       if (range && !(a.start !== undefined && a.end !== undefined && a.end > a.start)) return 'start and end are both needed, end > start'
       if (range && a.clipId) return 'pass either clipId or start+end'
     }

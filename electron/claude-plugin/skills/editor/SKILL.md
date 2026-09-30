@@ -1,6 +1,6 @@
 ---
 name: editor
-description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_marker, kadr_undo, kadr_silences, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
+description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_marker, kadr_undo, kadr_silences, kadr_scenes, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
 ---
 
 # Editing in Kadr
@@ -72,7 +72,11 @@ rhythm, readability or physical sense — not a technical failure. So:
   sequence: every scene settled, every transition at its middle, both sides of
   every cut.
 - Media files themselves are readable directly; ffmpeg/ffprobe are available
-  for anything deeper (loudness, scene cuts, codecs).
+  for anything deeper (loudness, codecs).
+- Picture cuts in a long recording: `kadr_scenes` (clip, range or all) lays
+  a 'scene' marker on every hard cut — snap targets for your cuts and moves;
+  a lower `threshold` finds softer ones. Read them back with kadr_state
+  `fields:["markers"]`.
 
 ## ACT — semantic tools first, kadr_eval for the rest
 

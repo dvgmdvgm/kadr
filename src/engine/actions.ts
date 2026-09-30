@@ -14,6 +14,7 @@ import { togglePreviewWindow } from './popout'
 import { contextTargetOpen, sendContext } from './contextLine'
 import { applySilences, findSilencesHere, useSilences } from './silences'
 import { useBeatsUi } from './beats'
+import { findScenesHere } from './scenes'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
 import { useCaptionsUi } from '../components/CaptionsDialog'
@@ -92,6 +93,7 @@ const HANDLERS: Record<ActionId, Handler> = {
       : 'all')
   },
   'tools.silences': { run: () => void findSilencesHere() },
+  'tools.scenes': { run: () => void findScenesHere() },
   'edit.removeSilences': {
     enabled: () => useSilences.getState().items.some((x) => x.state === 'confirmed'), why: 'whyNoSilences',
     run: () => { applySilences('confirmed') }

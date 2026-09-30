@@ -133,8 +133,9 @@ export function sanitizeProject(p: Project): Project {
   )
   for (const m of p.markers) {
     // the analysis' markers are the ones that legitimately have no label
-    if (m.kind !== undefined && !isMusicMarker(m)) delete m.kind
-    if (typeof m.label !== 'string' || (!m.label && !isMusicMarker(m))) m.label = isMusicMarker(m) ? '' : '•'
+    const found = isMusicMarker(m) || m.kind === 'scene'
+    if (m.kind !== undefined && !found) delete m.kind
+    if (typeof m.label !== 'string' || (!m.label && !found)) m.label = found ? '' : '•'
     if (m.time < 0) m.time = 0
     if (m.kind === 'section' || m.kind === 'pause') {
       if (!Number.isFinite(m.end) || m.end! < m.time) m.end = m.time
@@ -1002,6 +1003,9 @@ interface EditorState {
     }): number
   /** Remove the music markers (inside `range`, or all of them) — one undo entry; returns the count. */
   clearBeatMarkers(range?: { start: number; end: number }): number
+  /** I6: replace the scene-cut markers inside [range] with `times` (project s,
+      landed on frames) — one undo entry, none when nothing changes. */
+  setSceneMarkers(times: number[], range: { start: number; end: number }): void
   /**
    * Put an audio asset on the timeline at `at` WITHOUT touching anything that
    * is already there: the first unlocked audio track that is free over the
@@ -1782,6 +1786,22 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p }
     })
     return doomed
+  },
+
+  setSceneMarkers: (times, range) => {
+    const p0 = get().project
+    const inRange = (t: number) => t >= range.start - 1e-6 && t <= range.end + 1e-6
+    const next = [...new Set(times.map((t) => toFrame(t, p0.fps)))].filter((t) => t >= 0 && inRange(t)).sort((a, b) => a - b)
+    const old = (p0.markers ?? []).filter((m) => m.kind === 'scene' && inRange(m.time)).map((m) => m.time)
+    if (JSON.stringify(old) === JSON.stringify(next)) return
+    get().pushHistory('hScenes')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const kept = (p.markers ?? []).filter((m) => m.kind !== 'scene' || !inRange(m.time))
+      const added = next.map((time): TimelineMarker => ({ id: uid(), time, label: '', kind: 'scene' }))
+      p.markers = [...kept, ...added].sort((a, b) => a.time - b.time)
+      return { project: p }
+    })
   },
 
   placeAudio: (asset, at, opts) => {

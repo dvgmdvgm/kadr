@@ -1161,7 +1161,8 @@ function BeatLines({ view }: { view: ViewWindow }) {
   const zoom = useEditor((s) => s.zoom)
   const beats = useMemo(() => (markers ?? []).filter((m) => m.kind === 'beat'), [markers])
   const spans = useMemo(() => (markers ?? []).filter((m) => m.kind === 'section' || m.kind === 'pause'), [markers])
-  if (!beats.length && !spans.length) return null
+  const scenes = useMemo(() => (markers ?? []).filter((m) => m.kind === 'scene'), [markers])
+  if (!beats.length && !spans.length && !scenes.length) return null
   const margin = 50 / zoom
   const visible = beats.filter((b) => b.time >= view.start - margin && b.time <= view.end + margin)
   const hasBars = beats.some((b) => b.beatInBar !== undefined)
@@ -1189,6 +1190,9 @@ function BeatLines({ view }: { view: ViewWindow }) {
           <div key={m.id} className="tl-pause" title={t('musicPause')}
                style={{ left: HEADER_W + m.time * zoom, width: Math.max(2, ((m.end ?? m.time) - m.time) * zoom) }} />
           ))}
+      {scenes.filter(inView).map((m) => (
+        <div key={m.id} className="tl-scene" title={t('sceneCut')} style={{ left: HEADER_W + m.time * zoom }} />
+      ))}
       {shown.map((b) => (
         <div key={b.id}
              className={`tl-beat${hasBars ? (isDown(b) ? ' down' : '') : b.strong ? ' strong' : ''}`}
