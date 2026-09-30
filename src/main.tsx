@@ -24,7 +24,7 @@ import { runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi } from '
 import { importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, wireModels, prepareForFragment } from './engine/models'
 import { useFragmentParams, setParam, resetParams, flushParamSaves } from './engine/fragmentParams'
 import { useOnion, setOnion, toggleOnion, wireOnion } from './engine/onion'
-import { audioStats, silencePreview, wirePreviewLimiter } from './engine/audio'
+import { audioStats, silencePreview, wirePreviewLimiter, loudness, resetLoudness } from './engine/audio'
 import limiterUrl from './engine/limiter.worklet.ts?worker&url'
 import { previewPoolStats } from './engine/player'
 import { usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow } from './engine/popout'
@@ -111,7 +111,7 @@ wireFonts()
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,
   useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,
-  audioStats, silencePreview, previewPoolStats,
+  audioStats, silencePreview, previewPoolStats, loudness, resetLoudness,
   usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow,
   neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS,
   speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS,

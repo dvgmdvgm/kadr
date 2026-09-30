@@ -1,17 +1,22 @@
 // Shared WebAudio graph for the live preview: every media element is routed
 // element → per-clip gain (allows >100% volume) → master → limiter → analyser
-// → output. The limiter is the export's own (shared/previewLimiter.ts, an
+// → output, and the analyser also feeds the loudness meter (K3,
+// shared/loudness.ts: LUFS M/S/I and true peak of what reaches the speakers). The limiter is the export's own (shared/previewLimiter.ts, an
 // AudioWorklet), so a hot mix clips in neither; `useSettings.previewLimiter`
 // takes it out, and until its module has loaded the master goes straight on.
 import { useSettings } from '../state/store'
 import { logWarn } from './log'
 import { tr } from '../i18n'
+import type { Loudness } from '@shared/loudness'
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
 let analyser: AnalyserNode | null = null
 let limiter: AudioWorkletNode | null = null
 let limiterState: 'loading' | 'ready' | 'failed' = 'loading'
+let meter: AudioWorkletNode | null = null
+const SILENT: Loudness = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity, truePeak: -Infinity }
+let reading: Loudness = SILENT
 /** the worklet's URL, handed in by main.tsx: a `?worker&url` import is vite's
  *  alone, and the node checks bundle this file with esbuild */
 let limiterModule = ''
@@ -36,6 +41,13 @@ export function ensureAudio(): AudioContext {
       })
       limiter.connect(analyser!)
       limiterState = 'ready'
+      // a worklet is only pulled while it reaches the destination: it outputs silence there
+      meter = new AudioWorkletNode(c, 'kadr-loudness', {
+        numberOfOutputs: 1, outputChannelCount: [1], channelCount: 2, channelCountMode: 'explicit'
+      })
+      meter.port.onmessage = (e) => { reading = e.data as Loudness }
+      analyser!.connect(meter)
+      meter.connect(c.destination)
       route()
     }).catch((e) => {
       limiterState = 'failed'
@@ -133,11 +145,23 @@ export function audioStats() {
     state: c?.state ?? 'none',
     limiter: limiterOn() ? 'on' : limiterState === 'ready' ? 'off' : limiterState,
     peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
+    loudness: reading,
     playback: ps ? {
       underrunEvents: ps.underrunEvents, underrunDuration: ps.underrunDuration,
       totalDuration: ps.totalDuration, averageLatency: ps.averageLatency, maximumLatency: ps.maximumLatency
     } : null
   }
+}
+
+/** The preview output's loudness (LUFS; −Infinity = nothing measured yet). */
+export function loudness(): Loudness {
+  return reading
+}
+
+/** Start the integrated value and the true-peak hold over. */
+export function resetLoudness() {
+  reading = SILENT
+  meter?.port.postMessage('reset')
 }
 
 /** Measurements and tests: the graph runs as usual, nothing reaches the speakers. */

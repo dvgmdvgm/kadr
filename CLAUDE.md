@@ -38,7 +38,10 @@ mixes audio and muxes/transcodes per preset.
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position); `check-fade-curves.mjs` wants ffmpeg (K2: each
   fade curve against afade's own, an equal-power crossfade of two noise clips
-  within 0.5 dB in the preview's gain maths and in a mixdown); `check-eta.mjs` (G8: the export's fps / time left from
+  within 0.5 dB in the preview's gain maths and in a mixdown);
+  `check-lufs.mjs` wants ffmpeg (K3: the preview's loudness meter DSP within
+  0.3 LU / 0.3 dB of ebur128 — integrated through both gates, momentary,
+  short-term, true peak at 48 and 44.1 kHz); `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
@@ -547,6 +550,17 @@ mixes audio and muxes/transcodes per preset.
   input at 48 and 44.1 kHz. Live it cannot trim its look-ahead: preview audio
   runs 5 ms behind the picture, far under the player's resync tolerance.
   Test: `node scripts/check-preview-limiter.mjs`.
+  THE PREVIEW IS METERED (K3, `shared/loudness.ts`): BS.1770-4 K-weighting
+  (libebur128's per-rate coefficients), momentary 400 ms, short-term 3 s,
+  integrated with the −70 LUFS and −10 LU gates, true peak by a 4×
+  Hann-windowed sinc of 24 taps per phase (16 read white noise 0.3 dB under
+  ebur128). A second processor in the limiter's worklet module, fed by the
+  analyser, so it reads what reaches the speakers; it keeps one energy per
+  100 ms, never samples. `loudness()` / `resetLoudness()` on kadrEditor and
+  `audioStats().loudness`. `silencePreview` zeroes the master, so it silences
+  the meter too — measure with the context's `setSinkId({type:'none'})`.
+  Live, a 10 s playthrough read −24.22 LUFS where ebur128 on its export read
+  −24.2. Test: `node scripts/check-lufs.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings
