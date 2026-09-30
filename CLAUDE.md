@@ -309,6 +309,13 @@ mixes audio and muxes/transcodes per preset.
   `claude.extraArgs` appends and keeps it.
 - `electron/mcp-bridge.cjs` — MCP stdio server (SDK) that claude receives
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
+  the semantic edits kadr_cut / kadr_move / kadr_trim / kadr_ripple_delete /
+  kadr_keyframe / kadr_text_add / kadr_volume / kadr_marker / kadr_undo
+  (`electron/mcp-edit-tools.cjs` → `kadrEditor.agentEdit`,
+  `src/engine/agentEdits.ts`: zod-checked before the page, one store action
+  and EXACTLY one undo step each — an edit that changes nothing leaves no
+  step and errors; test `node scripts/check-mcp-tools.mjs`, which also parses
+  the bridge: a syntax error there silently leaves the agent with no tools) /
   kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /
   kadr_fragment_create / kadr_typecheck / kadr_check / kadr_fragment_media /
   kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /

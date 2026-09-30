@@ -7,6 +7,7 @@ const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js')
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js')
 const { z } = require('zod')
 const http = require('http')
+const { registerEditTools } = require('./mcp-edit-tools.cjs')
 
 const PORT = Number(process.argv[2])
 // Per-session secret for /eval. The editor generates it and passes it here
@@ -149,6 +150,9 @@ server.registerTool('kadr_state', {
 server.registerTool('kadr_eval', {
   description:
     'Run JavaScript inside the Kadr editor page and return its result (must be JSON-serializable). ' +
+    'For cuts, moves, trims, ripple deletes, keyframes, text, volume, markers and undo use the ' +
+    'kadr_cut/move/trim/ripple_delete/keyframe/text_add/volume/marker/undo tools instead — each is ' +
+    'one undo step by construction; this is for everything else. ' +
     'The code is the body of an async function — use `return`. API surface:\n' +
     '- window.kadrEditor.useEditor.getState() → store: project, selection, playhead, and actions: ' +
     'pushHistory(label) (call ONCE before a discrete low-level edit like updateClip — enables undo; ' +
@@ -188,6 +192,8 @@ server.registerTool('kadr_eval', {
 }, async ({ code }) => {
   try { return asText(await editorEval(code)) } catch (e) { return asError(e) }
 })
+
+registerEditTools(server, editorEval, asText, asError)
 
 server.registerTool('kadr_snapshot', {
   description:
@@ -351,8 +357,8 @@ server.registerTool('kadr_export', {
     presetId: z.string().optional(),
     start: z.number().optional().describe('range start, seconds'),
     end: z.number().optional().describe('range end, seconds'),
-    motionBlur: z.boolean().optional().describe('default: the user preset's, else true'),
-    frameBlending: z.boolean().optional().describe('default: the user preset's, else true')
+    motionBlur: z.boolean().optional().describe('default: the user preset\'s, else true'),
+    frameBlending: z.boolean().optional().describe('default: the user preset\'s, else true')
   }
 }, async ({ outputPath, presetId, start, end, motionBlur, frameBlending }) => {
   try {

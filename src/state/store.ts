@@ -981,8 +981,9 @@ interface EditorState {
       their twins' moves right by the inserted length, a clip across `at` is split. */
   insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number, ripple?: boolean): void
   insertTextClip(at: number): void
-  /** Add a track-independent timeline marker (auto-numbered); returns id. */
-  addMarker(time: number): string
+  /** Add a track-independent timeline marker (auto-numbered unless `opts.label`); returns id.
+      `opts.kind`/`end` make a music marker (the agent's kadr_marker). One undo step. */
+  addMarker(time: number, opts?: { label?: string; kind?: TimelineMarker['kind']; end?: number }): string
   moveMarker(id: string, time: number): void
   removeMarker(id: string): void
   /** one undo step; an unchanged or blank label changes nothing */
@@ -1063,6 +1064,9 @@ interface EditorState {
       at the clip's start, where the cut now is. */
   trimToPlayhead(edge: 'in' | 'out'): void
   splitAtPlayhead(): void
+  /** Cut every unlocked clip across `t` on `trackIds` (default: every track), the
+      twins of those clips too — one undo step; returns the right halves' ids. */
+  splitAt(t: number, trackIds?: string[]): string[]
   deleteSelection(): void
   /** Delete clips (default: the selection) with their linked twins and close
       what they leave empty on their tracks — one undo step. */
@@ -1181,6 +1185,33 @@ export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'hei
 /** the undo step the last settings session pushed: merge only while it is
  *  still the top of the stack (any other edit or an undo splits the session) */
 const settingsMark: { session?: number; entry?: unknown } = {}
+
+/** Ids of the unlocked clips across `t` (a frame) that `want` keeps, on `onTracks` if given. */
+function splitTargets(p: Project, t: number, want: (c: Clip) => boolean, onTracks?: Set<string>): string[] {
+  return p.tracks.flatMap((tr) =>
+    tr.locked || (onTracks && !onTracks.has(tr.id)) ? [] : tr.clips.filter((c) =>
+      want(c) && t > c.start + 0.02 && t < c.start + c.duration - 0.02).map((c) => c.id))
+}
+
+/** Split `ids` at `t` as one undo step; halves of a linked pair stay linked pairwise. */
+function splitClips(
+  get: () => EditorState,
+  set: (fn: (s: EditorState) => Partial<EditorState>) => void,
+  t: number, ids: string[]
+): string[] {
+  get().pushHistory('hSplit')
+  const newIds: string[] = []
+  set((st) => {
+    const p = cloneProject(st.project)
+    const rightLinks = new Map<string, string>()
+    for (const id of ids) {
+      const f = findClip(p, id)
+      if (f) newIds.push(splitClipAt(f.track, f.clip, t, rightLinks).id)
+    }
+    return { project: p }
+  })
+  return newIds
+}
 
 export const useEditor = create<EditorState>((set, get) => ({
   project: newProject(),
@@ -1654,14 +1685,17 @@ export const useEditor = create<EditorState>((set, get) => ({
     })
   },
 
-  addMarker: (time) => {
+  addMarker: (time, opts) => {
     get().pushHistory('hMarker')
     const id = uid()
     set((s) => {
       const p = cloneProject(s.project)
       p.markers ??= []
       const n = p.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
-      p.markers.push({ id, time: Math.max(0, toFrame(time, p.fps)), label: String(n) })
+      const m: TimelineMarker = { id, time: Math.max(0, toFrame(time, p.fps)), label: opts?.label?.trim() || String(n) }
+      if (opts?.kind) m.kind = opts.kind
+      if (opts?.end !== undefined) m.end = Math.max(m.time, toFrame(opts.end, p.fps))
+      p.markers.push(m)
       return { project: p }
     })
     return id
@@ -2167,25 +2201,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     const t = toFrame(s.playhead, s.project.fps) // the cut lands on a frame, wherever the playhead sits
     // «Разрез захватывает»: the selection (every track without one), or every unlocked track
     const selIds = s.selection.length && setting('editing.splitScope') === 'selection' ? withLinked(s.project, s.selection) : []
-    const targets = s.project.tracks.flatMap((tr) =>
-      tr.locked ? [] : tr.clips.filter((c) =>
-        (selIds.length === 0 || selIds.includes(c.id)) &&
-        t > c.start + 0.02 && t < c.start + c.duration - 0.02
-      )
-    )
-    if (!targets.length) return
-    s.pushHistory('hSplit')
-    set((st) => {
-      const p = cloneProject(st.project)
-      const newIds: string[] = []
-      // halves of a linked pair stay linked pairwise
-      const rightLinks = new Map<string, string>()
-      for (const orig of targets) {
-        const f = findClip(p, orig.id)
-        if (f) newIds.push(splitClipAt(f.track, f.clip, t, rightLinks).id)
-      }
-      return { project: p, selection: newIds }
-    })
+    const ids = splitTargets(s.project, t, (c) => selIds.length === 0 || selIds.includes(c.id))
+    if (ids.length) set({ selection: splitClips(get, set, t, ids) })
+  },
+
+  splitAt: (time, trackIds) => {
+    const s = get()
+    const t = toFrame(time, s.project.fps)
+    const on = new Set(trackIds ?? s.project.tracks.map((tr) => tr.id))
+    const own = splitTargets(s.project, t, () => true, on)
+    // a twin on another track goes too, or the pair's halves stop matching
+    const ids = splitTargets(s.project, t, (c) => withLinked(s.project, own).includes(c.id))
+    return ids.length ? splitClips(get, set, t, ids) : []
   },
 
   deleteSelection: () => {

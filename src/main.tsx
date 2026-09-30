@@ -31,6 +31,7 @@ import { usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow } 
 import { wireExportChime } from './engine/chime'
 import { wireOffline, useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink } from './engine/offline'
 import { normalizeClip } from './engine/normalize'
+import * as agentEdit from './engine/agentEdits'
 import { wireFonts } from './engine/fonts'
 import { neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS } from './engine/neonWave'
 import { speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS } from './engine/tts'
@@ -95,6 +96,8 @@ wireFonts()
   // an embedded-Claude turn begins: main calls this before the turn's first /eval
   // (electron/claude.ts) — a checkpoint outside undo, and a backup on disk
   agentTurn: () => { useEditor.getState().agentCheckpoint(); void autosaveNow() },
+  // the agent's semantic edits (kadr_cut, kadr_move…): one store action, one undo step each
+  agentEdit,
   // offline media: the runtime set, and relink by map or by folder (one undo)
   useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink,
   // the action registry: any action by id, the keymap diff, rebinding
