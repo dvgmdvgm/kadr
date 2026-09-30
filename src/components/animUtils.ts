@@ -48,6 +48,53 @@ export function resetValue(anim: Anim, rel: number, def: number): Anim {
   return anim.keyframes?.length ? upsertKf(anim, rel, def) : { ...anim, value: def }
 }
 
+// ---- K1: the clip's level line (gain for audio, opacity for video) takes
+// points; they are the Anim's keys, at clip-local times.
+
+const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x))
+
+/** The level line's box on screen: the clip's rect, the band the line moves in. */
+export interface LevelLine { left: number; top: number; width: number; duration: number; pad: number; usable: number; max: number }
+
+/** Clip-local time and level under the pointer. */
+export function levelAt(l: LevelLine, x: number, y: number): { t: number; v: number } {
+  return {
+    t: clamp(((x - l.left) / l.width) * l.duration, 0, l.duration),
+    v: clamp((1 - (y - l.top - l.pad) / l.usable) * l.max, 0, l.max)
+  }
+}
+
+/** A point on the line at `t`, at the level the line has there. */
+export function addLevelPoint(a: Anim, t: number): Anim {
+  return upsertKf(a, t, evalAnim(a, t))
+}
+
+/** Move key `i`; it stays between its neighbours and inside the clip.
+    `keepLevel` (Shift) moves it along the time axis only. */
+export function moveLevelPoint(a: Anim, i: number, t: number, v: number,
+  o: { duration: number; max: number; keepLevel?: boolean }): Anim {
+  const kfs = sortedKfs(a)
+  const lo = i > 0 ? kfs[i - 1].time + KF_EPS : 0
+  const hi = i < kfs.length - 1 ? kfs[i + 1].time - KF_EPS : o.duration
+  kfs[i] = { ...kfs[i], time: clamp(t, lo, Math.max(lo, hi)), value: o.keepLevel ? kfs[i].value : clamp(v, 0, o.max) }
+  return { ...a, keyframes: kfs }
+}
+
+/** Remove key `i`; the last one leaves a flat level at its value. */
+export function deleteLevelPoint(a: Anim, i: number): Anim {
+  const kfs = sortedKfs(a)
+  const [gone] = kfs.splice(i, 1)
+  if (kfs.length) return { ...a, keyframes: kfs }
+  const { keyframes: _, ...rest } = a
+  return { ...rest, value: gone?.value ?? a.value }
+}
+
+/** The line itself dragged: every point (or the flat level) moves by `dv`. */
+export function shiftLevel(a: Anim, dv: number, max: number): Anim {
+  if (!a.keyframes?.length) return { ...a, value: clamp(a.value + dv, 0, max) }
+  return { ...a, keyframes: a.keyframes.map((k) => ({ ...k, value: clamp(k.value + dv, 0, max) })) }
+}
+
 export function snap1(v: number, targets: number[], tol: number): number {
   let best = v
   let bd = tol

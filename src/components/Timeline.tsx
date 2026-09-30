@@ -2,7 +2,7 @@ import { type WaveBins, type FollowMode, waveColumns, trackOverlaps, formatTime,
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
-import { LABEL_COLORS, type AudioDefect, type Clip, type MediaAsset, type TimelineMarker, type Track } from '@shared/types'
+import { LABEL_COLORS, type Anim, type AudioDefect, type Clip, type MediaAsset, type TimelineMarker, type Track } from '@shared/types'
 import {
   useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, MIN_ZOOM, setting, timelineView
 } from '@/state/store'
@@ -35,6 +35,7 @@ import { useBeatsUi } from '@/engine/beats'
 import { useChecksUi } from '@/engine/checks'
 import { useTtsUi } from './TtsDialog'
 import { evalAnim } from '@/engine/anim'
+import { levelAt, addLevelPoint, moveLevelPoint, deleteLevelPoint, shiftLevel, sortedKfs, type LevelLine } from './animUtils'
 import { spanToProject, projectToSrc, type VisibleSpan } from '@/engine/voiceDefects'
 import { clipsInSpan, clipsBetween, unlocked } from '@/engine/timelineSelect'
 import { layoutSpeeds, SPEED_MIN, SPEED_MAX, type SpeedItem } from '@/engine/speedLayout'
@@ -2724,34 +2725,91 @@ const ClipView = memo(function ClipView({
   const level = isAudio ? evalAnim(clip.gain, 0) : evalAnim(clip.transform?.opacity, 0)
   const levelPad = 7
   const levelUsable = Math.max(4, laneHeight - 8 - levelPad * 2)
-  const levelY = levelPad + (1 - Math.min(levelMax, Math.max(0, level)) / levelMax) * levelUsable
+  const yOfLevel = (v: number) => levelPad + (1 - Math.min(levelMax, Math.max(0, v)) / levelMax) * levelUsable
+  const levelY = yOfLevel(level)
+  // K1: the line takes points — the Anim's keys, at clip-local times
+  const levelAnim = isAudio ? clip.gain : clip.transform?.opacity
+  const writeLevel = (a: Anim) => {
+    const s = useEditor.getState()
+    const f = findClip(s.project, clip.id)
+    if (!f) return
+    if (isAudio) s.updateClip(clip.id, { gain: a })
+    else s.updateClip(clip.id, { transform: { ...f.clip.transform, opacity: a } })
+  }
+  const lineOf = (el: Element): LevelLine => {
+    const r = el.closest('.clip')!.getBoundingClientRect()
+    return { left: r.left, top: r.top, width: r.width, duration: clip.duration, pad: levelPad, usable: levelUsable, max: levelMax }
+  }
 
-  const startLevelDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+  // the line: a drag moves the whole level (every point alike); a click adds a point
+  const startLevelDrag = (e: React.PointerEvent<Element>) => {
     if (track.locked || e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const st = useEditor.getState()
-    st.pushHistory('hEdit')
-    const l0 = level
-    setLevelDrag(l0)
+    st.pushHistory('hEdit') // one gesture, one undo step
+    const a0 = levelAnim ?? { value: 1 }
+    const line = lineOf(e.currentTarget)
+    const down = levelAt(line, e.clientX, e.clientY)
+    let moved = false
     windowDrag(
       e,
-      (_dx, ev) => {
-        // vertical drag; windowDrag gives dx, use ev for dy
-        const dy = ev.clientY - (e.clientY as number)
-        const nl = Math.min(levelMax, Math.max(0, l0 - (dy / levelUsable) * levelMax))
-        setLevelDrag(nl)
-        const s = useEditor.getState()
-        const f = findClip(s.project, clip.id)
-        if (!f) return
-        if (isAudio) s.updateClip(clip.id, { gain: { ...f.clip.gain, value: nl } })
-        else s.updateClip(clip.id, {
-          transform: { ...f.clip.transform, opacity: { ...f.clip.transform.opacity, value: nl } }
-        })
+      (dx, ev) => {
+        const dy = ev.clientY - e.clientY
+        if (!moved && Math.abs(dx) + Math.abs(dy) <= 3) return
+        moved = true
+        const a = shiftLevel(a0, -(dy / levelUsable) * levelMax, levelMax)
+        setLevelDrag(evalAnim(a, down.t))
+        writeLevel(a)
       },
-      () => setLevelDrag(null)
+      () => {
+        if (!moved) writeLevel(addLevelPoint(a0, down.t))
+        setLevelDrag(null)
+      }
     )
   }
+  // a point: drag moves it (Shift: along time only), right-click removes it
+  const startPointDrag = (i: number) => (e: React.PointerEvent<HTMLDivElement>) => {
+    if (track.locked || e.button !== 0 || !levelAnim) return
+    e.stopPropagation()
+    e.preventDefault()
+    useEditor.getState().pushHistory('hEdit')
+    const a0 = levelAnim
+    const line = lineOf(e.currentTarget)
+    const k0 = sortedKfs(a0)[i]
+    setLevelDrag(k0.value)
+    windowDrag(e, (dx, ev) => {
+      const dy = ev.clientY - e.clientY
+      const a = moveLevelPoint(a0, i, k0.time + (dx / line.width) * clip.duration,
+        k0.value - (dy / levelUsable) * levelMax, { duration: clip.duration, max: levelMax, keepLevel: ev.shiftKey })
+      setLevelDrag(a.keyframes![i].value)
+      writeLevel(a)
+    }, () => setLevelDrag(null))
+  }
+  const deletePoint = (i: number) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (track.locked || !levelAnim) return
+    useEditor.getState().pushHistory('hEdit')
+    writeLevel(deleteLevelPoint(levelAnim, i))
+  }
+  // the keyed line, in clip seconds × lane px: straight between linear keys,
+  // sampled where an easing or the spline bends it
+  const levelPath = (() => {
+    if (!levelAnim?.keyframes?.length) return ''
+    const kfs = sortedKfs(levelAnim)
+    const ts = [0]
+    kfs.forEach((k, j) => {
+      const next = kfs[j + 1]
+      ts.push(k.time)
+      if (next && (levelAnim.smooth || k.easing !== 'linear')) {
+        for (let s = 1; s < 24; s++) ts.push(k.time + ((next.time - k.time) * s) / 24)
+        ts.push(next.time - 1e-6)
+      }
+    })
+    ts.push(clip.duration)
+    return ts.map((t) => `${t},${yOfLevel(evalAnim(levelAnim, t)).toFixed(1)}`).join(' ')
+  })()
 
   const isText = clip.kind === 'text'
   const fadeIn = clip.fadeIn ?? 0
@@ -2835,16 +2893,37 @@ const ClipView = memo(function ClipView({
       {track.kind === 'audio' && visW > 0 && (
         <canvas ref={waveRef} className="clip-wave" style={{ left: zpx(vis0 / zoom), width: zpx(visW / zoom) }} />
       )}
-      <div
-        className="level-hit"
-        style={{ top: levelY - 4 }}
-        title={`${Math.round(level * 100)}%`}
-        onPointerDown={startLevelDrag}
-      >
-        <div className="level-line" />
-      </div>
+      {levelPath ? (
+        <svg className="level-curve" style={{ height: levelUsable + levelPad * 2 }}
+          viewBox={`0 0 ${clip.duration} ${levelUsable + levelPad * 2}`} preserveAspectRatio="none">
+          <polyline className="level-curve-hit" points={levelPath} onPointerDown={startLevelDrag}>
+            <title>{t('levelPointsHint')}</title>
+          </polyline>
+          <polyline className="level-curve-line" points={levelPath} />
+        </svg>
+      ) : (
+        <div
+          className="level-hit"
+          style={{ top: levelY - 4 }}
+          title={`${Math.round(level * 100)}% · ${t('levelPointsHint')}`}
+          onPointerDown={startLevelDrag}
+        >
+          <div className="level-line" />
+        </div>
+      )}
+      {w > 30 && sortedKfs(levelAnim ?? { value: 1 }).map((k, i) => (
+        <div
+          key={i}
+          className="level-point"
+          data-level-point={i}
+          style={{ left: `calc(${zpx(k.time)} - 4px)`, top: yOfLevel(k.value) - 4 }}
+          title={`${Math.round(k.value * 100)}%`}
+          onPointerDown={startPointDrag(i)}
+          onContextMenu={deletePoint(i)}
+        />
+      ))}
       {levelDrag !== null && (
-        <div className="level-badge" style={{ top: Math.max(0, levelY - 22) }}>
+        <div className="level-badge" style={{ top: Math.max(0, yOfLevel(levelDrag) - 22) }}>
           {Math.round(levelDrag * 100)}%
         </div>
       )}

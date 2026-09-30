@@ -255,6 +255,7 @@ mixes audio and muxes/transcodes per preset.
   as a flat sum of pieces a ducked 10-minute bed (~600 keys) took 4.9 s to
   mix, as a tree 0.4 s. A gain that never changes stays a
   scalar and mixes bit-identically. Test: `node scripts/check-gain-keys.mjs`.
+  The keys are drawn on the clip's level line (K1, see Timeline below).
   TWO LIMITS A BIG TIMELINE WALKS INTO, both met on a real 19-minute edit
   carrying ~1000 SFX clips. One graph with N padded inputs costs the ffmpeg
   scheduler roughly QUADRATICALLY in N: that mix ran at a quarter of realtime —
@@ -855,6 +856,15 @@ mixes audio and muxes/transcodes per preset.
   smeared lone clicks and was rejected); overlap zones are one sweep.
   Measured and rejected: CPU rasterisation (faster timeline, worse preview
   and export), software waveform canvases, dropping clip decorations.
+  THE LEVEL LINE TAKES POINTS (K1): a clip's rubber band (gain for audio,
+  opacity for video) — a click adds a key at the CLIP-LOCAL time under the
+  pointer at the level the line had there, a drag of a point moves it between
+  its neighbours (Shift: along time only), right-click removes it (the last
+  one leaves a flat level at its value), a drag of the line moves every point
+  alike; one gesture is one undo step. Points hide under 30 px, like the fade
+  handles. The maths is `levelAt`/`addLevelPoint`/`moveLevelPoint`/… in
+  `src/components/animUtils.ts`. Test: `node scripts/check-gain-points.mjs`
+  (with ffmpeg: a dip drawn on a trimmed clip is mixed where it was drawn).
 - `src/gl/compositor.ts` — WebGL2 quad compositor: perspective-correct 3D,
   masks (crop + up to 8 shapes), transition FBOs, motion-blur accumulator,
   glow + gaussian-blur effect passes (`drawLayerFx`), raw-BGRA capture

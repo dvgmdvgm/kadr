@@ -1996,6 +1996,43 @@ div.tr-error {
   background: var(--c-audio-level);
   box-shadow: 0 0 4px rgb(var(--rgb-audio-level) / 0.8);
 }
+/* K1: a keyed level — the curve through its points (clip seconds × lane px) */
+.level-curve {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  overflow: visible;
+  z-index: 2;
+  pointer-events: none;
+}
+.level-curve polyline { fill: none; vector-effect: non-scaling-stroke; }
+.level-curve-hit {
+  stroke: transparent;
+  stroke-width: 9px;
+  pointer-events: stroke;
+  cursor: ns-resize;
+  touch-action: none;
+}
+.level-curve-line { stroke: rgb(var(--rgb-white) / 0.5); stroke-width: 2px; pointer-events: none; }
+.clip.audio .level-curve-line { stroke: rgb(var(--rgb-audio-level) / 0.75); }
+.level-curve:has(.level-curve-hit:hover) .level-curve-line, .clip.selected .level-curve-line { stroke: var(--c-on-solid); }
+.clip.audio .level-curve:has(.level-curve-hit:hover) .level-curve-line, .clip.audio.selected .level-curve-line { stroke: var(--c-audio-level); }
+/* its points, in the style of the fade handles */
+.level-point {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  background: var(--c-sel);
+  border: 1px solid rgb(var(--rgb-shadow) / 0.7);
+  border-radius: var(--r-full);
+  cursor: move;
+  opacity: 0.6;
+  z-index: 3;
+  touch-action: none;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.clip:hover .level-point, .clip.selected .level-point { opacity: 1; }
 .level-badge {
   position: absolute;
   left: 50%;
