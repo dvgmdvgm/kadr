@@ -6,6 +6,7 @@
 import type { Anim, Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { evalAnim } from './anim'
+import { GRADE_KEYS } from '@shared/colour'
 import { fadeFactor, overlapFades, trackHeard } from './player'
 import { ensureFragmentServer } from './fragments'
 import { logError, logWarn } from './log'
@@ -146,6 +147,9 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   const m = clip.mask
   if (m && [m.left, m.top, m.right, m.bottom].some((a) => animActive(a))) return true
   if ((clip.maskShapes?.length ?? 0) > 0 || clip.maskShape) return true
+  // J1: the grade is shader-only
+  const g = clip.grade
+  if (g && GRADE_KEYS.some((k) => animActive(g[k]))) return true
   if (clip.transitionIn && clip.transitionIn.type !== 'none') return true
   if (clip.transitionOut && clip.transitionOut.type !== 'none') return true
   const end = clip.start + clip.duration

@@ -124,6 +124,10 @@ mixes audio and muxes/transcodes per preset.
   of a B-frame intermediate is fed once, in decode order, and frame k comes
   back at every k, however the file's bytes and the config check interleave;
   J13: on short GOPs the first chunk after a jump is the sought key frame);
+  `check-colour-math.mjs` wants the installed electron (J1: ramps drawn
+  through the REAL Compositor in a hidden window match `shared/colour.ts`'s
+  reference within 1/255 for every primary control, a neutral grade is
+  pixel-exact, a keyframed exposure is neutral at its 0 key);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -842,7 +846,16 @@ mixes audio and muxes/transcodes per preset.
   glow + gaussian-blur effect passes (`drawLayerFx`), raw-BGRA capture
   upload, packed colour-over-matte sampling for alpha video
   (`LayerDraw.alphaPacked`), and pipelined readback for the export pipe
-  (`startRead`/`finishRead` through a pixel-pack buffer). `holdSources`
+  (`startRead`/`finishRead` through a pixel-pack buffer). PRIMARIES (J1,
+  `Clip.grade`, `shared/colour.ts`): seven Anims — exposure in stops,
+  contrast, saturation, temperature, tint, highlights, shadows −1…1 — run in
+  the clip shader in LINEAR light on straight colour before opacity, highp;
+  the reference maths and the GLSL live in one file. `gradeAt` hands the
+  layer its values, or nothing when neutral at that moment: then the shader
+  skips the grade, so an ungraded clip is not a single pixel different. The
+  grade is optional on the clip (absent = none; a present one is completed by
+  `sanitizeProject`), its keys follow trims and speed through `forEachAnim`,
+  and a graded fragment goes through pixel capture. `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.
   CONTEXT LIFECYCLE: `dispose()` frees the GL resources and drops the

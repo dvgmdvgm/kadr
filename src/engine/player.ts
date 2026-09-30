@@ -5,6 +5,7 @@ import { getCaptureFrame } from './fragmentCapture'
 import { chromiumCanDecode } from './codecs'
 import { playsProxy } from '@shared/proxyChoice'
 import { packSourceHeight } from '@shared/streamColour'
+import { gradeAt } from '@shared/colour'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -592,7 +593,8 @@ function drawClipLayer(
             featherOut: Math.max(0, evalAnim(ms.featherOut, rel)),
             invert: ms.invert
           }))
-        : undefined
+        : undefined,
+      grade: gradeAt(clip.grade, rel, evalAnim)
     }
     if (common.opacity <= 0.001) return
     // enabled outer glows render the layer through the effect pass; smoke is

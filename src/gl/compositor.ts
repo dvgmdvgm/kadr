@@ -6,6 +6,7 @@ import { GLOW_FIELD_FS, GLOW_FS, type GlowParams } from './glow'
 import { logError } from '@/engine/log'
 import type { ClipFit } from '@shared/types'
 import { PACK_GAP, packHeight } from '@shared/streamColour'
+import { GRADE_GLSL } from '@shared/colour'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -36,6 +37,7 @@ uniform vec4 uShapeRect[MAX_SHAPES];   // cx, cy, halfW, halfH in UV
 uniform vec3 uShapeFeather[MAX_SHAPES];// featherIn, featherOut, invert flag
 uniform float uAspect;                 // layer width/height (aspect-correct distances)
 out vec4 outColor;
+${GRADE_GLSL}
 
 float edgeDist(vec2 a, vec2 b, vec2 p) {
   vec2 e = b - a;
@@ -63,6 +65,8 @@ void main() {
     c = vec4(c.b, c.g, c.r, c.a);          // offscreen captures arrive BGRA…
     if (c.a > 0.0001) c.rgb /= c.a;        // …premultiplied; pipeline wants straight
   }
+  // J1: the primary grade, on straight colour before opacity (highp inside)
+  if (uGradeOn == 1) c.rgb = kadrGrade(c.rgb);
   float alpha = c.a * uOpacity;
 
   if (uShapeCount > 0) {
@@ -234,6 +238,8 @@ export interface LayerDraw {
   /** cut fractions [left, top, right, bottom], 0..1 */
   crop?: [number, number, number, number]
   shapes?: ShapeUniform[]
+  /** J1: `uGrade` values (shared/colour.ts `gradeAt`); absent = no grade, not even a round trip */
+  grade?: number[]
 }
 
 export interface ShapeUniform {
@@ -315,6 +321,8 @@ export class Compositor {
   private uShapeRect: WebGLUniformLocation
   private uShapeFeather: WebGLUniformLocation
   private uAspect: WebGLUniformLocation
+  private uGradeOn: WebGLUniformLocation
+  private uGrade: WebGLUniformLocation
   private textures = new Map<string, TexEntry>()
   private frame = 0
   /** the frame in PROJECT pixels — all geometry, masks and effect radii */
@@ -358,6 +366,8 @@ export class Compositor {
     this.uShapeRect = gl.getUniformLocation(prog, 'uShapeRect[0]')!
     this.uShapeFeather = gl.getUniformLocation(prog, 'uShapeFeather[0]')!
     this.uAspect = gl.getUniformLocation(prog, 'uAspect')!
+    this.uGradeOn = gl.getUniformLocation(prog, 'uGradeOn')!
+    this.uGrade = gl.getUniformLocation(prog, 'uGrade[0]')!
 
     this.vbo = gl.createBuffer()!
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
@@ -511,6 +521,8 @@ export class Compositor {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
     gl.uniform1f(this.uOpacity, l.opacity)
+    gl.uniform1i(this.uGradeOn, l.grade ? 1 : 0)
+    if (l.grade) gl.uniform1fv(this.uGrade, l.grade)
     const c = l.crop ?? [0, 0, 0, 0]
     gl.uniform4f(this.uCrop, c[0], c[1], c[2], c[3])
     const shapes = (l.shapes ?? []).slice(0, MAX_SHAPES)

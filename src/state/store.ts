@@ -29,6 +29,7 @@ import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
+import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -216,6 +217,11 @@ export function sanitizeProject(p: Project): Project {
       c.transform = { ...newClipDefaults().transform, ...(c.transform ?? {}) }
       c.gain = anim(c.gain, 1)
       c.effects ??= []
+      // J1: a grade that is there has every control; one that is not stays absent
+      if (c.grade !== undefined) {
+        if (!c.grade || typeof c.grade !== 'object') delete c.grade
+        else for (const k of GRADE_KEYS) c.grade[k] = anim(c.grade[k], 0)
+      }
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
@@ -250,6 +256,11 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
     z: tr.z ? fn(tr.z) : undefined
   }
   c.gain = fn(c.gain)
+  if (c.grade) {
+    const g: Partial<ClipGrade> = { ...c.grade }
+    for (const k of GRADE_KEYS) if (g[k]) g[k] = fn(g[k]!)
+    c.grade = g as ClipGrade
+  }
   if (c.mask) {
     c.mask = {
       left: fn(c.mask.left), top: fn(c.mask.top),

@@ -1,6 +1,7 @@
 // Core project model shared between main and renderer processes.
 // All times are in seconds, all dimensions in pixels.
 
+import type { ClipGrade } from './colour'
 import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
@@ -211,6 +212,8 @@ export interface Clip {
   maskShape?: MaskShape
   /** several drawn shapes combine: union of normal shapes minus inverted ones */
   maskShapes?: MaskShape[]
+  /** J1: primary colour correction (shared/colour.ts); absent = none */
+  grade?: ClipGrade
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string
