@@ -27,6 +27,7 @@ const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) =>
 import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
+import { mapPaths, projectPaths } from '@shared/projectPaths'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -927,6 +928,9 @@ interface EditorState {
   /** Point assets at other files (relink of offline media): each given asset
       replaces the one with its id — one undo entry. */
   relinkAssets(fresh: MediaAsset[]): void
+  /** «Собрать проект» (H8): every path found in `map` (old → new) rewritten — media, transcripts,
+      voice-over scripts and runs — one undo step; nothing to rewrite pushes none */
+  relocatePaths(map: Record<string, string>): void
   /** register transcript/text docs in the sources (one undo entry) */
   addTexts(docs: TextDoc[]): void
   /** Land a finished voice-over — asset, script docs, run record and clip — as
@@ -1281,6 +1285,12 @@ export const useEditor = create<EditorState>((set, get) => ({
       })
       return { project: p }
     })
+  },
+  relocatePaths: (map) => {
+    const next = mapPaths(get().project, (path, kind) => (kind === 'proxy' ? path : map[path] ?? path))
+    if (JSON.stringify(projectPaths(next)) === JSON.stringify(projectPaths(get().project))) return
+    get().pushHistory('hCollect')
+    set({ project: next })
   },
   addBin: (name, parentId, assetIds) => {
     const id = uid()

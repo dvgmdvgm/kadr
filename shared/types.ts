@@ -3,6 +3,7 @@
 
 import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
+import type { CollectPlan } from './projectPaths'
 import type { GainKey } from './gainKeys'
 import type { SettingsSnapshot, SettingValue } from './settings'
 import type { RawEncodeOpts } from './rawEncode'
@@ -1262,6 +1263,12 @@ export interface KadrApi {
   openProjectDialog(): Promise<string | null>
   readProject(path: string): Promise<Project>
   writeProject(path: string, project: Project): Promise<void>
+  /** «Собрать проект» (H8): what would be copied into `<folder of path>/media`, its size and the free space */
+  collectPlan(project: Project, path: string): Promise<CollectPlan>
+  /** copy it; resolves to old path → new path for everything now in media/ */
+  collectRun(project: Project, path: string): Promise<Record<string, string>>
+  collectCancel(): Promise<void>
+  onCollectProgress(cb: (p: { done: number; total: number; file: string }) => void): () => void
   /** write <name>.autosave.kadr next to the project (atomic); returns path */
   /** a backup version in userData/backups (+ <name>.autosave.kadr next to a saved project); resolves to the backup's path */
   autosaveProject(project: Project, mainPath: string | null): Promise<string>

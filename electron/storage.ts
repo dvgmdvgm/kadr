@@ -2,6 +2,7 @@ import { app, ipcMain } from 'electron'
 import { cacheDir } from './appSettings'
 import { promises as fs, statfsSync } from 'fs'
 import { join, basename, resolve, sep } from 'path'
+import { loadResolved } from '../shared/projectPaths'
 import { mediaCacheKey, proxySuffix, decodedSuffix, projectKey } from './cacheKeys'
 import type {
   StorageScan, StorageGroup, StorageGroupId, StorageProject, StoragePruneRequest,
@@ -63,7 +64,9 @@ interface Known {
 
 async function readProjectFile(path: string): Promise<Known | null> {
   try {
-    const p = JSON.parse(await fs.readFile(path, 'utf8'))
+    // relative paths (H8) mean the project's own folder
+    const raw = JSON.parse(await fs.readFile(path, 'utf8'))
+    const p: typeof raw = loadResolved(raw, path)
     return {
       id: path,
       name: p.name || basename(path),

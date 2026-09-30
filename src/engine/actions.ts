@@ -17,6 +17,7 @@ import { useSoundsUi } from '../components/SoundsDialog'
 import { useCaptionsUi } from '../components/CaptionsDialog'
 import { useTextUi } from '../components/TextTools'
 import { useSettingsUi } from '../components/SettingsDialog'
+import { startCollect } from '../components/CollectDialog'
 import { usePasteAttrsUi } from '../components/PasteAttrsMenu'
 import { modalsOpen } from '../components/Modal'
 import { logError, logWarn } from './log'
@@ -31,7 +32,8 @@ void _labels
 
 /** project-file commands live in App.tsx (they drive its save UI); it fills these in */
 export const appCommands = {
-  save: () => {},
+  /** true once the project is on disk */
+  save: async (): Promise<boolean> => false,
   saveAs: () => {},
   newProject: () => {},
   openProject: () => {},
@@ -72,6 +74,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   'edit.split': { run: (s) => s.splitAtPlayhead() },
   'file.save': { run: () => appCommands.save() },
   'file.saveAs': { run: () => appCommands.saveAs() },
+  'file.collect': { run: () => void startCollect() },
   'edit.delete': {
     enabled: hasSel, why: 'whyNoSel',
     run: (s) => { if (s.selection.length) s.deleteSelection(); else if (s.range) s.deleteRange() }

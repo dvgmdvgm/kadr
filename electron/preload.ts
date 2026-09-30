@@ -119,6 +119,14 @@ const api: KadrApi = {
   openProjectDialog: () => ipcRenderer.invoke('project:open-dialog'),
   readProject: (path) => ipcRenderer.invoke('project:read', path),
   writeProject: (path, project) => ipcRenderer.invoke('project:write', path, project),
+  collectPlan: (project, path) => ipcRenderer.invoke('project:collect-plan', project, path),
+  collectRun: (project, path) => ipcRenderer.invoke('project:collect-run', project, path),
+  collectCancel: () => ipcRenderer.invoke('project:collect-cancel'),
+  onCollectProgress: (cb) => {
+    const handler = (_e: unknown, p: { done: number; total: number; file: string }) => cb(p)
+    ipcRenderer.on('project:collect-progress', handler)
+    return () => ipcRenderer.removeListener('project:collect-progress', handler)
+  },
   autosaveProject: (project, mainPath) => ipcRenderer.invoke('project:autosave', project, mainPath),
   backupOffer: () => ipcRenderer.invoke('backup:offer'),
   revealBackup: (file) => ipcRenderer.invoke('backup:reveal', file),

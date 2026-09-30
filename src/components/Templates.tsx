@@ -6,6 +6,7 @@ import { fpsLabel } from '@shared/projectFormat'
 import { CtxMenu } from './CtxMenu'
 import { Modal } from './Modal'
 import { Icon } from './icons'
+import { startCollect } from './CollectDialog'
 import { useT, type TKey } from '../i18n'
 import { newProject, sanitizeProject, useEditor } from '@/state/store'
 
@@ -109,6 +110,9 @@ export function TemplateMenuButton({ onSaved }: { onSaved(name: string | null, e
               {t(taken.has(templateFileName(name)) ? 'tplReplace' : 'tplSave')}
             </button>
           </div>
+          <button data-act="collect-open" title={t('collectMenuHint')} onClick={() => { setAt(null); void startCollect() }}>
+            {t('collectMenu')}
+          </button>
         </CtxMenu>
       )}
     </>

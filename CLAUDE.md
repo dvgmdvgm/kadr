@@ -59,6 +59,10 @@ mixes audio and muxes/transcodes per preset.
   / никогда» — `MediaAsset.proxyMode`, `shared/proxyChoice.ts` — overrides
   the global toggle and threshold both ways, except that an undecodable
   codec keeps its proxy);
+  `check-collect.mjs` (H8: «Собрать проект» copies every path kind — media,
+  transcripts, voice-over scripts and run folders, reversed renders, downloads
+  and frame-run intermediates — into `<project>/media/` and rewrites them;
+  paths inside the project folder are saved relative);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -1035,7 +1039,16 @@ mixes audio and muxes/transcodes per preset.
   fragment render are named after their source (a hash of path+size+mtime),
   so deleting one costs time and nothing else; a reversed clip, a download
   and a voice-over run are stored BY PATH in the project and cannot be
-  derived again; backups are REFERENCED too (user data), one folder per
+  derived again. RELATIVE PATHS AND COLLECT (H8, `shared/projectPaths.ts`,
+  `electron/collect.ts`): in memory every path is absolute; `project:write`
+  stores a path lying inside the project's folder relative to it (always
+  '/'), `project:read` (and the Storage scan) resolves it again, so autosaves
+  and backups keep absolute ones. «Собрать проект…» (the ▾ on «Сохранить
+  как…», action `file.collect`) copies every referenced file — not proxies —
+  into `<project>/media/` through `.part` sidecars, reuses a same-named file of
+  the same size already there, rewrites the paths in one undo step and saves.
+  A collected file has a new path, so its proxy key changes and the proxy is
+  rebuilt on the next machine — accepted; backups are REFERENCED too (user data), one folder per
   project named `projectKey(path)`. Project templates (`userData/templates/
   <name>.kadr`, H3) belong to no project and are never deleted from the panel. The key formula lives in its own file because a second
   copy would drift, and a drifted formula aims a delete button at the

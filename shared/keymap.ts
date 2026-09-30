@@ -77,6 +77,7 @@ export const ACTIONS = [
   // no key yet — listed so the command palette can find them
   { id: 'file.new', labelKey: 'newProject', context: g, defaultKeys: [] },
   { id: 'file.open', labelKey: 'actOpen', context: g, defaultKeys: [] },
+  { id: 'file.collect', labelKey: 'collectMenu', context: g, defaultKeys: [] },
   { id: 'file.export', labelKey: 'actExport', context: g, defaultKeys: [] },
   { id: 'tools.transcribe', labelKey: 'actTranscribe', context: g, defaultKeys: [] },
   { id: 'tools.captions', labelKey: 'actCaptions', context: g, defaultKeys: [] },

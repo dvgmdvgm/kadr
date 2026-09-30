@@ -16,6 +16,8 @@ import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
 import { registerClaudeIpc, sweepStaleSessions } from './claude'
 import { takeTranscripts, withTranscripts } from './chats'
+import { copyCollect, planCollect } from './collect'
+import { loadResolved, saveRelative } from '@shared/projectPaths'
 import { registerTranscribeIpc } from './transcribe'
 import { registerTtsIpc } from './tts'
 import { registerVoiceIpc } from './voice'
@@ -984,12 +986,29 @@ function registerIpc() {
   ipcMain.handle('project:read', async (_e, path: string): Promise<Project> => {
     // a save that died mid-write left its full-size sidecar next to the file
     void sweepPartSidecars(dirname(path), basename(path) + '.part-')
-    return takeTranscripts(JSON.parse(await fs.readFile(path, 'utf-8')))
+    // paths inside the project's folder are stored relative to it (H8) — resolved here,
+    // so the renderer only ever holds absolute ones
+    return loadResolved(takeTranscripts(JSON.parse(await fs.readFile(path, 'utf-8'))), path)
   })
 
   ipcMain.handle('project:write', async (_e, path: string, project: Project) => {
-    await atomicWrite(path, JSON.stringify(await withTranscripts(project, settings.effective('claude.embedChats').value === true), null, 1))
+    await atomicWrite(path, JSON.stringify(await withTranscripts(saveRelative(project, path), settings.effective('claude.embedChats').value === true), null, 1))
   })
+
+  // «Собрать проект» (H8): the plan (sizes, free space) first, then the copy with progress
+  let collecting: { cancelled: boolean } | null = null
+  ipcMain.handle('project:collect-plan', (_e, project: Project, path: string) => planCollect(project, path))
+  ipcMain.handle('project:collect-run', async (_e, project: Project, path: string) => {
+    if (collecting) throw new Error('collect already running')
+    const signal = (collecting = { cancelled: false })
+    try {
+      const plan = await planCollect(project, path)
+      return await copyCollect(plan.items, (p) => win?.webContents.send('project:collect-progress', p), signal)
+    } finally {
+      collecting = null
+    }
+  })
+  ipcMain.handle('project:collect-cancel', () => { if (collecting) collecting.cancelled = true })
 
   // periodic safety net: a versioned backup in userData/backups (electron/backups.ts),
   // and <name>.autosave.kadr next to a saved project for those who open it by hand
