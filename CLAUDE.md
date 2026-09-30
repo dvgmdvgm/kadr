@@ -487,6 +487,17 @@ mixes audio and muxes/transcodes per preset.
   waveforms (a copy that quietly lost one would stay invisible until that
   project was reopened). The two behaviour checks were verified to fail with
   the sharing switched off.
+- `shared/keymap.ts` + `src/engine/actions.ts` — the action registry: every
+  editor action (id, label, context, default keys; what it does lives in
+  actions.ts), and the ONE keydown handler App.tsx installs on the editor
+  and the popped-out preview. Keys are physical codes (ru/en alike) and
+  MODIFIERS MATCH EXACTLY — the old if/else ignored them, and Ctrl+D, Shift+D
+  and Cmd+D deleted clips. The handler skips a key a widget already
+  `preventDefault`ed, a text field or contenteditable, the Claude terminal
+  (`.xterm`) and an open dialog. The user's rebindings are the DIFF from the
+  defaults in `userData/keymap.json` (user-store IPC, atomic); `findConflicts`
+  reports one key on two actions in one context. Actions with no key are
+  registered too, for the command palette. Test: `node scripts/check-keymap.mjs`.
 - `src/engine/mediaImport.ts` — every media intake path: `importFiles`
   (probe → bin, deduped by path, optional timeline placement),
   `dropPayload` (reads dataTransfer SYNCHRONOUSLY: files → uri-list /
@@ -726,7 +737,7 @@ mixes audio and muxes/transcodes per preset.
   finishes (wired to export progress in `src/main.tsx`).
 - Timeline markers live in `project.markers` (`addMarker`/`moveMarker`/
   `removeMarker`/`renameMarker` in the store, flags drawn by `Timeline.tsx`,
-  M key in `App.tsx`): project-wide time labels, not bound to a track, and
+  M key in the action registry): project-wide time labels, not bound to a track, and
   part of `kadr_state` so the embedded Claude can read and place them.
   NEITHER A MARKER NOR A TRACK OF CLIPS GOES ON ONE CLICK: a marker's right-click
   opens Rename / Delete, and «Удалить дорожку» on a track with clips asks

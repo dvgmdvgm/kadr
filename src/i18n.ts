@@ -675,7 +675,27 @@ const ru = {
   relinkWrongKind: 'файл другого типа, пересвязка отклонена',
   relinkUnreadable: 'не удалось прочитать файл',
   relinkNotFound: 'в папке не нашлось однозначного совпадения для',
-  exportOffline: 'экспорт не начат — файлы не найдены'
+  exportOffline: 'экспорт не начат — файлы не найдены',  // action names (shared/keymap.ts): the command palette and the shortcut editor
+  actPlay: 'Воспроизведение / пауза',
+  actSplit: 'Разрезать по плейхеду',
+  actDelete: 'Удалить выделение',
+  actCopy: 'Копировать',
+  actPaste: 'Вставить на плейхеде',
+  actLink: 'Связать / развязать видео и аудио',
+  actMarker: 'Поставить маркер',
+  actPrevFrame: 'Кадр назад',
+  actNextFrame: 'Кадр вперёд',
+  actBack1s: 'Секунда назад',
+  actFwd1s: 'Секунда вперёд',
+  actEscape: 'Снять диапазон / закрыть анимацию',
+  actOpen: 'Открыть проект',
+  actExport: 'Экспорт',
+  actTranscribe: 'Транскрибировать диапазон',
+  actCaptions: 'Авто-субтитры',
+  actSounds: 'Библиотека звуков',
+  actChecks: 'Проверка',
+  actSnapshot: 'Снимок кадра',
+  actPopout: 'Предпросмотр в отдельном окне'
 }
 
 const en: typeof ru = {
@@ -1353,7 +1373,26 @@ const en: typeof ru = {
   relinkWrongKind: 'a file of another kind, relink refused',
   relinkUnreadable: 'could not read the file',
   relinkNotFound: 'no unambiguous match in the folder for',
-  exportOffline: 'export not started — files not found'
+  exportOffline: 'export not started — files not found',  actPlay: 'Play / pause',
+  actSplit: 'Split at playhead',
+  actDelete: 'Delete selection',
+  actCopy: 'Copy',
+  actPaste: 'Paste at playhead',
+  actLink: 'Link / unlink video and audio',
+  actMarker: 'Add marker',
+  actPrevFrame: 'Previous frame',
+  actNextFrame: 'Next frame',
+  actBack1s: 'Back one second',
+  actFwd1s: 'Forward one second',
+  actEscape: 'Clear range / close animation',
+  actOpen: 'Open project',
+  actExport: 'Export',
+  actTranscribe: 'Transcribe range',
+  actCaptions: 'Auto captions',
+  actSounds: 'Sound library',
+  actChecks: 'Checks',
+  actSnapshot: 'Frame snapshot',
+  actPopout: 'Preview in its own window'
 }
 
 export type TKey = keyof typeof ru

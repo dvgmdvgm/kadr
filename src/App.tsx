@@ -20,12 +20,13 @@ import { StoragePanel } from './components/StoragePanel'
 import { RelinkDialog } from './components/RelinkDialog'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
-import { Modal, modalsOpen } from './components/Modal'
+import { Modal } from './components/Modal'
+import { appCommands, loadKeymap, onEditorKey } from './engine/actions'
 import { needsConfirm } from './engine/discardGuard'
 import { rememberProject } from './engine/storage'
 import { usePopout, previewHost, setPreviewSlot, dockPreviewWindow } from './engine/popout'
 import { useEditor, newProject } from './state/store'
-import { dropPayload, dropUsable, importDrop, importFiles } from './engine/mediaImport'
+import { dropPayload, dropUsable, importDrop } from './engine/mediaImport'
 import { syncProjectFragments } from './engine/fragments'
 import { useT, type TKey } from './i18n'
 import { create } from 'zustand'
@@ -204,6 +205,8 @@ export async function openProjectAt(path: string, { force = false }: { force?: b
   return true
 }
 
+Object.assign(appCommands, { save: saveProject, saveAs: saveProjectAs, newProject: newProjectGuarded, openProject })
+
 const TL_MIN = 160
 
 export default function App() {
@@ -262,75 +265,15 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => { void loadKeymap() }, [])
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      // a dialog owns the keyboard while it is open: Space on one of its
-      // buttons used to press the button AND start playback behind it
-      if (modalsOpen()) return
-      const s = useEditor.getState()
-      // e.code is keyboard-layout independent (works for ru/en)
-      if (e.code === 'Space') {
-        e.preventDefault()
-        s.setPlaying(!s.playing)
-      } else if (e.code === 'KeyS') {
-        if (e.ctrlKey) {
-          e.preventDefault()
-          if (e.shiftKey) saveProjectAs()
-          else saveProject()
-        } else s.splitAtPlayhead()
-      } else if (e.code === 'KeyD' || e.code === 'Delete' || e.code === 'Backspace') {
-        if (s.selection.length) s.deleteSelection()
-        else if (s.range) s.deleteRange()
-      } else if (e.code === 'KeyZ' && e.ctrlKey) {
-        e.preventDefault()
-        if (e.shiftKey) s.redo()
-        else s.undo()
-      } else if (e.code === 'KeyY' && e.ctrlKey) {
-        e.preventDefault()
-        s.redo()
-      } else if (e.code === 'KeyC' && e.ctrlKey) {
-        if (s.selection.length) s.copySelection()
-        else if (s.range) s.copyRange()
-      } else if (e.code === 'KeyV' && e.ctrlKey) {
-        if (s.clipboard.length) {
-          s.pasteAtPlayhead()
-        } else {
-          // nothing copied inside the editor — try the OS clipboard:
-          // copied files or a copied image (e.g. from Telegram/browser)
-          void window.kadr.clipboardMedia().then((paths) => {
-            if (paths.length) {
-              return importFiles(paths, { trackId: null, at: useEditor.getState().playhead })
-            }
-          }).catch((err) => logError('буфер обмена', 'вставить не удалось', err))
-        }
-      } else if (e.code === 'KeyU') {
-        s.toggleLinkSelection()
-      } else if (e.code === 'KeyM' && !e.ctrlKey && !e.altKey) {
-        s.addMarker(s.playhead)
-      } else if (e.code === 'ArrowLeft') {
-        // step the playhead by frames; preventDefault keeps the timeline from scrolling
-        e.preventDefault()
-        s.setPlayhead(s.playhead - (e.shiftKey ? 1 : 1 / s.project.fps))
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault()
-        s.setPlayhead(s.playhead + (e.shiftKey ? 1 : 1 / s.project.fps))
-      } else if (e.code === 'Home') {
-        e.preventDefault()
-        s.setPlayhead(0)
-      } else if (e.code === 'Escape') {
-        if (s.animClipId) s.setAnimClip(null)
-        else s.setRange(null)
-      }
-    }
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onEditorKey)
     // the detached preview is a window of its own: with the focus there,
     // Space and the arrows must still drive the same transport
-    popWin?.addEventListener('keydown', onKey)
+    popWin?.addEventListener('keydown', onEditorKey)
     return () => {
-      window.removeEventListener('keydown', onKey)
-      popWin?.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onEditorKey)
+      popWin?.removeEventListener('keydown', onEditorKey)
     }
   }, [popWin])
 
