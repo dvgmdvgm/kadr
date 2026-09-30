@@ -4,6 +4,7 @@ import { glowParams } from '@/gl/glow'
 import { getCaptureFrame } from './fragmentCapture'
 import { chromiumCanDecode } from './codecs'
 import { playsProxy } from '@shared/proxyChoice'
+import { packSourceHeight } from '@shared/streamColour'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -642,17 +643,17 @@ function drawClipLayer(
       if (asset.kind === 'audio') return
       const vf = frames?.get(clip.id)
       if (vf) {
-        // alpha sources decode as colour-over-matte (2× tall) — the shader
+        // alpha sources decode as colour-over-matte (packHeight) — the shader
         // splits the halves, the layer keeps its logical size
         const ap = packed?.has(clip.id) ?? false
-        const half = (h: number) => (ap ? h / 2 : h)
+        const half = (h: number) => (ap ? packSourceHeight(h) : h)
         const layers: LayerDraw[] = [{
           source: vf as unknown as TexImageSource,
           cacheKey: clip.id,
           dynamic: true,
           alphaPacked: ap,
           srcWidth: vf.displayWidth || asset.width,
-          srcHeight: half(vf.displayHeight || asset.height * (ap ? 2 : 1)),
+          srcHeight: vf.displayHeight ? half(vf.displayHeight) : asset.height,
           ...common
         }]
         const bl = blends?.get(clip.id)
@@ -671,7 +672,7 @@ function drawClipLayer(
             source: bl.frame as unknown as TexImageSource,
             cacheKey: `${clip.id}:b`,
             srcWidth: bl.frame.displayWidth || asset.width,
-            srcHeight: half(bl.frame.displayHeight || asset.height * (ap ? 2 : 1)),
+            srcHeight: bl.frame.displayHeight ? half(bl.frame.displayHeight) : asset.height,
             opacity: fw
           })
         }

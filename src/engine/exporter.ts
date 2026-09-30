@@ -545,7 +545,7 @@ export function startExport(
           // shader splits it back apart, pixel for pixel.
           const alt = await alphaPackedFallback(asset)
           if (alt) {
-            src = await Mp4FrameSource.open(alt, { alphaPacked: true })
+            src = await Mp4FrameSource.open(alt)
             if (src) packed?.add(clip.id)
           }
         }

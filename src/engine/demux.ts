@@ -60,19 +60,13 @@ export class Mp4FrameSource {
   /** number of the last sample queued since the last jump — see ingestSamples */
   private lastSample = -1
 
-  /** 0.5 for colour-over-matte intermediates — see normalizeColor. */
-  private heightScale = 1
   /** H.264/HEVC: the space the preview shows this stream in, from the stream
    *  itself (null = the decoder's own); undefined = other codecs, see normalizeColor */
   private colour: ColourInit | null | undefined
 
-  static async open(
-    asset: MediaAsset,
-    opts?: { alphaPacked?: boolean }
-  ): Promise<Mp4FrameSource | null> {
+  static async open(asset: MediaAsset): Promise<Mp4FrameSource | null> {
     try {
       const src = new Mp4FrameSource(asset)
-      if (opts?.alphaPacked) src.heightScale = 0.5
       if (await src.init()) return src
       src.close()
       return null
@@ -523,19 +517,15 @@ export class Mp4FrameSource {
    * keep the old rule, re-wrapping only a frame whose matrix is empty.
    */
   private async normalizeColor(f: VideoFrame): Promise<VideoFrame> {
-    // Packed alpha intermediates always carry a BT.709 picture (the packer
-    // converts anything else) — and they must be re-wrapped here rather
-    // than tagged in the file, because a tagged frame goes through
-    // Chromium's colour-managed upload and comes out with lifted
-    // mid-tones, which would corrupt the alpha matte in the bottom half.
-    const want = this.heightScale !== 1 ? heightGuess(720)
-      : this.colour !== undefined ? this.colour
+    // Packed alpha intermediates are fully described (makeDecoded), so
+    // previewColour leaves them to the decoder, whose frames match the element.
+    const want = this.colour !== undefined ? this.colour
       : f.colorSpace?.matrix ? null
       : heightGuess(f.codedHeight ?? 0)
     if (!want || !f.format) return f
     // already so (an HD stream WebCodecs guessed right): no CPU copy per frame
     const cs = f.colorSpace
-    if (this.heightScale === 1 && cs && cs.primaries === want.primaries && cs.transfer === want.transfer &&
+    if (cs && cs.primaries === want.primaries && cs.transfer === want.transfer &&
       cs.matrix === want.matrix && cs.fullRange === want.fullRange) return f
     try {
       const size = f.allocationSize()

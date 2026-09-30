@@ -9,7 +9,7 @@ import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment
 import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
-import { proxyColourArgs, type FfColour } from '@shared/streamColour'
+import { proxyColourArgs, PACK_GAP, type FfColour } from '@shared/streamColour'
 import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
 const execFileP = promisify(execFile)
@@ -392,10 +392,10 @@ export interface PackedAlphaPlan {
  * Everything requestDecoded needs to decide on packing a source as
  * colour-over-matte, from ONE ffprobe.
  *
- * Every source but a full-range one can be packed: the packer converts the
- * picture to BT.709 limited, the one space Chromium hands to WebGL untouched.
- * (Full-range YUV is rare in alpha footage and would need its own dance, so
- * it keeps the slower element-decode path — correct, just slow.)
+ * Every source but a full-range one can be packed: the picture is copied
+ * verbatim and tagged in full by `matrix` (packTags). (Full-range YUV is rare
+ * in alpha footage and would need its own dance, so it keeps the slower
+ * element-decode path — correct, just slow.)
  */
 export async function packedAlphaPlan(src: string): Promise<PackedAlphaPlan> {
   const t = await probeColorTags(src)
@@ -446,6 +446,13 @@ export async function probeColorTags(
   }
 }
 
+// ponytail: only BT.601 and BT.709 are told apart; a BT.2020/240M alpha source
+// is tagged BT.709 — tag it by its own matrix if one turns up
+const packTags = (m?: string) => {
+  const c = !m || /^(bt601|smpte170m|bt470bg)$/.test(m) ? 'smpte170m' : 'bt709'
+  return `colorspace=${c}:color_primaries=${c}:color_trc=${c}`
+}
+
 /**
  * Full-resolution H.264 intermediate for sources Chromium cannot decode
  * (HEVC without VAAPI, mpeg4, prores, …). Near-lossless on purpose — the
@@ -477,26 +484,25 @@ export async function makeDecoded(
     '-i', src,
     '-filter_complex',
     '[0:v]format=yuva420p,split=2[c][a];' +
-    // the picture's samples are copied verbatim — no colour conversion is
-    // applied here or tagged on the file, so the decoder treats it exactly
-    // like the original (guaranteed by the BT.709/HD gate in requestDecoded)
-    // The picture is converted to BT.709 limited — a pure matrix change
-    // (swscale, no gamma or gamut transform), a no-op when the source is
-    // BT.709 already. It has to be BT.709: Chromium runs its own colour
-    // transform on any other space while uploading the frame, and that
-    // transform would also sweep over the bottom half and lift the alpha
-    // matte (128 → 143). A matte is not colour and must arrive verbatim.
-    `[c]format=yuv420p,scale=in_color_matrix=${opts.matrix || 'bt601'}:out_color_matrix=bt709[col];` +
+    // the picture's samples are copied VERBATIM — swscale never converts a
+    // matrix yuv→yuv, so the «converted to BT.709» once promised here did not
+    // happen; the layout (gaps) is PACK_GAP's in shared/streamColour.ts
+    `[c]format=yuv420p,pad=iw:ih+${PACK_GAP}:0:0,fillborders=bottom=${PACK_GAP}:mode=smear[col];` +
     // the matte rides in the luma plane, mapped into the same limited range
-    // the decoder will expand back — verified to round-trip bit-exactly
-    '[a]alphaextract,format=yuv420p,scale=in_range=pc:out_range=tv[m];' +
-    '[col][m]vstack=inputs=2[v]',
+    // the decoder will expand back. The range change happens ONCE, on the gray
+    // plane, before format=yuv420p: the other way round ffmpeg 7 compressed
+    // the gray on the conversion and the scale compressed it again — opaque
+    // came out 217, and every packed clip exported ≈0.92× dark (card J12).
+    `[a]alphaextract,scale=in_range=pc:out_range=tv,format=yuv420p,pad=iw:ih+${2 * PACK_GAP}:0:${PACK_GAP},fillborders=top=${PACK_GAP}:bottom=${PACK_GAP}:mode=smear[m];` +
+    // FULLY described in the space the element shows the source in (BT.601
+    // or BT.709, primaries and transfer included): WebCodecs obeys a fully
+    // described SPS, so the frames arrive exactly as the preview's — an
+    // untagged pack was decoded BT.709 whatever the source, and a BT.601
+    // source exported shifted. Neutral grey (the matte) keeps its level
+    // through either space: measured, card J12.
+    `[col][m]vstack=inputs=2,setparams=${packTags(opts.matrix)}[v]`,
     '-map', '[v]', '-an',
     '-c:v', 'libx264', '-preset', 'veryfast', '-qp', '0', '-pix_fmt', 'yuv420p',
-    // deliberately UNTAGGED: a tagged frame reaches WebGL through Chromium's
-    // colour-managed upload, which rewrites mid-tones (it lifted the alpha
-    // matte 128 → 143). Untagged frames are re-wrapped on the CPU by
-    // Mp4FrameSource and upload verbatim — the picture is already BT.709.
     '-movflags', '+faststart',
     out
   ] : opts?.alpha ? [

@@ -917,13 +917,21 @@ mixes audio and muxes/transcodes per preset.
   * ALPHA VIDEO (VP9+alpha WebM — every transparent fragment render —
     ProRes 4444, HEVC-alpha) has no WebCodecs path in any browser, so
     `alphaPackedFallback` builds a cached LOSSLESS H.264 mp4 that stacks
-    the colour frame over its alpha matte (2× height) and the shader
-    splits it apart again. The packer normalises the picture to BT.709
-    with a pure matrix change and writes NO colour tags, and
-    `Mp4FrameSource` re-wraps the frames as BT.709 on the CPU: a tagged
-    frame goes through Chromium's colour-managed upload, which rewrites
-    mid-tones and would lift the matte (128 → 143). `KADR_DISABLE_ALPHA_PACK`
-    forces the old path.
+    the colour frame over its alpha matte (`packHeight`: each half padded
+    with repeated edge rows) and the shader splits it apart again. J12:
+    the picture is copied VERBATIM (swscale never converts a matrix
+    yuv→yuv — the «normalised to BT.709» once written here never happened)
+    and the pack is FULLY TAGGED in the space the element shows the source
+    in (untagged VP9 → BT.601), so WebCodecs decodes it like the preview;
+    the untagged pack came out BT.709 whatever the source. The matte goes
+    to limited range ONCE, on the gray plane: ffmpeg 7 compressed it twice
+    (opaque 217, exports 0.92× dark). The gaps stop the upload's chroma
+    upsampling bleeding across the seam and from the decoder's padding into
+    the alpha. Measured (Chromium 148): a BT.601 pack is pixel-identical to
+    the preview but for the last column, where the preview's own VP9
+    element is off from ffmpeg's decode; a BT.709 one is within 2/255
+    (45 dB). `KADR_DISABLE_ALPHA_PACK` forces the old path. Test:
+    `node scripts/check-alpha-export.mjs`.
   * THE YUV MATRIX FOLLOWS THE ELEMENT (J9, `shared/streamColour.ts`):
     WebCodecs decodes every H.264/HEVC stream not FULLY described (primaries,
     transfer AND matrix) as BT.709 and fills `VideoFrame.colorSpace` with

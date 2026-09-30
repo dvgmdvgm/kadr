@@ -23,7 +23,7 @@ const load = (entry) => import('data:text/javascript;base64,' + Buffer.from(buil
   alias: { '@shared': join(root, 'shared') }
 }).outputFiles[0].text).toString('base64'))
 const { rawEncodeArgs, withCodec, pickEncoder, seqPattern, videoCodecOf } = await load(['shared', 'rawEncode.ts'])
-const { ExportMuxer, configureFfmpeg } = await load(['electron', 'ffmpeg.ts'])
+const { ExportMuxer, configureFfmpeg, makeDecoded } = await load(['electron', 'ffmpeg.ts'])
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -153,6 +153,42 @@ if (spawnSync(ff, ['-version']).status !== 0) {
       check(`${codec} probes correctly (${enc})`, s.codec_name === codec && s.pix_fmt === 'yuv420p' && s.width === W,
         r.status === 0 ? `${s.codec_name} ${s.pix_fmt}` : r.stderr.toString().slice(0, 300))
     }
+
+    // J12: the packed colour-over-matte intermediate the exporter decodes alpha
+    // sources through. On ffmpeg 7 the gray→yuv420p step compressed the matte's
+    // range and the explicit pc→tv did it AGAIN: opaque became 217, not 235, and
+    // every packed-alpha clip exported ≈0.92× darker than the preview.
+    const aw = 64, ah = 48
+    const asrc = join(dir, 'bands.webm'), apack = join(dir, 'bands.mp4')
+    execFileSync(ff, ['-y', '-v', 'error', '-f', 'lavfi', '-i', `color=c=red:s=${aw}x${ah}:d=0.2:r=10`,
+      '-vf', "format=rgba,geq=r=255:g=0:b=0:a='if(lt(X,21),255,if(lt(X,42),128,0))'",
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-crf', '12', '-b:v', '0', asrc])
+    // Also: the colour half is the source's samples verbatim (swscale never did
+    // the «BT.709 conversion» the packer promised), the pack is fully described
+    // in the space the element shows the source in, and PACK_GAP rows keep the
+    // upload's chroma upsampling from bleeding across the seam and the edge.
+    const { PACK_GAP: G, packHeight, packSourceHeight } = await load(['shared', 'streamColour.ts'])
+    await makeDecoded(asrc, apack, 0.2, undefined, { packed: true, alpha: true, codec: 'vp9', matrix: 'bt601' })
+    const ps = probe(apack)
+    const PH = packHeight(ah)
+    check('the alpha pack is packHeight tall, and packSourceHeight reads it back',
+      ps.width === aw && ps.height === PH && packSourceHeight(PH) === ah, `${ps.width}x${ps.height}`)
+    check('an untagged source packs fully described BT.601 (as the element shows it)',
+      ps.color_space === 'smpte170m' && ps.color_primaries === 'smpte170m' && ps.color_transfer === 'smpte170m',
+      `${ps.color_space}/${ps.color_primaries}/${ps.color_transfer}`)
+    const yuv = (args) => execFileSync(ff, ['-v', 'error', ...args, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'])
+    const yp = yuv(['-i', apack]), ys = yuv(['-c:v', 'libvpx-vp9', '-i', asrc])
+    const cw = aw / 2, uS = aw * ah, uP = aw * PH, vS = uS + cw * ah / 2, vP = uP + cw * PH / 2
+    const same = (a, b) => Buffer.compare(a, b) === 0
+    check('the colour half is the source\'s Y, U and V verbatim',
+      same(yp.subarray(0, uS), ys.subarray(0, uS)) && same(yp.subarray(uP, uP + cw * ah / 2), ys.subarray(uS, vS)) &&
+      same(yp.subarray(vP, vP + cw * ah / 2), ys.subarray(vS, vS + cw * ah / 2)))
+    const row = (y) => yp.subarray(y * aw, (y + 1) * aw)
+    check('the gaps repeat the colour\'s last row, the matte\'s first and its last',
+      same(row(ah - 1), row(ah + G - 1)) && same(row(ah + 2 * G), row(ah + G)) && same(row(PH - G - 1), row(PH - 1)))
+    const my = (x) => yp[(ah + 2 * G + ah / 2) * aw + x] // a luma sample in the matte half
+    check('the matte is limited range once: opaque 235, transparent 16, half ~126',
+      my(5) === 235 && my(60) === 16 && Math.abs(my(32) - 126) <= 2, `${my(5)} ${my(32)} ${my(60)}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

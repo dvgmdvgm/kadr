@@ -142,6 +142,18 @@ const MATRIX: Record<number, ColourInit['matrix']> = { 0: 'rgb', 1: 'bt709', 5: 
 const BT601: ColourInit = { primaries: 'smpte170m', transfer: 'smpte170m', matrix: 'smpte170m', fullRange: false }
 const BT709: ColourInit = { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }
 
+/**
+ * PACKED ALPHA layout (makeDecoded's packed branch; card J12): the colour, h
+ * rows; PACK_GAP rows repeating its last row; PACK_GAP repeating the matte's
+ * first; the matte, h rows; PACK_GAP repeating its last. Without the gaps the
+ * upload's chroma upsampling bled neutral grey into the colour's bottom row,
+ * the colour into the matte's top row (i.e. into the alpha), and the decoder's
+ * padding below the frame into the matte's bottom row.
+ */
+export const PACK_GAP = 8
+export const packHeight = (h: number) => 2 * h + 3 * PACK_GAP
+export const packSourceHeight = (packH: number) => (packH - 3 * PACK_GAP) / 2
+
 /** <video>'s guess for a stream that is not fully described */
 export function heightGuess(height: number): ColourInit {
   return height < 720 ? BT601 : BT709

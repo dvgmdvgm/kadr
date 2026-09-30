@@ -5,6 +5,7 @@ import { edgeGlsl } from './edges'
 import { GLOW_FIELD_FS, GLOW_FS, type GlowParams } from './glow'
 import { logError } from '@/engine/log'
 import type { ClipFit } from '@shared/types'
+import { PACK_GAP, packHeight } from '@shared/streamColour'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -25,6 +26,8 @@ uniform sampler2D uTex;
 uniform int uRawBGRA;                  // 1 = premultiplied BGRA capture frame
 uniform int uAlphaPacked;              // 1 = colour over its alpha matte (2× tall)
 uniform float uPackHalfTexel;          // half texel of the packed texture (v units)
+uniform float uPackSplit;              // one half's share of the texture height
+uniform float uPackMatte;              // where the matte starts (v)
 uniform float uOpacity;
 uniform vec4 uCrop;                    // left, top, right, bottom cut fractions
 uniform int uShapeCount;
@@ -50,8 +53,8 @@ void main() {
     // one; clamp both to their half so LINEAR filtering can't bleed across
     // the seam. Alpha sources are decoded this way because WebCodecs cannot
     // carry an alpha channel — see makeDecoded's packed branch.
-    float vc = clamp(vUV.y * 0.5, uPackHalfTexel, 0.5 - uPackHalfTexel);
-    float va = clamp(vUV.y * 0.5 + 0.5, 0.5 + uPackHalfTexel, 1.0 - uPackHalfTexel);
+    float vc = clamp(vUV.y * uPackSplit, uPackHalfTexel, uPackSplit - uPackHalfTexel);
+    float va = clamp(uPackMatte + vUV.y * uPackSplit, uPackMatte + uPackHalfTexel, uPackMatte + uPackSplit - uPackHalfTexel);
     c = vec4(texture(uTex, vec2(vUV.x, vc)).rgb, texture(uTex, vec2(vUV.x, va)).r);
   } else {
     c = texture(uTex, vUV);
@@ -304,6 +307,8 @@ export class Compositor {
   private uRawBGRA: WebGLUniformLocation
   private uAlphaPacked: WebGLUniformLocation
   private uPackHalfTexel: WebGLUniformLocation
+  private uPackSplit: WebGLUniformLocation
+  private uPackMatte: WebGLUniformLocation
   private uCrop: WebGLUniformLocation
   private uShapeCount: WebGLUniformLocation
   private uShapeType: WebGLUniformLocation
@@ -345,6 +350,8 @@ export class Compositor {
     this.uRawBGRA = gl.getUniformLocation(prog, 'uRawBGRA')!
     this.uAlphaPacked = gl.getUniformLocation(prog, 'uAlphaPacked')!
     this.uPackHalfTexel = gl.getUniformLocation(prog, 'uPackHalfTexel')!
+    this.uPackSplit = gl.getUniformLocation(prog, 'uPackSplit')!
+    this.uPackMatte = gl.getUniformLocation(prog, 'uPackMatte')!
     this.uCrop = gl.getUniformLocation(prog, 'uCrop')!
     this.uShapeCount = gl.getUniformLocation(prog, 'uShapeCount')!
     this.uShapeType = gl.getUniformLocation(prog, 'uShapeType[0]')!
@@ -481,8 +488,12 @@ export class Compositor {
     }
     gl.uniform1i(this.uRawBGRA, l.raw ? 1 : 0)
     gl.uniform1i(this.uAlphaPacked, l.alphaPacked ? 1 : 0)
-    // srcHeight is the LOGICAL height; the texture holds two stacked halves
-    gl.uniform1f(this.uPackHalfTexel, l.alphaPacked ? 0.25 / Math.max(1, l.srcHeight) : 0)
+    // srcHeight is the LOGICAL height; the texture holds both halves and the
+    // gaps between them (packHeight)
+    const h = Math.max(1, l.srcHeight), packH = packHeight(h)
+    gl.uniform1f(this.uPackHalfTexel, l.alphaPacked ? 0.5 / packH : 0)
+    gl.uniform1f(this.uPackSplit, l.alphaPacked ? h / packH : 1)
+    gl.uniform1f(this.uPackMatte, l.alphaPacked ? (h + 2 * PACK_GAP) / packH : 0)
     entry.lastUsed = this.frame
 
     // corner order matches TRIANGLE_STRIP: TL, BL, TR, BR

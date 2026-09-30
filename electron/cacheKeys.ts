@@ -40,9 +40,10 @@ export const projectKey = (projectPath: string): string =>
 const SDR = `:sdr${HDR_VERSION > 1 ? HDR_VERSION : ''}`
 export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : (sdr ? SDR : '') + ':c')
 
-/** decoded: packed colour+matte, plain alpha, an HDR source tone-mapped, or none of these */
+/** decoded: packed colour+matte, plain alpha, an HDR source tone-mapped, or none of these;
+    ':p2' = J12's pack (matte in range once, gaps, full tags) — ':p' ones exported 0.92× dark */
 export const decodedSuffix = (opts?: { alpha?: boolean; packed?: boolean; sdr?: boolean }) =>
-  opts?.packed ? ':p' : opts?.alpha ? ':a' : opts?.sdr ? SDR : ''
+  opts?.packed ? ':p2' : opts?.alpha ? ':a' : opts?.sdr ? SDR : ''
 
 /** reversed: the same source cut differently is a different render */
 export const reverseSuffix = (start: number, duration: number) =>
