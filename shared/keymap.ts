@@ -87,7 +87,9 @@ export const ACTIONS = [
   { id: 'tools.checks', labelKey: 'actChecks', context: g, defaultKeys: [] },
   { id: 'preview.snapshot', labelKey: 'actSnapshot', context: g, defaultKeys: [] },
   { id: 'preview.popout', labelKey: 'actPopout', context: g, defaultKeys: [] },
-  { id: 'edit.closeGaps', labelKey: 'actCloseGaps', context: g, defaultKeys: [] }
+  { id: 'edit.closeGaps', labelKey: 'actCloseGaps', context: g, defaultKeys: [] },
+  { id: 'tools.silences', labelKey: 'actFindSilences', context: g, defaultKeys: [] },
+  { id: 'edit.removeSilences', labelKey: 'actRemoveSilences', context: g, defaultKeys: [] }
 ] as const satisfies readonly ActionSpec[]
 
 export type ActionId = (typeof ACTIONS)[number]['id']

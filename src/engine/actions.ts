@@ -12,6 +12,7 @@ import { importFiles } from './mediaImport'
 import { snapshotFrame } from './snapshot'
 import { togglePreviewWindow } from './popout'
 import { contextTargetOpen, sendContext } from './contextLine'
+import { applySilences, findSilencesHere, useSilences } from './silences'
 import { useBeatsUi } from './beats'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
@@ -89,6 +90,11 @@ const HANDLERS: Record<ActionId, Handler> = {
     run: (s) => s.closeGaps(s.selection.length
       ? s.project.tracks.filter((t) => t.clips.some((c) => s.selection.includes(c.id))).map((t) => t.id)
       : 'all')
+  },
+  'tools.silences': { run: () => void findSilencesHere() },
+  'edit.removeSilences': {
+    enabled: () => useSilences.getState().items.some((x) => x.state === 'confirmed'), why: 'whyNoSilences',
+    run: () => { applySilences('confirmed') }
   },
   'edit.undo': { enabled: (s) => s.past.length > 0, why: 'whyNoUndo', run: (s) => s.undo() },
   'edit.redo': { enabled: (s) => s.future.length > 0, why: 'whyNoRedo', run: (s) => s.redo() },

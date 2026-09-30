@@ -1081,6 +1081,8 @@ interface EditorState {
   /** Delete a range (default: the current one) on every unlocked track and
       close it everywhere; markers right of it follow — one undo step. */
   extractRange(range?: { start: number; end: number }): void
+  /** extractRange over several ranges (silence removal) — still ONE undo step. */
+  extractRanges(ranges: { start: number; end: number }[]): void
   /** `ripple` (Ctrl+Shift+V) inserts, like a Shift-drop. */
   pasteAtPlayhead(ripple?: boolean): void
   /** Ctrl+X: copy the selection (else the range) and lift it — one undo step, no ripple. */
@@ -2334,18 +2336,25 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   extractRange: (range) => {
-    const s = get()
-    const r = range ?? s.range
-    if (!r || r.end - r.start < 1e-6) return
-    s.pushHistory('hExtract')
+    const r = range ?? get().range
+    if (r) get().extractRanges([r])
+  },
+
+  extractRanges: (ranges) => {
+    // latest first: extracting one never moves the ranges still to come
+    const rs = ranges.filter((r) => r.end - r.start >= 1e-6).sort((a, b) => b.start - a.start)
+    if (!rs.length) return
+    get().pushHistory('hExtract')
     set((st) => {
       const p = cloneProject(st.project)
-      liftRange(p, r)
-      const len = r.end - r.start
-      shiftAfter(p, r.end, -len, p.tracks.filter((t) => !t.locked).map((t) => t.id))
-      // a ripple over every track moves the markers too; inside the range they land on its start
-      if (p.markers) {
-        p.markers = p.markers.map((m) => m.time > r.start ? { ...m, time: Math.max(r.start, m.time - len) } : m)
+      for (const r of rs) {
+        liftRange(p, r)
+        const len = r.end - r.start
+        shiftAfter(p, r.end, -len, p.tracks.filter((t) => !t.locked).map((t) => t.id))
+        // a ripple over every track moves the markers too; inside the range they land on its start
+        if (p.markers) {
+          p.markers = p.markers.map((m) => m.time > r.start ? { ...m, time: Math.max(r.start, m.time - len) } : m)
+        }
       }
       return { project: p, selection: [], range: null }
     })

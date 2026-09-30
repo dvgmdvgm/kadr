@@ -95,6 +95,24 @@ const TOOLS = [
     }
   },
   {
+    name: 'kadr_silences',
+    fn: 'silences',
+    helper: true,
+    ms: 30 * 60_000,
+    description: 'Pauses in speech. FIND (no apply): quiet runs of clipId (twins heard too), start+end, else the in/out range, else the whole timeline; trackIds = hear only those tracks (the voice track when music plays under it). thresholdDb below the loudest point (default -35), minSilence s (0.5), pad s kept each side (0.1); transcript words are kept. Returns proposals {id, start, end} (project s) and shows them on the timeline for the user to confirm/reject. APPLY: apply "confirmed" (what the user confirmed), "all" (all but rejected) or [ids] cuts them out of every unlocked track, ripple — one undo step.',
+    input: {
+      clipId: id.optional(), start: sec.optional(), end: sec.optional(), trackIds: z.array(id).min(1).optional(),
+      thresholdDb: z.number().min(-90).max(-1).optional(), minSilence: z.number().min(0.05).max(60).optional(), pad: z.number().min(0).max(2).optional(),
+      apply: z.union([z.enum(['confirmed', 'all']), z.array(id).min(1)]).optional()
+    },
+    check: (a) => {
+      const range = a.start !== undefined || a.end !== undefined
+      if (a.apply !== undefined && Object.keys(a).length > 1) return 'apply takes no other parameters (it cuts proposals already found)'
+      if (range && !(a.start !== undefined && a.end !== undefined && a.end > a.start)) return 'start and end are both needed, end > start'
+      if (range && a.clipId) return 'pass either clipId or start+end'
+    }
+  },
+  {
     name: 'kadr_undo',
     fn: 'undo',
     description: 'Undo the last `steps` undo steps (each kadr_* edit tool is exactly one). Returns their labels.',
@@ -112,7 +130,7 @@ async function runTool(tool, args, editorEval) {
   if (!parsed.success) throw new Error(parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; '))
   const bad = tool.check && tool.check(parsed.data)
   if (bad) throw new Error(bad)
-  return editorEval(pageCode(tool, parsed.data))
+  return editorEval(pageCode(tool, parsed.data), tool.ms)
 }
 
 function registerEditTools(server, editorEval, asText, asError) {

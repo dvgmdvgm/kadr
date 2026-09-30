@@ -14,7 +14,8 @@ const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
 }
 /** «Радиус прилипания», in seconds at this zoom */
 const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
-import { useT, tr, type TKey } from '@/i18n'
+import { useT, tr, trf, type TKey } from '@/i18n'
+import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, type Silence } from '@/engine/silences'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
 import { CtxMenu } from './CtxMenu'
@@ -579,6 +580,7 @@ export function Timeline({ height }: { height: number }) {
           <Icon name="speech" /> {t('ttsButton')}
         </button>
         <DefectButtons />
+        <SilenceButtons />
         <TimelineHelp />
         <span className="flex1" />
         <label className="zoom-ctl">
@@ -641,6 +643,7 @@ export function Timeline({ height }: { height: number }) {
             <KfMarker />
             <BeatLines view={view} />
             <Markers />
+            <SilenceFlags />
             <Playhead />
           </div>
         </div>
@@ -1810,6 +1813,76 @@ function DefectButtons() {
               onClick={() => setDefectsHidden(!hidden)}>
         <Icon name={hidden ? 'eyeOff' : 'eye'} />
       </button>
+    </>
+  )
+}
+
+/** Silence removal (card I5): find, mark all, remove the confirmed ones (one undo), clear. */
+function SilenceButtons() {
+  const t = useT()
+  const { items, busy, none } = useSilences()
+  const confirmed = items.filter((x) => x.state === 'confirmed').length
+  return (
+    <>
+      <button data-act="silences" title={t('silButtonHint')} disabled={busy} onClick={() => void findSilencesHere()}>
+        {busy ? <Spinner size={14} /> : <Icon name="mute" />} {t('silButton')}
+      </button>
+      {none && <span className="dim">{t('silNone')}</span>}
+      {items.length > 0 && (
+        <>
+          <button data-act="silences-confirm-all" onClick={confirmAllSilences}>
+            <Icon name="check" /> {t('silConfirmAll')}
+          </button>
+          <button data-act="silences-apply" disabled={!confirmed} onClick={() => applySilences('confirmed')}>
+            <Icon name="trash" /> {trf('silApply', { n: confirmed })}
+          </button>
+          <button className="icon-only" data-act="silences-clear" title={t('silClear')} aria-label={t('silClear')}
+                  onClick={clearSilences}>
+            <Icon name="close" />
+          </button>
+        </>
+      )}
+    </>
+  )
+}
+
+/**
+ * Found pauses as full-height bands over every track (a cut goes through all of
+ * them), each with the defect flag on the ruler: click marks it for removal
+ * (Alt unmarks), right click keeps it, double click plays it with a second of
+ * context. Deciding is no edit — only «Удалить подтверждённые» is.
+ */
+function SilenceFlags() {
+  const items = useSilences((s) => s.items)
+  const zoom = useEditor((s) => s.zoom)
+  if (!items.length) return null
+  const cls = (x: Silence) => (x.state === 'proposed' ? '' : ` ${x.state}`)
+  return (
+    <>
+      {items.map((x) => (
+        <div key={x.id}>
+          <div className={`adefect silence${cls(x)}`} data-silence={x.id}
+               style={{ left: HEADER_W + x.start * zoom, width: Math.max(3, (x.end - x.start) * zoom) }} />
+          <button
+            className={`adefect-flag${cls(x)}`}
+            data-silence-flag={x.id}
+            style={{ left: HEADER_W + x.start * zoom }}
+            title={trf('silTip', { len: (x.end - x.start).toFixed(2) })}
+            aria-label={trf('silTip', { len: (x.end - x.start).toFixed(2) })}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); setSilenceState(x.id, e.altKey ? 'proposed' : 'confirmed') }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSilenceState(x.id, 'rejected') }}
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              const s = useEditor.getState()
+              s.setRange({ start: Math.max(0, x.start - 1), end: x.end + 1 })
+              s.playInOut()
+            }}
+          >
+            {x.state === 'confirmed' ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name="mute" size={10} strokeWidth={2.5} />}
+          </button>
+        </div>
+      ))}
     </>
   )
 }

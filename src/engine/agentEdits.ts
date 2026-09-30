@@ -12,6 +12,7 @@ import type { Anim, Clip, Easing, Project, TextStyle, TimelineMarker } from '@sh
 import { useEditor, findClip, withLinked, defaultTextStyle } from '@/state/store'
 import { toFrame } from './timelineMath'
 import { upsertKf } from '@/components/animUtils'
+import { applySilences, findSilences, type FindSilencesArgs } from './silences'
 
 const st = () => useEditor.getState()
 
@@ -141,4 +142,15 @@ export function undo(a: { steps: number }) {
     s.undo()
   }
   return { undone: labels.length, labels, left: st().past.length }
+}
+
+/** kadr_silences: find pauses (shown on the timeline as proposals), or cut
+    proposals out of every unlocked track — one undo step. */
+export async function silences(a: FindSilencesArgs & { apply?: 'confirmed' | 'all' | string[] }) {
+  if (a.apply) {
+    const gone = once('silences', () => applySilences(a.apply!))
+    return { removed: gone.map(({ id, start, end }) => ({ id, start, end })), seconds: +gone.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+  }
+  const found = await findSilences(a)
+  return { proposals: found.map(({ id, start, end }) => ({ id, start, end })), seconds: +found.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
 }

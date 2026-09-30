@@ -89,7 +89,7 @@ const valid = {
   kadr_volume: { clipId: 'a3c', keys: [{ t: 6, value: 1 }, { t: 8, value: 0.3, easing: 'easeIn' }] },
   kadr_marker: { t: 5.5, label: 'drop' }
 }
-const edits = TOOLS.filter((t) => t.name !== 'kadr_undo')
+const edits = TOOLS.filter((t) => t.name !== 'kadr_undo' && !t.helper) // helpers (kadr_silences) have their own check
 check('every edit tool has a sample here', edits.every((t) => valid[t.name]),
   edits.filter((t) => !valid[t.name]).map((t) => t.name).join(', '))
 check('every tool\'s page code is one call into kadrEditor.agentEdit',
@@ -165,7 +165,8 @@ const invalid = {
   kadr_text_add: [{ at: 1 }, { at: 1, text: '' }, { at: 1, text: 'a', style: { font: 'x' } }, { at: 1, text: 'a', style: { color: 'red' } }],
   kadr_volume: [{ clipId: 'v1' }, { clipId: 'v1', value: 1, keys: [{ t: 0, value: 1 }] }, { clipId: 'v1', value: 3 }, { clipId: 'v1', keys: [] }],
   kadr_marker: [{}, { t: 1, kind: 'section' }, { t: 1, kind: 'pause', end: 0.5 }, { t: 1, end: 2 }, { t: 1, kind: 'scene' }],
-  kadr_undo: [{}, { steps: 0 }, { steps: 1.5 }, { steps: 51 }]
+  kadr_undo: [{}, { steps: 0 }, { steps: 1.5 }, { steps: 51 }],
+  kadr_silences: [{ start: 1 }, { apply: 'some' }, { thresholdDb: 0 }]
 }
 check('every tool has invalid samples here', TOOLS.every((t) => invalid[t.name]?.length))
 fresh()

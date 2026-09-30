@@ -86,6 +86,10 @@ mixes audio and muxes/transcodes per preset.
   `src/engine/words.ts` maps them through clip trim and speed to exactly where
   defects over the same span land, once per linked A/V pair; they survive a
   save/load and `kadr_state` gives them by slice, `fields: ["words"]`);
+  `check-silences.mjs` (I5: pauses found at a speech clip's gaps on frames,
+  the voice track alone under music, a transcript word kept; removing them
+  shortens the timeline by gaps − 2·pad each as ONE undo step; kadr_silences
+  refuses bad input before the page);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
@@ -331,6 +335,12 @@ mixes audio and muxes/transcodes per preset.
   and EXACTLY one undo step each — an edit that changes nothing leaves no
   step and errors; test `node scripts/check-mcp-tools.mjs`, which also parses
   the bridge: a syntax error there silently leaves the agent with no tools) /
+  kadr_silences (I5, `src/engine/silences.ts`: pauses from the
+  `audio:envelope` of a clip / range / tracks with a 5 ms release, the
+  threshold relative to the analysed peak, transcript words kept; shown as
+  proposal flags on the timeline — the toolbar's «Паузы» and the palette
+  do the same — and cut with `extractRanges`, all of them ONE undo step;
+  test `node scripts/check-silences.mjs`) /
   kadr_snapshot / kadr_sheet / kadr_export / kadr_transcribe /
   kadr_fragment_create / kadr_typecheck / kadr_check / kadr_fragment_media /
   kadr_model_import / kadr_models / kadr_neon_wave / kadr_beats /
