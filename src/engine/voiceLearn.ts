@@ -8,6 +8,7 @@
 import { useEditor } from '../state/store'
 import { useTtsSettings } from './tts'
 import type { AudioDefect, VerdictRow, UserMarkRow, VoiceLearnResult, VoiceRun } from '@shared/types'
+import { spoken } from '../i18n'
 
 const verdictOf = (d: AudioDefect): 'yes' | 'no' | null =>
   d.state === 'confirmed' || d.state === 'done' ? 'yes'
@@ -63,8 +64,11 @@ export async function flushAllVerdicts(): Promise<void> {
 
 /** What the corpus holds, without touching the model. */
 export function learnStatus(): Promise<VoiceLearnResult> {
-  return window.kadr.voiceLearn({ dry: true, python: useTtsSettings.getState().settings.ttsqcPython })
+  return window.kadr.voiceLearn({ dry: true, python: useTtsSettings.getState().settings.ttsqcPython }).then(speakProblem)
 }
+
+/** the driver says its problem as a key (scripts/ttsqc_run.py) — in the UI language here */
+const speakProblem = (r: VoiceLearnResult): VoiceLearnResult => (r.problem ? { ...r, problem: spoken(r.problem) } : r)
 
 /**
  * Retrain. Deliberately never automatic: the model file is shared with the
@@ -72,5 +76,5 @@ export function learnStatus(): Promise<VoiceLearnResult> {
  * labelling would degrade both. The previous model is backed up first.
  */
 export function retrain(): Promise<VoiceLearnResult> {
-  return window.kadr.voiceLearn({ dry: false, python: useTtsSettings.getState().settings.ttsqcPython })
+  return window.kadr.voiceLearn({ dry: false, python: useTtsSettings.getState().settings.ttsqcPython }).then(speakProblem)
 }

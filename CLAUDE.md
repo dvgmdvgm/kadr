@@ -64,8 +64,8 @@ mixes audio and muxes/transcodes per preset.
   and frame-run intermediates — into `<project>/media/` and rewrites them;
   paths inside the project folder are saved relative);
   `check-i18n-literals.mjs` (no Cyrillic literal anywhere outside
-  `src/i18n.ts` — errors included — and every key main says is in the
-  table) and `check-said.mjs` (H9: main has no table and no UI language, so
+  `src/i18n.ts` — errors included — nor in the Python drivers, and every
+  key main or a driver says is in the table) and `check-said.mjs` (H9: main has no table and no UI language, so
   it throws `saidError(key, args)` from `shared/said.ts` — a mark + JSON in
   the message, args may be Saids themselves — and returns warnings as
   `said(…)`; `speakMainErrors()` in src/i18n.ts wraps every `window.kadr`
@@ -1080,6 +1080,14 @@ mixes audio and muxes/transcodes per preset.
   numbers, testable on synthetic audio via `scripts/check-phrases.py`):
   the cut is the middle of the LONGEST REAL SILENCE in the gap between
   sentences, found from Silero speech probabilities refined by 5 ms RMS.
+  THE DRIVERS SAY NO WORDS (I12): `ttsqc_run.py` and `transcribe.py` put a
+  failure on their last stderr line, a self-test problem and a learn
+  `problem` in their JSON, as `said(key, args)` — the shape of
+  `shared/said.ts`, ASCII JSON — and the renderer says it in the UI language;
+  argparse's own complaint goes the same way (exit 2). Main spawns them with
+  `PYTHONIOENCODING=utf-8`: on Windows python writes the ANSI code page into
+  a pipe, and every Cyrillic word of a transcript or a defect arrived as
+  U+FFFD. The vendored `python/ttsqc` keeps its Russian console CLI.
 - `src/engine/voiceRegen.ts` + `shared/voiceMap.ts` — regeneration.
   EVERYTHING CONFIRMED ON ONE VOICE-OVER IS DONE IN ONE PASS: doing them
   one at a time would mean recomputing every later cut inside an

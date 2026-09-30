@@ -60,11 +60,15 @@ export function TemplateMenuButton({ onSaved }: { onSaved(name: string | null, e
     if (!at) return
     const off = () => setAt(null)
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') off() }
-    window.addEventListener('pointerdown', off)
+    // capture, as «Открыть ▾»: a click in the preview or the timeline must still close it
+    const down = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest?.('.tpl-menu, [data-act="save-template-menu"]')) off()
+    }
+    window.addEventListener('pointerdown', down, true)
     window.addEventListener('keydown', esc)
     void window.kadr.listTemplates().then((l) => setTaken(new Set(l.map((x) => x.name))), () => {})
     return () => {
-      window.removeEventListener('pointerdown', off)
+      window.removeEventListener('pointerdown', down, true)
       window.removeEventListener('keydown', esc)
     }
   }, [at])
@@ -93,7 +97,7 @@ export function TemplateMenuButton({ onSaved }: { onSaved(name: string | null, e
         <Icon name="chevronDown" size={13} />
       </button>
       {at && (
-        <CtxMenu x={at.x} y={at.y}>
+        <CtxMenu x={at.x} y={at.y} className="tpl-menu">
           <div className="ctx-title">{t('tplSaveAs')}</div>
           <div className="recent-none">{t('tplSaveHint')}</div>
           <div className="preset-save-row">

@@ -64,10 +64,14 @@ export function RecentMenuButton() {
     if (!at) return
     const off = () => setAt(null)
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') off() }
-    window.addEventListener('pointerdown', off)
+    // capture: the preview and the timeline stop pointerdown, and a click there must still close it
+    const down = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest?.('.recent-menu, [data-act="open-recent"]')) off()
+    }
+    window.addEventListener('pointerdown', down, true)
     window.addEventListener('keydown', esc)
     return () => {
-      window.removeEventListener('pointerdown', off)
+      window.removeEventListener('pointerdown', down, true)
       window.removeEventListener('keydown', esc)
     }
   }, [at])

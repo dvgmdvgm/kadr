@@ -77,6 +77,9 @@ export function MediaBin() {
   const [sel, setSel] = useState<string[]>([])
   const [confirmIds, setConfirmIds] = useState<string[] | null>(null)
   const lastClick = useRef<string | null>(null)
+  // another project: its assets are other ones, so nothing of the last one stays selected
+  const projectId = useEditor((s) => s.project.id)
+  useEffect(() => { setSel([]); lastClick.current = null }, [projectId])
   const [textsOpen, setTextsOpen] = useState(() => localStorage.getItem('kadr.textsOpen') !== '0')
   const toggleTexts = () => {
     setTextsOpen((v) => {

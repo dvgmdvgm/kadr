@@ -17,6 +17,9 @@
 //  2a. Every key main says exists in the table.
 //  3. log*(source, msg) never gets a literal with words (a file name aside):
 //     both go through tr().
+//  3a. The Python drivers the app spawns (scripts/*.py but check-*, python/*.py)
+//      carry no Cyrillic string outside docstrings — they print `said(key, …)`
+//      — and every key they say is in the table (I12).
 //  4. The English table carries no Cyrillic.
 //  5. An element that is not a control but takes onClick has a role.
 //  6. An <input>/<select>/<textarea> sits in a <label> or has aria-label(ledby).
@@ -128,6 +131,43 @@ const saidKeys = files.filter((f) => /[\\/]electron[\\/]/.test(f)).flatMap((f) =
 })
 check(`every key main says is in the table (${saidKeys.length} uses)`,
   saidKeys.filter(([, k]) => !keys.has(k)).map(([f, k]) => `${f}  ${k}`))
+// I12: the Python drivers the app spawns (scripts/*.py but the checks, python/*.py —
+// not the vendored python/ttsqc, whose console CLI is its own) say through
+// `said(key, …)` too. Triple-quoted strings count as docstrings; every other
+// string literal with Cyrillic reaches stdout/stderr and so the UI.
+const drivers = [
+  ...readdirSync(join(root, 'scripts')).filter((f) => /\.py$/.test(f) && !/^check-/.test(f)).map((f) => join(root, 'scripts', f)),
+  ...readdirSync(join(root, 'python')).filter((f) => /\.py$/.test(f)).map((f) => join(root, 'python', f))
+]
+const pyStrings = (src) => {
+  const out = []
+  for (let i = 0, line = 1; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\n') line++
+    else if (c === '#') while (i + 1 < src.length && src[i + 1] !== '\n') i++
+    else if (c === '"' || c === "'") {
+      const triple = src.startsWith(c.repeat(3), i)
+      const end = triple ? c.repeat(3) : c
+      let j = i + end.length
+      while (j < src.length && !src.startsWith(end, j)) j += src[j] === '\\' ? 2 : 1
+      const body = src.slice(i + end.length, j)
+      if (!triple) out.push([line, body])
+      line += body.split('\n').length - 1
+      i = j + end.length - 1
+    }
+  }
+  return out
+}
+const pyCyr = [], pyKeys = []
+for (const f of drivers) {
+  const src = readFileSync(f, 'utf8')
+  const rel = relative(root, f).replace(/\\/g, '/')
+  for (const [line, s] of pyStrings(src)) if (CYR.test(s)) pyCyr.push(`${rel}:${line}  ${s.slice(0, 80)}`)
+  for (const m of src.matchAll(/\bsaid\(\s*['"](\w+)/g)) pyKeys.push([rel, m[1]])
+}
+check(`no Cyrillic string in the Python drivers (${drivers.length} files)`, pyCyr)
+check(`every key a Python driver says is in the table (${pyKeys.length} uses)`,
+  pyKeys.filter(([, k]) => !keys.has(k)).map(([f, k]) => `${f}  ${k}`))
 check('session-log sources and messages go through tr()', logs)
 check('the English table has no Russian', enCyr)
 check('every clickable non-control element has a role', roles)

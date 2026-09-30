@@ -4,7 +4,8 @@
 // text to the renderer. One job at a time.
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
+import { saidError } from '@shared/said'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { ExportMuxer, mixdownWav } from './ffmpeg'
@@ -53,15 +54,18 @@ async function run(win: BrowserWindow, req: TranscribeRequest): Promise<Transcri
     const segments: TranscribeSegment[] = []
     let language = req.language
     let liveText = ''
+    const script = join(app.getAppPath(), 'scripts', 'transcribe.py')
+    if (!existsSync(script)) throw saidError('eDrvMissing', { path: script })
     await new Promise<void>((resolve, reject) => {
       const py = spawn(python.command, [
         ...python.args,
-        join(app.getAppPath(), 'scripts', 'transcribe.py'),
+        script,
         '--audio', wav,
         '--model', req.model,
         '--language', req.language,
         '--duration', String(req.duration)
-      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+        // utf-8 pipes: on Windows python writes the ANSI code page and every word arrived as U+FFFD
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
       job.py = py
       let buf = ''
       let err = ''
@@ -95,7 +99,7 @@ async function run(win: BrowserWindow, req: TranscribeRequest): Promise<Transcri
         job.py = null
         if (job.cancelled) reject(new Error('cancelled'))
         else if (code === 0) resolve()
-        else reject(new Error(err.slice(0, 800) || `transcribe.py exited ${code}`))
+        else reject(new Error(err.slice(-800) || `transcribe.py exited ${code}`))
       })
     })
     send(1, '')

@@ -28,6 +28,7 @@ import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
+import { said } from '@shared/said'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -187,7 +188,7 @@ export function sanitizeProject(p: Project): Project {
         wordFrom: -1, wordTo: -1, charFrom: -1, charTo: -1, text: '',
         cut: ['fallback', 'fallback']
       }
-      d.note = tr('eStPhraseLost')
+      d.note = said('eStPhraseLost')
     } else {
       if (!Array.isArray(ph.cut) || ph.cut.length !== 2) ph.cut = ['fallback', 'fallback']
       if (ph.t0 > d.src[0]) ph.t0 = d.src[0]

@@ -21,6 +21,14 @@ import os
 import sys
 
 
+# A failure is said in the UI's language (shared/said.ts): a key and args, ASCII JSON
+SAID_MARK = "⁣said:"
+
+
+def said(key, **args):
+    return SAID_MARK + json.dumps({"key": key, "args": args} if args else {"key": key})
+
+
 def emit(obj):
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -166,5 +174,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:  # noqa: BLE001 — single funnel to the caller
-        sys.stderr.write(f"transcribe failed: {e}\n")
+        sys.stderr.write(said("eTrFailed", err=str(e)) + "\n")
         sys.exit(1)

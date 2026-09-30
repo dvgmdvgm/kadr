@@ -70,5 +70,37 @@ check('an error without a Said is rethrown as it was', r2 === plain)
 check('resolved and synchronous results and non-functions are untouched',
   (await k.ok()) === 7 && k.sync(1) === 2 && k.n === 5)
 
+// I12: the Python driver says its failures the same way — a Said on its last
+// stderr line, after whatever Python printed before it (no models are loaded)
+const { spawnSync } = await import('child_process')
+const { mkdtempSync, writeFileSync } = await import('fs')
+const { tmpdir } = await import('os')
+const py = process.env.KADR_TTSQC_PYTHON || process.env.KADR_PYTHON || 'python'
+// the env main spawns it with (electron/voice.ts): utf-8 pipes, whatever the system code page
+const drv = (...a) => spawnSync(py, [join(root, 'scripts', 'ttsqc_run.py'), ...a], { encoding: 'utf8', env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
+if (spawnSync(py, ['--version']).status !== 0) {
+  console.log(`SKIP  the Python driver rows — no working ${py}`)
+} else {
+  const run = mkdtempSync(join(tmpdir(), 'kadr-said-'))
+  const bad = drv('check', '--bogus')
+  const none = drv()
+  const noIdx = drv('phrase-at', '--run-dir', run, '--start', '0', '--end', '1')
+  writeFileSync(join(run, 'phrase-index.json'), JSON.stringify({ duration: 10 }))
+  const other = drv('phrase-at', '--run-dir', run, '--start', '0', '--end', '1', '--audio-duration', '5')
+  // what main's runDriver rejects with, as the page's window.kadr wrapper sees it
+  const said = (r) => spoken(`Error invoking remote method 'voice:phrase-at': Error: ${r.stderr.trim()}`)
+  lang('en')
+  check('driver: bad arguments read in English', /^the voice-over detector refused its arguments: the following arguments are required/.test(said(bad)), said(bad))
+  check('driver: no command reads in English', said(none) === 'the voice-over detector needs a command: --selftest, check, learn or phrase-at', said(none))
+  check('driver: a run without an analysis reads in English', said(noIdx) === 'the run has no analysis — analyse the voice-over again', said(noIdx))
+  check('driver: another version of the audio reads in English',
+    said(other) === 'the analysis belongs to another version of the voice-over (10.000 s vs 5.000 s on the timeline) — run the defect check again and the marks will land exactly', said(other))
+  lang('ru')
+  check('driver: … and in Russian with the Russian UI', said(noIdx) === 'в прогоне нет разбора — переразберите озвучку' &&
+    /^детектор озвучки не принял аргументы: /.test(said(bad)), `${said(noIdx)} | ${said(bad)}`)
+  check('driver: the exit codes are kept (2 for arguments, 1 for a failure)', bad.status === 2 && none.status === 2 && noIdx.status === 1,
+    `${bad.status} ${none.status} ${noIdx.status}`)
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')
 process.exit(fails ? 1 : 0)

@@ -9,7 +9,7 @@
 // holds several GB of VRAM and the next run would OOM behind it.
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
 import { join, basename, extname, dirname, resolve } from 'path'
 import { createHash } from 'crypto'
 import type {
@@ -69,9 +69,13 @@ interface RunOpts {
     line's payload; rejects with stderr on a non-zero exit. */
 function runDriver(opts: RunOpts): Promise<void> {
   return pythonFor(opts.python).then((python) => new Promise((resolve, reject) => {
+    // python's own «can't open file» would reach the UI in English whatever its language
+    if (!existsSync(driver())) return reject(saidError('eDrvMissing', { path: driver() }))
     const py = spawn(python.command, [...python.args, driver(), ...opts.args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, KADR_TTSQC_HOME: join(app.getAppPath(), 'python') }
+      // utf-8 pipes: on Windows python writes the ANSI code page (cp1251 here), and the
+      // script's words in every defect arrived as U+FFFD
+      env: { ...process.env, KADR_TTSQC_HOME: join(app.getAppPath(), 'python'), PYTHONIOENCODING: 'utf-8' }
     })
     if (opts.cancellable && current) current.py = py
     let buf = ''

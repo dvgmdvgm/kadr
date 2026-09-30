@@ -4,8 +4,9 @@ import { useEditor, uid } from '../state/store'
 import { activity } from './autosave'
 import { useTtsSettings } from './tts'
 import { flushVerdicts, flushAllVerdicts } from './voiceLearn'
+import { said } from '@shared/said'
 import type { AudioDefect, RawDefect, VoiceRun } from '@shared/types'
-import { tr, trf } from '../i18n'
+import { spoken, tr, trf } from '../i18n'
 
 const HIDE_KEY = 'kadr.defectsHidden'
 
@@ -192,7 +193,7 @@ export async function addUserDefect(assetId: string, start: number, end: number,
     src: [a0, a1 > a0 ? a1 : a0 + 0.15],
     phrase,
     state: 'proposed',
-    note: tr(kind === 'redo' ? 'eVcNoteRedo' : 'eVcNoteUser')
+    note: said(kind === 'redo' ? 'eVcNoteRedo' : 'eVcNoteUser')
   }
   st().addUserDefect(d)
   flushAllVerdicts().catch(() => { /* corpus is best-effort */ })
@@ -222,6 +223,8 @@ export function clearVerdict(ids: string | string[]): void {
   scheduleFlush()
 }
 
+/** The detector's environment; its problems come as keys (scripts/ttsqc_run.py) and leave in the UI language. */
 export function selfTestDetector() {
   return window.kadr.voiceSelfTest(useTtsSettings.getState().settings.ttsqcPython)
+    .then((r) => ({ ...r, problems: r.problems.map(spoken) }))
 }
