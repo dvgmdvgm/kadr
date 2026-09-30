@@ -311,8 +311,16 @@ export class Compositor {
   private uAspect: WebGLUniformLocation
   private textures = new Map<string, TexEntry>()
   private frame = 0
+  /** the frame in PROJECT pixels — all geometry, masks and effect radii */
   width = 0
   height = 0
+  /** backing-store scale (the preview's quality menu: 1, ½, ¼). The picture is
+      laid out in project pixels and only rasterised at width·scale — the
+      export builds its own compositor, which stays at 1. */
+  scale = 1
+  /** the backing store in real pixels: viewport, readback, FBOs */
+  private pw = 0
+  private ph = 0
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
     this.canvas = canvas
@@ -377,19 +385,23 @@ export class Compositor {
   }
 
   setSize(w: number, h: number) {
-    if (this.width === w && this.height === h) return
+    const pw = Math.max(1, Math.round(w * this.scale))
+    const ph = Math.max(1, Math.round(h * this.scale))
+    if (this.width === w && this.height === h && this.pw === pw && this.ph === ph) return
     this.width = w
     this.height = h
-    this.canvas.width = w
-    this.canvas.height = h
-    this.gl.viewport(0, 0, w, h)
+    this.pw = pw
+    this.ph = ph
+    this.canvas.width = pw
+    this.canvas.height = ph
+    this.gl.viewport(0, 0, pw, ph)
   }
 
   /** Copy the finished frame out of the default framebuffer (bottom-up rows). */
   readPixels(out: Uint8Array) {
     const gl = this.gl
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, out)
+    gl.readPixels(0, 0, this.pw, this.ph, gl.RGBA, gl.UNSIGNED_BYTE, out)
   }
 
   // Async readback: startRead() queues readPixels into a pixel-pack buffer
@@ -406,12 +418,12 @@ export class Compositor {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     if (!this.pbos[slot]) this.pbos[slot] = gl.createBuffer()
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbos[slot])
-    const bytes = this.width * this.height * 4
+    const bytes = this.pw * this.ph * 4
     if (this.pboBytes[slot] !== bytes) {
       gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ)
       this.pboBytes[slot] = bytes
     }
-    gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+    gl.readPixels(0, 0, this.pw, this.ph, gl.RGBA, gl.UNSIGNED_BYTE, 0)
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
     // Chromium queues GL in a command buffer and may not hand it to the GPU
     // process until the next blocking call — which would serialize the whole
@@ -669,7 +681,7 @@ export class Compositor {
       gl.uniform1f(fp.uRatio, ratio)
       this.fsQuad()
       gl.enable(gl.BLEND)
-      gl.viewport(0, 0, this.width, this.height)
+      gl.viewport(0, 0, this.pw, this.ph)
 
       // smoky halo under the layer, into the current composite destination
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.curFbo)
@@ -740,7 +752,7 @@ export class Compositor {
 
   private ensureFx() {
     const gl = this.gl
-    const size = this.width * 65536 + this.height
+    const size = this.pw * 65536 + this.ph
     if (this.fx && this.fxSize === size) return
     if (this.fx) {
       for (const o of [this.fx.layer, this.fx.field, this.fx.blur]) {
@@ -748,12 +760,12 @@ export class Compositor {
         gl.deleteTexture(o.tex)
       }
     }
-    const fw = Math.max(2, Math.round(this.width / 4))
-    const fh = Math.max(2, Math.round(this.height / 4))
+    const fw = Math.max(2, Math.round(this.pw / 4))
+    const fh = Math.max(2, Math.round(this.ph / 4))
     this.fx = {
-      layer: this.makeFbo(this.width, this.height),
+      layer: this.makeFbo(this.pw, this.ph),
       field: this.makeFbo(fw, fh),
-      blur: this.makeFbo(this.width, this.height),
+      blur: this.makeFbo(this.pw, this.ph),
       fw, fh
     }
     this.fxSize = size
@@ -817,7 +829,7 @@ export class Compositor {
 
   private ensureOverlays() {
     const gl = this.gl
-    const size = this.width * 65536 + this.height
+    const size = this.pw * 65536 + this.ph
     if (this.overlays.length === 3 && this.overlaySize === size) return
     for (const o of this.overlays) {
       gl.deleteFramebuffer(o.fbo)
@@ -828,7 +840,7 @@ export class Compositor {
     for (let i = 0; i < 3; i++) {
       const tex = gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, tex)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.width, this.height, 0,
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.pw, this.ph, 0,
         gl.RGBA, gl.UNSIGNED_BYTE, null)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useEditor, projectDuration } from '@/state/store'
 import { useSettings } from '@/state/store'
 import { snapshotFrame } from '@/engine/snapshot'
@@ -8,6 +8,8 @@ import { Icon, Spinner } from './icons'
 import { logWarn } from '@/engine/log'
 import { useOnion, toggleOnion } from '@/engine/onion'
 import { formatTime, parseTimecode } from '@/engine/timelineMath'
+import { CtxMenu } from './CtxMenu'
+import type { SettingKey } from '@shared/settings'
 
 
 export function TransportBar() {
@@ -120,6 +122,7 @@ export function TransportBar() {
         <Icon name={popped ? 'popin' : 'popout'} />
       </button>
       <OnionControls />
+      <PreviewMenu />
       <span className="time">
         {playing && rate !== 1 && (
           <span className="rate-badge" data-act="rate" title={t('rateLbl')}>
@@ -238,5 +241,69 @@ function OnionControls() {
         </>
       )}
     </span>
+  )
+}
+
+/** «Вид превью»: quality (the canvas backing store only) and what is drawn over the frame */
+function PreviewMenu() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const quality = useSettings((s) => s.effective('playback.previewQuality').value)
+  const on = (k: SettingKey) => useSettings.getState().effective(k).value === true
+  // re-render when an overlay flips
+  useSettings((s) => s.snap)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  const set = useSettings.getState().set
+  const toggle = (k: SettingKey, act: string, label: string) => (
+    <button data-act={act} role="menuitemcheckbox" aria-checked={on(k)} onClick={() => set(k, !on(k))}>
+      <span className="ctx-check">{on(k) && <Icon name="check" size={13} />}</span>
+      {label}
+    </button>
+  )
+  return (
+    <>
+      <button
+        className={`icon-only${at ? ' active' : ''}`}
+        data-act="preview-menu"
+        title={t('pvMenu')}
+        aria-label={t('pvMenu')}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        <Icon name="eye" />
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="preview-menu">
+          <div className="ctx-title">{t('pvQuality')}</div>
+          {(['full', 'half', 'quarter'] as const).map((q) => (
+            <button key={q} data-act={`pv-${q}`} role="menuitemradio" aria-checked={quality === q}
+                    onClick={() => { set('playback.previewQuality', q); setAt(null) }}>
+              <span className="ctx-check">{quality === q && <Icon name="check" size={13} />}</span>
+              {t(q === 'full' ? 'pvFull' : q === 'half' ? 'pvHalf' : 'pvQuarter')}
+            </button>
+          ))}
+          <div className="ctx-title">{t('pvOverlays')}</div>
+          {toggle('playback.safeGuides', 'pv-safe', t('pvSafe'))}
+          {toggle('playback.thirds', 'pv-thirds', t('pvThirds'))}
+          {toggle('playback.frameStats', 'pv-stats', t('pvStats'))}
+        </CtxMenu>
+      )}
+    </>
   )
 }

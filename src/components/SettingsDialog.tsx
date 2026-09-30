@@ -421,6 +421,19 @@ function Playback({ t }: { t: T }) {
         <Choice k="playback.follow" label={t('setFollow')} width={240}
                 options={[['off', t('setFollowOff')], ['page', t('setFollowPage')], ['smooth', t('setFollowSmooth')]]} />
       </Row>
+      <Row label={t('pvQuality')} keys={['playback.previewQuality']} shown={t('pvFull')} detail={t('pvQualityNote')}>
+        <Choice k="playback.previewQuality" label={t('pvQuality')} width={240}
+                options={[['full', t('pvFull')], ['half', t('pvHalf')], ['quarter', t('pvQuarter')]]} />
+      </Row>
+      <Row label={t('pvSafe')} keys={['playback.safeGuides']} shown={t('setOff')}>
+        <Check k="playback.safeGuides" label={t('pvSafe')} />
+      </Row>
+      <Row label={t('pvThirds')} keys={['playback.thirds']} shown={t('setOff')}>
+        <Check k="playback.thirds" label={t('pvThirds')} />
+      </Row>
+      <Row label={t('pvStats')} keys={['playback.frameStats']} shown={t('setOff')}>
+        <Check k="playback.frameStats" label={t('pvStats')} />
+      </Row>
     </>
   )
 }

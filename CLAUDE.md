@@ -611,7 +611,18 @@ mixes audio and muxes/transcodes per preset.
   corrective seeks (each a gap you hear) per 30 s — 169 in all; after: 7,
   pool ≤ 15. `previewPoolStats()`, `audioStats()` (with
   AudioContext.playbackStats) and `silencePreview(on)` on kadrEditor are
-  there to measure it.
+  there to measure it; it also carries `fps` and `dropped` (`FrameMeter`: a
+  timeline frame whose wall-clock slot passed with no draw, slots offset by
+  half a frame so vsync jitter drops nothing), the preview's readout.
+  PREVIEW QUALITY SCALES THE BACKING STORE ONLY (`playback.previewQuality`:
+  full/½/¼ → `previewPrefs.scale` → `Compositor.scale`): `width`/`height`
+  stay the project's and carry all geometry, masks and effect radii; the
+  viewport, readback and FBOs use the scaled pixel size. The canvas box on
+  screen is CSS, sized from the project (`.preview-canvas-wrap` is a size
+  container), so every overlay that follows the canvas rect — fragment
+  iframes, the gizmo, the onion skin, the guides — is untouched. Shot mode
+  (`setSourceQuality(true)`) draws at scale 1, and the exporter's own
+  compositor never leaves it. Test: `node scripts/check-preview-scale.mjs`.
   THE CLOCK HAS A SIGNED RATE (J/K/L, card E5): `advanceClock` in
   `timelineMath.ts` is the whole clock — `t = anchor.t + rate·Δts`, a new
   rate re-anchors like a scrub, a loop (`loop`, Ctrl+L: the range or the

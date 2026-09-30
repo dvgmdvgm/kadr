@@ -76,6 +76,15 @@ export const SETTINGS = {
   'playback.proxyMinSide': { type: 'number', min: 240, max: 4320, default: 720, section: 'playback' },
   /** the timeline view during playback: 'page' turns a page at the edge, 'smooth' keeps the playhead centred */
   'playback.follow': { type: 'enum', options: ['off', 'page', 'smooth'], default: 'page', section: 'playback' },
+  // the preview's view menu (TransportBar → Preview.tsx); never reaches the export
+  /** the canvas backing store: full, ½ or ¼ of the project size per side */
+  'playback.previewQuality': { type: 'enum', options: ['full', 'half', 'quarter'], default: 'full', section: 'playback' },
+  /** action-safe (90 %) and title-safe (80 %) frames over the preview */
+  'playback.safeGuides': { type: 'boolean', default: false, section: 'playback' },
+  /** the rule-of-thirds grid over the preview */
+  'playback.thirds': { type: 'boolean', default: false, section: 'playback' },
+  /** the preview's frame rate and dropped frames while playing */
+  'playback.frameStats': { type: 'boolean', default: false, section: 'playback' },
   // the timeline's mouse (Timeline.tsx)
   /** 'zoom': the wheel zooms, Shift scrolls; 'scroll': the wheel scrolls, Ctrl zooms */
   'mouse.wheel': { type: 'enum', options: ['zoom', 'scroll'], default: 'zoom', section: 'mouse' },

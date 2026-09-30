@@ -170,11 +170,57 @@ const pools = new Set<MediaPool>()
 export function previewPoolStats() {
   let elements = 0
   for (const p of pools) elements += p.size
-  return { pools: pools.size, elements, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift) }
+  return {
+    pools: pools.size, elements, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift),
+    fps: frameMeter.fps, dropped: frameMeter.dropped
+  }
 }
 
-/** «Прокси при воспроизведении» (proxy.ts keeps it in step with the setting) */
-export const previewPrefs = { proxies: true }
+/**
+ * The preview's frame rate and dropped frames while playing (the readout in
+ * the preview menu). A timeline frame is DROPPED when its moment on the wall
+ * clock passed with no draw in it. Slots are counted from the playback's
+ * first draw shifted by half a frame, so draws that keep pace sit mid-slot
+ * and vsync jitter under half a frame drops nothing; a display slower than
+ * the timeline (59.94 Hz under 60 fps) drops what it really cannot show.
+ */
+export class FrameMeter {
+  fps = 0
+  dropped = 0
+  private t0 = -1
+  private lastSlot = -1
+  private recent: number[] = []
+
+  /** a new playback: counts start from zero */
+  start() {
+    this.fps = 0
+    this.dropped = 0
+    this.t0 = -1
+    this.lastSlot = -1
+    this.recent = []
+  }
+
+  /** a draw at rAF time `ts` (ms) of a timeline running at `fps` */
+  draw(ts: number, fps: number) {
+    if (this.t0 < 0) this.t0 = ts
+    const slot = Math.floor(((ts - this.t0) * fps) / 1000 + 0.5)
+    if (this.lastSlot >= 0 && slot > this.lastSlot + 1) this.dropped += slot - this.lastSlot - 1
+    this.lastSlot = Math.max(this.lastSlot, slot)
+    this.recent.push(ts)
+    while (this.recent.length && this.recent[0] <= ts - 1000) this.recent.shift()
+    const span = ts - this.recent[0]
+    this.fps = this.recent.length > 1 && span > 0 ? ((this.recent.length - 1) * 1000) / span : 0
+  }
+}
+const frameMeter = new FrameMeter()
+
+/** the preview menu's quality: the backing store's scale (Compositor.scale) */
+export const PREVIEW_SCALE = { full: 1, half: 0.5, quarter: 0.25 } as const
+export type PreviewQuality = keyof typeof PREVIEW_SCALE
+
+/** «Прокси при воспроизведении» (proxy.ts keeps it in step with the setting);
+    `scale` — the preview's quality (Preview.tsx keeps it in step) */
+export const previewPrefs = { proxies: true, scale: 1 as number }
 
 export class MediaPool {
   private items = new Map<string, HTMLVideoElement | HTMLImageElement>()
@@ -684,9 +730,14 @@ export class Player {
 
   constructor(private hooks: PlayerHooks) {}
 
-  /** Frame snapshots: decode originals instead of preview proxies while on. */
+  /** Frame snapshots: decode originals instead of preview proxies, and draw
+      at the project size whatever the preview quality, while on. */
   setSourceQuality(on: boolean) {
     this.pool.sourceQuality = on
+  }
+
+  private renderScale() {
+    return this.pool.sourceQuality ? 1 : previewPrefs.scale
   }
 
   /** Draw the current state synchronously. Snapshots call this right before
@@ -696,6 +747,7 @@ export class Player {
   drawNow() {
     if (!this.comp) return
     const { project, playhead } = this.hooks.getState()
+    this.comp.scale = this.renderScale()
     drawFrame(this.comp, project, playhead, this.pool)
     this.lastDrawnProject = project
     this.lastDrawnT = playhead
@@ -796,6 +848,7 @@ export class Player {
 
     let t = playhead
     if (playing) {
+      if (!this.anchor) frameMeter.start() // a new playback (a re-rate keeps counting)
       resumeAudio()
       // anchored clock: rAF timestamps are vsync-aligned, so projecting from
       // a fixed anchor gives constant velocity — accumulating per-frame
@@ -814,6 +867,7 @@ export class Player {
       this.lastSet = t
     } else {
       this.anchor = null
+      frameMeter.fps = 0
     }
 
     this.syncMedia(project, t, playing, rate)
@@ -821,12 +875,15 @@ export class Player {
     // paused with nothing changed: idle at ~4 fps instead of a full 60 fps
     // composite (texture re-uploads of every visible video are not free) —
     // late-arriving seeks still show up within a quarter second
-    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT
+    const scale = this.renderScale()
+    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale
     if (dirty) this.stableTicks = 0
     else this.stableTicks++
     const skipDraw = !dirty && this.stableTicks > 20 && this.stableTicks % 15 !== 0
     if (this.comp && !skipDraw) {
+      this.comp.scale = scale
       drawFrame(this.comp, project, t, this.pool)
+      if (playing) frameMeter.draw(ts, project.fps || 30)
       this.lastDrawnProject = project
       this.lastDrawnT = t
     }

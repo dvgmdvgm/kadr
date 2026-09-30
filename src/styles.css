@@ -124,6 +124,8 @@
   --c-danger-text: #ffc9cd;
   --c-float: #0e1117;             /* free-floating chrome over the timeline */
   --c-black: #000000;             /* the picture area only */
+  --c-guide: rgb(var(--rgb-white) / 0.5);   /* preview guides: hairlines over any picture */
+  --c-guide-halo: rgb(var(--rgb-shadow) / 0.55); /* their dark edge, so they read on white too */
   /* Scrollbars. They are controls, so they are measured like controls: the
      thumb clears 3:1 against what it lies on, and the timeline's — the one
      tool that is used in every session — gets the stronger of the two. */
@@ -786,6 +788,47 @@ body.kadr-popout .preview {
   align-items: center;
   justify-content: center;
   position: relative;
+  /* the canvas box is sized from the PROJECT (--pw/--ph/--ar, set inline),
+     never from its backing store, which the quality menu scales */
+  container-type: size;
+}
+/* fit inside the wrap, never upscaled past the project size — what the
+   canvas's intrinsic size used to give at full quality */
+.preview-canvas-wrap canvas.preview-gl,
+.preview-frame-box {
+  width: min(100cqw, 100cqh * var(--ar), var(--pw));
+  height: min(100cqh, 100cqw / var(--ar), var(--ph));
+}
+.preview-frame-box {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+}
+.pg-safe, .pg-thirds {
+  position: absolute;
+  box-shadow: 0 0 0 1px var(--c-guide-halo);
+}
+.pg-safe { border: 1px solid var(--c-guide); }
+.pg-action { inset: 5%; }
+.pg-title { inset: 10%; }
+.pg-thirds {
+  inset: 0;
+  box-shadow: none;
+  background:
+    linear-gradient(to right, transparent calc(100% / 3 - 0.5px), var(--c-guide) 0 calc(100% / 3 + 0.5px), transparent 0 calc(200% / 3 - 0.5px), var(--c-guide) 0 calc(200% / 3 + 0.5px), transparent 0),
+    linear-gradient(to bottom, transparent calc(100% / 3 - 0.5px), var(--c-guide) 0 calc(100% / 3 + 0.5px), transparent 0 calc(200% / 3 - 0.5px), var(--c-guide) 0 calc(200% / 3 + 0.5px), transparent 0);
+}
+.pg-stats {
+  position: absolute;
+  top: var(--s3);
+  left: var(--s3);
+  padding: var(--s1) var(--s3);
+  border-radius: var(--r1);
+  background: var(--c-float);
+  color: var(--c-text);
+  font-size: var(--fz-sm);
+  font-variant-numeric: tabular-nums;
 }
 .audio-meter {
   width: 24px;
