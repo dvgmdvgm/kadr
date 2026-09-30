@@ -1867,6 +1867,11 @@ function SilenceFlags() {
   const zoom = useEditor((s) => s.zoom)
   if (!items.length) return null
   const cls = (x: Silence) => (x.state === 'proposed' ? '' : ` ${x.state}`)
+  // the agent's proposals (kadr_propose, card I8) ride the same flags, with their reason
+  const tip = (x: Silence) => {
+    const len = (x.end - x.start).toFixed(2)
+    return x.reason ? trf('propTip', { reason: x.reason, len }) : trf('silTip', { len })
+  }
   return (
     <>
       {items.map((x) => (
@@ -1877,8 +1882,8 @@ function SilenceFlags() {
             className={`adefect-flag${cls(x)}`}
             data-silence-flag={x.id}
             style={{ left: HEADER_W + x.start * zoom }}
-            title={trf('silTip', { len: (x.end - x.start).toFixed(2) })}
-            aria-label={trf('silTip', { len: (x.end - x.start).toFixed(2) })}
+            title={tip(x)}
+            aria-label={tip(x)}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); setSilenceState(x.id, e.altKey ? 'proposed' : 'confirmed') }}
             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSilenceState(x.id, 'rejected') }}
@@ -1889,7 +1894,7 @@ function SilenceFlags() {
               s.playInOut()
             }}
           >
-            {x.state === 'confirmed' ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name="mute" size={10} strokeWidth={2.5} />}
+            {x.state === 'confirmed' ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name={x.reason ? 'bot' : 'mute'} size={10} strokeWidth={2.5} />}
           </button>
         </div>
       ))}

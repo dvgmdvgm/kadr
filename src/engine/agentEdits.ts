@@ -12,7 +12,7 @@ import type { Anim, Clip, Easing, Project, TextStyle, TimelineMarker } from '@sh
 import { useEditor, findClip, withLinked, defaultTextStyle } from '@/state/store'
 import { toFrame } from './timelineMath'
 import { upsertKf } from '@/components/animUtils'
-import { applySilences, findSilences, type FindSilencesArgs } from './silences'
+import { applySilences, findSilences, proposeRanges, type FindSilencesArgs } from './silences'
 import { findScenes, type FindScenesArgs } from './scenes'
 import { autoDuck, type AutoDuckArgs } from './duck'
 
@@ -150,11 +150,22 @@ export function undo(a: { steps: number }) {
     proposals out of every unlocked track — one undo step. */
 export async function silences(a: FindSilencesArgs & { apply?: 'confirmed' | 'all' | string[] }) {
   if (a.apply) {
-    const gone = once('silences', () => applySilences(a.apply!))
+    const gone = once('silences', () => applySilences(a.apply!, 'silence'))
     return { removed: gone.map(({ id, start, end }) => ({ id, start, end })), seconds: +gone.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
   }
   const found = await findSilences(a)
   return { proposals: found.map(({ id, start, end }) => ({ id, start, end })), seconds: +found.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+}
+
+/** kadr_propose: show ranges (retakes, …) as confirm flags; apply cuts only what
+    the USER confirmed — one undo step. Proposing is no edit. */
+export function propose(a: { kind?: string; ranges?: { start: number; end: number; reason: string }[]; apply?: 'confirmed' }) {
+  if (a.apply) {
+    const gone = once('propose', () => applySilences('confirmed', a.kind))
+    return { removed: gone.map(({ id, kind, start, end }) => ({ id, kind, start, end })), seconds: +gone.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+  }
+  const shown = proposeRanges(a.kind!, a.ranges!)
+  return { proposals: shown.map(({ id, start, end }) => ({ id, start, end })) }
 }
 
 /** kadr_duck: gain keys on the music that dip under speech — one undo step. */

@@ -11,7 +11,10 @@
 // for a VAD: a quiet run that carries a word keeps that word's time.
 // Music under speech hides the pauses from the mix — aim at the voice track
 // (trackIds) or the clip (clipId) instead.
-// Test: node scripts/check-silences.mjs
+// The same store carries the agent's proposals (card I8, kadr_propose): any
+// `kind` of range with a reason, shown and decided with the same flags, cut
+// by the same applySilences — only when the USER confirmed them.
+// Test: node scripts/check-silences.mjs, node scripts/check-proposals.mjs
 import { create } from 'zustand'
 import { useEditor, projectDuration, withLinked } from '@/state/store'
 import { collectRangeAudio } from './subtitles'
@@ -31,6 +34,10 @@ export interface SilenceOpts {
 
 export interface Silence {
   id: string
+  /** 'silence' (found here), else the agent's kind ('retake', …) */
+  kind: string
+  /** the agent's words, shown on the flag */
+  reason?: string
   /** project seconds, on frames */
   start: number
   end: number
@@ -140,15 +147,29 @@ export async function findSilences(a: FindSilencesArgs = {}): Promise<Silence[]>
   const items = silenceSpans(env, ENV_FPS, a, speech)
     .map(([a0, b0]) => [toFrame(start + a0, p.fps), toFrame(start + b0, p.fps)])
     .filter(([a0, b0]) => b0 > a0)
-    .map(([a0, b0], i): Silence => ({ id: `s${i + 1}`, start: a0, end: b0, state: 'proposed' }))
-  useSilences.setState({ items })
+    .map(([a0, b0], i): Silence => ({ id: `s${i + 1}`, kind: 'silence', start: a0, end: b0, state: 'proposed' }))
+  useSilences.setState((u) => ({ items: [...u.items.filter((x) => x.kind !== 'silence'), ...items] }))
+  return items
+}
+
+/** The agent's proposals (kadr_propose): replace those of `kind`, keep the rest. */
+export function proposeRanges(kind: string, ranges: { start: number; end: number; reason: string }[]): Silence[] {
+  const p = useEditor.getState().project
+  const len = projectDuration(p)
+  const bad = ranges.find((r) => !(r.end > r.start) || r.start < 0 || r.end > len + 1e-6)
+  if (bad) throw new Error(`range ${bad.start}–${bad.end} is outside the timeline (0–${len.toFixed(3)} s)`)
+  const items = ranges.map((r, i): Silence => ({
+    id: `${kind}${i + 1}`, kind, reason: r.reason, start: toFrame(r.start, p.fps), end: toFrame(r.end, p.fps), state: 'proposed'
+  }))
+  useSilences.setState((u) => ({ items: [...u.items.filter((x) => x.kind !== kind), ...items], none: false }))
   return items
 }
 
 /** Cut proposals out of every unlocked track (ripple) as one undo step:
-    'confirmed', 'all' that are not rejected, or these ids. Returns what went. */
-export function applySilences(which: 'confirmed' | 'all' | string[]): Silence[] {
-  const items = useSilences.getState().items
+    'confirmed', 'all' that are not rejected, or these ids — of `kind` when
+    given. Overlaps merge (store.extractRanges). Returns what went. */
+export function applySilences(which: 'confirmed' | 'all' | string[], kind?: string): Silence[] {
+  const items = useSilences.getState().items.filter((x) => !kind || x.kind === kind)
   const chosen = Array.isArray(which)
     ? items.filter((x) => which.includes(x.id))
     : items.filter((x) => (which === 'all' ? x.state !== 'rejected' : x.state === 'confirmed'))

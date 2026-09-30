@@ -90,6 +90,10 @@ mixes audio and muxes/transcodes per preset.
   the voice track alone under music, a transcript word kept; removing them
   shortens the timeline by gaps − 2·pad each as ONE undo step; kadr_silences
   refuses bad input before the page);
+  `check-proposals.mjs` (I8: `kadr_propose` shows ranges as flags with the
+  reason; only what the user confirmed is cut, in ONE undo step, overlapping
+  ranges merged in `extractRanges`; apply by ids is refused, and
+  kadr_silences never cuts another kind);
   `check-scenes.mjs` wants ffmpeg (I6: scdet finds a generated clip's 4 hard
   cuts within a frame, mapped through inPoint and speed to 'scene' markers
   as ONE undo step, snap targets that survive a load; kadr_scenes refuses
@@ -353,6 +357,10 @@ mixes audio and muxes/transcodes per preset.
   proposal flags on the timeline — the toolbar's «Паузы» and the palette
   do the same — and cut with `extractRanges`, all of them ONE undo step;
   test `node scripts/check-silences.mjs`) /
+  kadr_propose (I8: the agent's ranges with a reason — retakes read off the
+  transcript words — in the SAME proposal store and flags as the pauses,
+  per `kind`; the tool can only apply what the USER confirmed; test
+  `node scripts/check-proposals.mjs`) /
   kadr_scenes (I6, `src/engine/scenes.ts`: ffmpeg `scdet` in main,
   `media:scenes`, over the source span of every video clip in a clip /
   range / the timeline; the cuts become `TimelineMarker.kind = 'scene'` —

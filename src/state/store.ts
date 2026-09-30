@@ -1085,7 +1085,8 @@ interface EditorState {
   /** Delete a range (default: the current one) on every unlocked track and
       close it everywhere; markers right of it follow — one undo step. */
   extractRange(range?: { start: number; end: number }): void
-  /** extractRange over several ranges (silence removal) — still ONE undo step. */
+  /** extractRange over several ranges (silence removal, proposals) — still ONE
+      undo step; overlapping ranges merge. */
   extractRanges(ranges: { start: number; end: number }[]): void
   /** `ripple` (Ctrl+Shift+V) inserts, like a Shift-drop. */
   pasteAtPlayhead(ripple?: boolean): void
@@ -2361,8 +2362,15 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   extractRanges: (ranges) => {
-    // latest first: extracting one never moves the ranges still to come
-    const rs = ranges.filter((r) => r.end - r.start >= 1e-6).sort((a, b) => b.start - a.start)
+    // overlapping or touching ranges merge (cutting a shared stretch twice would
+    // eat what follows it); then latest first: extracting one never moves the ranges still to come
+    const rs: { start: number; end: number }[] = []
+    for (const r of ranges.filter((r) => r.end - r.start >= 1e-6).sort((a, b) => a.start - b.start)) {
+      const last = rs[rs.length - 1]
+      if (last && r.start <= last.end + 1e-6) last.end = Math.max(last.end, r.end)
+      else rs.push({ start: r.start, end: r.end })
+    }
+    rs.reverse()
     if (!rs.length) return
     get().pushHistory('hExtract')
     set((st) => {

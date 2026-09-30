@@ -1,6 +1,6 @@
 ---
 name: editor
-description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_marker, kadr_undo, kadr_silences, kadr_scenes, kadr_duck, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
+description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_marker, kadr_undo, kadr_silences, kadr_propose, kadr_scenes, kadr_duck, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
 ---
 
 # Editing in Kadr
@@ -92,6 +92,12 @@ rhythm, readability or physical sense — not a technical failure. So:
   flags; decide which go, then `apply` ("confirmed" — what the user ticked —
   "all", or ids) cuts them from every unlocked track in ONE undo step. Never
   hand-roll this with a chain of ripple deletes.
+- Retakes, false starts, fluff — PROPOSE, NEVER CUT: read the words
+  (`kadr_state` `fields:["words"]`), pick the ranges (keep the better take of
+  a repeated line) and `kadr_propose(kind: "retake", ranges: [{start, end,
+  reason}])`. They show as flags with your reason; the user confirms. Then
+  `kadr_propose(apply: "confirmed")` cuts only what they confirmed, overlaps
+  merged, ONE undo step. There is no way to cut a proposal nobody confirmed.
 - Music under a voice: `kadr_duck(musicClipIds)` writes gain keys that dip
   the music (−12 dB default) wherever the other tracks speak, with attack
   and release; it MULTIPLIES the clip's existing gain, so run it once (or

@@ -113,6 +113,24 @@ const TOOLS = [
     }
   },
   {
+    name: 'kadr_propose',
+    fn: 'propose',
+    helper: true,
+    description: 'Propose ranges for the USER to cut — retakes (a line said again: keep the better take), false starts, fluff. Read the words first (kadr_state fields:["words"]). kind = a short lowercase name ("retake", "short", …); ranges [{start, end, reason}] in project s. They appear as flags on the timeline with the reason; a new set of one kind replaces the previous set of that kind. Proposing is no edit. Nothing is cut until the user confirms: APPLY with apply "confirmed" (optionally kind) cuts only the confirmed ranges out of every unlocked track, ripple, overlaps merged — one undo step; with nothing confirmed it errors. Never cut good takes yourself.',
+    input: {
+      kind: z.string().regex(/^[a-z][a-z_]{1,23}$/).optional(),
+      ranges: z.array(z.object({ start: sec, end: sec, reason: z.string().min(1).max(300) }).strict()).min(1).max(500).optional(),
+      apply: z.literal('confirmed').optional()
+    },
+    check: (a) => {
+      if (a.apply) return a.ranges ? 'apply takes no ranges (it cuts what the user confirmed)' : undefined
+      if (!a.kind || !a.ranges) return 'kind and ranges are both needed (or apply: "confirmed")'
+      if (a.kind === 'silence') return 'kind "silence" belongs to kadr_silences'
+      const bad = a.ranges.find((r) => !(r.end > r.start))
+      if (bad) return `range ${bad.start}–${bad.end}: end must be > start`
+    }
+  },
+  {
     name: 'kadr_scenes',
     fn: 'scenes',
     helper: true,
