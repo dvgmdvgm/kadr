@@ -45,7 +45,10 @@ mixes audio and muxes/transcodes per preset.
   and the installed electron (K4: the real StereoPannerNode and the export
   chain against the one pan law — static, keyframed, mono (K10: at its own
   level on each channel, preview = export, premix too), hard left silent
-  in R — and master −6 dB lowering the export by 6 ± 0.1 dB); `check-eta.mjs` (G8: the export's fps / time left from
+  in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
+  `check-scrub-grains.mjs` (K7: scrub grains at most every 60 ms, none after
+  the drag ends — not even a seek landing late — and each stops by itself);
+  `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
   `check-recent.mjs` (H1: the recent-projects list behind «Открыть»'s ▾ and
@@ -584,6 +587,17 @@ mixes audio and muxes/transcodes per preset.
   the meter too — measure with the context's `setSinkId({type:'none'})`.
   Live, a 10 s playthrough read −24.22 LUFS where ebur128 on its export read
   −24.2. Test: `node scripts/check-lufs.mjs`.
+  THE OUTPUT DEVICE AND THE SCRUB (K7). `playback.audioOutput` (a deviceId,
+  absent = the system default) is one `setSinkId` on the preview's single
+  AudioContext — the popped-out preview and the scrub included; only a CHANGE
+  of the setting is applied, so a test's `{type:'none'}` holds. Dragging the
+  playhead on the ruler while stopped plays ~80 ms grains of every audible clip
+  at most every 60 ms, from `<audio>` elements of their own routed through the
+  same gain → pan → master (`src/engine/scrub.ts` core, `scrubAudio.ts` glue):
+  the pool's elements belong to the resync. A grain is timed from its seek
+  landing, a seek that lands after the drag is dropped, and every grain stops
+  itself, so a lost pointerup cannot leave a sound running.
+  `kadrEditor.scrubStats`. Test: `node scripts/check-scrub-grains.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings

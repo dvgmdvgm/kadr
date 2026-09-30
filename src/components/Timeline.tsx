@@ -46,6 +46,7 @@ import { useDefectsUi, targetRun } from './DefectsDialog'
 import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
+import { scrub } from '@/engine/scrubAudio'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -171,10 +172,15 @@ function startScrubOrRange(e: React.PointerEvent<HTMLDivElement>, lane: HTMLElem
     })
     return
   }
-  useEditor.getState().setPlayhead(timeAt(e.clientX))
-  windowDrag(e, (_dx, ev) => {
-    useEditor.getState().setPlayhead(timeAt(ev.clientX))
-  })
+  // K7: stopped, the drag is heard in short grains; playing, the player already plays it
+  const heard = !useEditor.getState().playing
+  const to = (t: number) => {
+    useEditor.getState().setPlayhead(t)
+    if (heard) scrub.move(t)
+  }
+  if (heard) scrub.begin()
+  to(timeAt(e.clientX))
+  windowDrag(e, (_dx, ev) => to(timeAt(ev.clientX)), () => { if (heard) scrub.end() })
 }
 
 /** The rubber band being dragged, in .tl-content pixels. Its own store so a

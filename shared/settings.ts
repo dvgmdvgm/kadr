@@ -72,6 +72,8 @@ export const SETTINGS = {
   'editing.confirmDelete': { type: 'boolean', default: true, section: 'editing', legacy: 'kadr.confirmDelete' },
   /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export */
   'playback.previewLimiter': { type: 'boolean', default: true, section: 'playback', legacy: 'kadr.previewLimiter' },
+  /** K7: the preview's output device (a deviceId; '' = the system default) — AudioContext.setSinkId */
+  'playback.audioOutput': { type: 'string', default: '', section: 'playback' },
   /** the preview decodes the 540p proxy of a heavy source */
   'playback.proxies': { type: 'boolean', default: true, section: 'playback' },
   /** sources at or above this short side get a proxy, px */

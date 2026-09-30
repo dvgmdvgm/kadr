@@ -99,6 +99,11 @@ export function overlapFades(track: Track, clip: Clip): Fades {
   return { fadeIn, fadeOut, inCurve: clip.fadeInCurve, outCurve: clip.fadeOutCurve }
 }
 
+/** a clip's audio level at clip-local `rel`: its gain, the track's and the fades — the preview and the scrub (K7) */
+export function audioLevelAt(clip: Clip, track: Track, rel: number): number {
+  return Math.max(0, evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip)))
+}
+
 /** Visible video layers at time t, in draw order (bottom first). */
 export function videoLayersAt(project: Project, t: number): ActiveLayer[] {
   const layers: ActiveLayer[] = []
@@ -961,9 +966,7 @@ export class Player {
       const eff = (clip.speed || 1) * (running ? rate : 1)
       // beyond Chromium's cap the audio is silent, as for a clip that fast (shared/audioSpeed.ts)
       el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
-      this.pool.setVolume(el, Math.max(0,
-        evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip))
-      ))
+      this.pool.setVolume(el, audioLevelAt(clip, track, rel))
       setElementPan(el, panAt(clip, track, t))
       // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
       // is muted (shared/audioSpeed.ts), the element free-runs at the clamped

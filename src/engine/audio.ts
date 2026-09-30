@@ -5,7 +5,7 @@
 // shared/loudness.ts: LUFS M/S/I and true peak of what reaches the speakers). The limiter is the export's own (shared/previewLimiter.ts, an
 // AudioWorklet), so a hot mix clips in neither; `useSettings.previewLimiter`
 // takes it out, and until its module has loaded the master goes straight on.
-import { useSettings } from '../state/store'
+import { useSettings, setting } from '../state/store'
 import { logWarn } from './log'
 import { tr } from '../i18n'
 import type { Loudness } from '@shared/loudness'
@@ -60,8 +60,12 @@ export function ensureAudio(): AudioContext {
       limiterState = 'failed'
       logWarn(tr('lgSound'), tr('lmLimiterFail'), String(e))
     })
-    useSettings.subscribe((s, prev) => { if (s.previewLimiter !== prev.previewLimiter) route() })
+    useSettings.subscribe((s, prev) => {
+      if (s.previewLimiter !== prev.previewLimiter) route()
+      if (s.snap !== prev.snap) applySink()
+    })
     route()
+    applySink()
   }
   return ctx
 }
@@ -74,6 +78,24 @@ function limiterOn(): boolean {
 function route() {
   master!.disconnect()
   master!.connect(limiterOn() ? limiter! : analyser!)
+}
+
+/** the device last asked for; a failed switch leaves the context where it was */
+let sinkWanted: string | null = null
+
+/**
+ * K7: the output device (`playback.audioOutput`, '' = the system default).
+ * One context carries everything the preview plays — elements, the scrub, the
+ * popped-out window's canvas included — so one setSinkId moves all of it.
+ * Only a CHANGE of the setting is applied: a measurement that parked the
+ * output on {type:'none'} keeps it until the user picks a device.
+ */
+function applySink() {
+  const id = String(setting('playback.audioOutput') ?? '')
+  const c = ctx as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null
+  if (!c?.setSinkId || id === sinkWanted) return
+  sinkWanted = id
+  c.setSinkId(id).catch((e) => logWarn(tr('lgSound'), tr('lmSinkFail'), `${id}: ${String(e)}`))
 }
 
 export function resumeAudio() {

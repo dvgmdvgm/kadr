@@ -159,7 +159,8 @@ function Choice({ k, label, options, width }: {
     <select aria-label={label} value={String(v)} disabled={locked(k, snap)} style={width ? { width } : undefined}
             onChange={(e) => {
               const o = options.find(([x]) => String(x) === e.target.value)
-              if (o) setKey(k, o[0])
+              // '' is never a stored string (healValue): it is the default, i.e. no value of the user's
+              if (o) setKey(k, o[0] === '' ? null : o[0])
             }}>
       {!options.some(([x]) => String(x) === String(v)) && <option value={String(v)}>{String(v)}</option>}
       {options.map(([x, l]) => <option key={String(x)} value={String(x)}>{l}</option>)}
@@ -412,6 +413,25 @@ function Mouse({ t }: { t: T }) {
   )
 }
 
+/** K7: the audio outputs the system has now; Windows' 'default'/'communications' aliases are '' here */
+function OutputDevice({ t }: { t: T }) {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const snap = useSnap()
+  useEffect(() => {
+    const md = navigator.mediaDevices
+    const list = () => md.enumerateDevices()
+      .then((all) => setDevices(all.filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications')))
+      .catch(() => setDevices([]))
+    list()
+    md.addEventListener('devicechange', list)
+    return () => md.removeEventListener('devicechange', list)
+  }, [])
+  const v = String(val('playback.audioOutput', snap))
+  const options: [SettingValue, string][] = [['', t('setOutDefault')], ...devices.map((d): [string, string] => [d.deviceId, d.label || d.deviceId.slice(0, 8)])]
+  if (v && !devices.some((d) => d.deviceId === v)) options.push([v, t('setOutMissing')])
+  return <Choice k="playback.audioOutput" label={t('setOutput')} width={240} options={options} />
+}
+
 function Playback({ t }: { t: T }) {
   return (
     <>
@@ -423,6 +443,9 @@ function Playback({ t }: { t: T }) {
       </Row>
       <Row label={t('setLimiter')} keys={['playback.previewLimiter']} shown={t('setOn')}>
         <Check k="playback.previewLimiter" label={t('setLimiter')} />
+      </Row>
+      <Row label={t('setOutput')} keys={['playback.audioOutput']} shown={t('setOutDefault')}>
+        <OutputDevice t={t} />
       </Row>
       <Row label={t('setFollow')} keys={['playback.follow']} shown={t('setFollowPage')}>
         <Choice k="playback.follow" label={t('setFollow')} width={240}
