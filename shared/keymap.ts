@@ -74,6 +74,7 @@ export const ACTIONS = [
   { id: 'edit.escape', labelKey: 'actEscape', context: g, defaultKeys: [k('Escape')] },
   { id: 'app.settings', labelKey: 'setTitle', context: g, defaultKeys: [k('Comma', ctrl)], prevent: true },
   { id: 'app.palette', labelKey: 'actPalette', context: g, defaultKeys: [k('KeyK', ctrl)], prevent: true },
+  { id: 'agent.context', labelKey: 'actAgentContext', context: g, defaultKeys: [k('KeyK', { ctrl: true, shift: true })], prevent: true },
   // no key yet — listed so the command palette can find them
   { id: 'file.new', labelKey: 'newProject', context: g, defaultKeys: [] },
   { id: 'file.open', labelKey: 'actOpen', context: g, defaultKeys: [] },

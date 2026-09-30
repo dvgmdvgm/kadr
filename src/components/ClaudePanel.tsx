@@ -10,6 +10,8 @@ import { token } from '@/theme'
 import type { ClaudeChatInfo } from '@shared/types'
 import { Icon } from './icons'
 import { Modal } from './Modal'
+import { runAction } from '@/engine/actions'
+import { setContextTarget } from '@/engine/contextLine'
 
 // panel position/size, persisted across launches; null = the default CSS
 // placement (docked to the right edge)
@@ -211,6 +213,7 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
     const projectPath = useEditor.getState().projectPath
     const cwd = projectPath ? dirOf(projectPath) : null
     let dead = false
+    let unhook = () => {}
     window.kadr.claudeOpen(term.cols, term.rows, cwd, want.id).then((r) => {
       if (dead) return
       if (!r.ok) {
@@ -218,6 +221,9 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
       } else {
         chatId = r.chatId
         setCurrent(r.chatId ?? null)
+        // the selection line goes in as a paste, like Ctrl+V — bracketed when
+        // claude asked for it, and never followed by Enter
+        unhook = setContextTarget((line) => { note(); term.paste(line); term.focus() })
         term.focus()
       }
     })
@@ -225,6 +231,7 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
 
     return () => {
       dead = true
+      unhook()
       ro.disconnect()
       el.removeEventListener('contextmenu', onContext)
       el.removeEventListener('keydown', note, true)
@@ -269,6 +276,15 @@ export function ClaudePanel({ onClose }: { onClose: () => void }) {
             </option>
           ))}
         </select>
+        <button
+          className="claude-new"
+          data-act="agent-context"
+          title={t('actAgentContext')}
+          aria-label={t('actAgentContext')}
+          onClick={() => runAction('agent.context')}
+        >
+          <Icon name="target" size={15} />
+        </button>
         <button
           className="claude-new"
           data-act="agent-revert"

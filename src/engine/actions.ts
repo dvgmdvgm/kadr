@@ -11,6 +11,7 @@ import {
 import { importFiles } from './mediaImport'
 import { snapshotFrame } from './snapshot'
 import { togglePreviewWindow } from './popout'
+import { contextTargetOpen, sendContext } from './contextLine'
 import { useBeatsUi } from './beats'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
@@ -163,7 +164,8 @@ const HANDLERS: Record<ActionId, Handler> = {
       if (!String(err).includes('cancelled')) logWarn(tr('lgSnapshot'), tr('lmSnapFail'), err)
     })
   },
-  'preview.popout': { run: () => void togglePreviewWindow() }
+  'preview.popout': { run: () => void togglePreviewWindow() },
+  'agent.context': { enabled: contextTargetOpen, why: 'whyNoAgent', run: () => void sendContext() }
 }
 
 /** null when the action can run now, else why not (an i18n key; '' when it has no reason text) */

@@ -71,6 +71,12 @@ mixes audio and muxes/transcodes per preset.
   `said(…)`; `speakMainErrors()` in src/i18n.ts wraps every `window.kadr`
   call at boot so a rejection arrives as the sentence in the UI language,
   and `spoken()` says a returned warning);
+  `check-context-line.mjs` (I2: «Выделение — в запрос агенту», Ctrl+Shift+K
+  and the panel header's target button, types `[kadr] выделено: … · плейхед
+  … · диапазон …` into claude's prompt through xterm's paste, NEVER with
+  Enter — project seconds and clip ids, control characters folded to
+  spaces so a clip name cannot submit the prompt or end a bracketed paste;
+  `src/engine/contextLine.ts`);
   `check-fps-rational.mjs` wants ffmpeg (H2: the Inspector's frame-rate
   presets are exact rationals — `project.fps` stores 30000/1001, ffprobe of
   an export reads it back, and every frame lands on the timeline's step);
