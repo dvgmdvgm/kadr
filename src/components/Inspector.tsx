@@ -88,6 +88,7 @@ function ProjectProps() {
 function ClipProps({ clip }: { clip: Clip }) {
   const t = useT()
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
+  const named = useRef(false)
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
   const setGain = (v: number) => update({ gain: { ...clip.gain, value: v } as Anim })
@@ -96,7 +97,21 @@ function ClipProps({ clip }: { clip: Clip }) {
 
   return (
     <>
-      <div className="insp-section">{clip.label ?? t('clipName')}</div>
+      <div className="insp-section">{t('clipName')}</div>
+      <label className="insp-field">
+        <span>{t('label')}</span>
+        {/* F2 lands here; one undo step per focus, taken on the first keystroke */}
+        <input
+          data-act="clip-name"
+          value={clip.label ?? ''}
+          onFocus={() => { named.current = false }}
+          onChange={(e) => {
+            if (!named.current) { useEditor.getState().pushHistory('hEdit'); named.current = true }
+            update({ label: e.target.value })
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+        />
+      </label>
       {clip.kind === 'text' && clip.textStyle && (
         <>
           <label className="insp-field tall">

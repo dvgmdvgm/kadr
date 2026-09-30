@@ -43,6 +43,7 @@ interface Handler {
   why?: TKey
 }
 const hasSel = (s: EditorState) => s.selection.length > 0 || !!s.range
+const hasClips = (s: EditorState) => s.selection.length > 0
 /** the stop key (K) is down — see onEditorKey */
 let stopHeld = false
 
@@ -54,6 +55,16 @@ const HANDLERS: Record<ActionId, Handler> = {
   'transport.stop': { run: (s) => s.setPlaying(false) },
   'transport.loop': { run: (s) => s.toggleLoop() },
   'edit.snap': { run: () => useSettings.getState().set('editing.snap', !setting<boolean>('editing.snap')) },
+  'clip.toggleEnable': { enabled: hasClips, why: 'whyNoSel', run: (s) => s.toggleDisabled() },
+  // the name lives in the Inspector (it shows the first selected clip)
+  'clip.rename': {
+    enabled: hasClips, why: 'whyNoSel',
+    run: () => {
+      const el = document.querySelector<HTMLInputElement>('[data-act="clip-name"]')
+      el?.focus()
+      el?.select()
+    }
+  },
   'transport.playInOut': { run: (s) => s.playInOut() },
   'edit.split': { run: (s) => s.splitAtPlayhead() },
   'file.save': { run: () => appCommands.save() },

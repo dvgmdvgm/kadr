@@ -269,7 +269,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
     const clips: { clip: Clip; track: Track }[] = []
     for (const track of project.tracks) {
       if (track.kind !== 'video' || track.muted) continue
-      for (const clip of track.clips) if (clip.kind === 'remotion' && clip.fragmentId && want(clip)) clips.push({ clip, track })
+      for (const clip of track.clips) if (clip.kind === 'remotion' && clip.fragmentId && !clip.disabled && want(clip)) clips.push({ clip, track })
     }
     const inspects = new Map<string, FragmentInspect>()
     for (const { clip } of clips) {
@@ -426,7 +426,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
       const seams: { a: Clip; b: Clip; fa: string; fb: string; continuous: boolean }[] = []
       for (const track of project.tracks) {
         if (track.kind !== 'video' || track.muted) continue
-        const cs = track.clips.filter((c) => c.kind === 'remotion' && c.fragmentId).sort((x, y) => x.start - y.start)
+        const cs = track.clips.filter((c) => c.kind === 'remotion' && c.fragmentId && !c.disabled).sort((x, y) => x.start - y.start)
         for (let i = 0; i + 1 < cs.length; i++) {
           const a = cs[i], b = cs[i + 1]
           if (Math.abs(a.start + a.duration - b.start) > 1 / project.fps + 1e-6) continue

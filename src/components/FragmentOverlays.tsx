@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { evalAnim } from '@/engine/anim'
-import { fadeFactor } from '@/engine/player'
+import { fadeFactor, trackHeard } from '@/engine/player'
 import { ensureFragmentServer, useFragmentServer } from '@/engine/fragments'
 import { fragmentNeedsCapture, fragmentFrameAt } from '@/engine/fragmentCapture'
 import { usePopout } from '@/engine/popout'
@@ -107,7 +107,7 @@ function nearClips(project: Project, t: number): { clip: Clip; track: Track; key
   for (const track of [...project.tracks].reverse()) {
     if (track.kind !== 'video' || track.muted) continue
     const clips = track.clips
-      .filter((c) => c.kind === 'remotion' && c.fragmentId && !fragmentNeedsCapture(track, c, project))
+      .filter((c) => c.kind === 'remotion' && c.fragmentId && !c.disabled && !fragmentNeedsCapture(track, c, project))
       .sort((a, b) => a.start - b.start)
     let run: Clip[] = []
     const flush = () => {
@@ -252,7 +252,7 @@ function FragmentFrame({
       const st = useEditor.getState()
       const r = st.playhead - clip.start
       const inside = r >= 0 && r < clip.duration
-      const vol = clip.muted || track.muted || !inside
+      const vol = clip.muted || !trackHeard(st.project, track) || !inside
         ? 0
         : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r))
       post({

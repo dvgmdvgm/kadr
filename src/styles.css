@@ -75,6 +75,17 @@
   --clip-text-2: #4a341e;
   --clip-frag: #3c2a5e;
   --clip-frag-2: #2c1f46;
+  /* colour labels of tracks and clips (E9), picked by index 1..8. Clip text
+     (--c-text) on each is 4.9–6.9:1 (AA), and each stands off the lane at
+     2.3–3.3:1 — more than the default clip colours above (1.8–2.2:1). */
+  --label-1: #8a3440;
+  --label-2: #8a5220;
+  --label-3: #6f6418;
+  --label-4: #2f6b3a;
+  --label-5: #1f6666;
+  --label-6: #2d5596;
+  --label-7: #5c3b91;
+  --label-8: #86346f;
 
   /* kept as aliases: older rules and a few inline styles still read them */
   --bg: var(--c-bg-0);
@@ -1448,6 +1459,13 @@ div.tr-error {
 }
 .track-head button:hover:not(:disabled) { background: var(--c-bg-4); border-color: transparent; color: var(--c-text); }
 .track-head button.toggled-on { color: var(--c-accent); background: var(--c-accent-soft); }
+.track-head .track-name-edit {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 var(--s2);
+  font-size: var(--fz-sm);
+}
 .track-gain-row { display: flex; align-items: center; gap: var(--s2); }
 .track-gain { flex: 1; min-width: 0; height: 14px; margin: 0; }
 .gain-pct {
@@ -2203,6 +2221,31 @@ div.tr-error {
   background: repeating-linear-gradient(135deg, rgb(var(--rgb-danger) / 0.3) 0 4px, transparent 4px 9px);
 }
 .clip-offline { display: inline-flex; color: var(--c-danger-text); }
+/* switched off (E9): not drawn, not heard, not exported — hatched and dimmed */
+.clip.disabled { opacity: 0.55; }
+.clip.disabled::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: repeating-linear-gradient(135deg, rgb(var(--rgb-white) / 0.22) 0 3px, transparent 3px 8px);
+}
+/* colour swatches in the track and clip menus; --sw is the swatch's label */
+.ctx-swatches { display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s2) var(--s4) var(--s3); }
+.ctx-menu .ctx-swatches button,
+.ctx-menu .ctx-swatches button:hover:not(:disabled) {
+  width: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 0;
+  justify-content: center;
+  background: var(--sw);
+  border: 1px solid var(--c-line-ctl);
+  color: var(--c-text-2);
+}
+.ctx-menu .ctx-swatches button:hover:not(:disabled) { border-color: var(--c-text); }
+.ctx-menu .ctx-swatches button[aria-pressed='true'] { outline: 2px solid var(--c-sel); outline-offset: 1px; }
 
 /* ===========================================================================
    Animation editor (Vegas-style pan/crop) and track motion

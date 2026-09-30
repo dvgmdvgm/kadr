@@ -16,6 +16,20 @@ export interface ActiveLayer {
   asset?: MediaAsset
 }
 
+/** Is the track heard? Muted never; while any track is soloed, only the
+    soloed ones (E9). The picture ignores solo — it is a listening tool. */
+export function trackHeard(project: Project, track: Track): boolean {
+  return !track.muted && (!!track.solo || !project.tracks.some((t) => t.solo))
+}
+
+/** The project the export renders: disabled clips gone (E9), so neither the
+    mix, the frames, the fragment renders nor the offline check see them.
+    Returns the same object when nothing is disabled. */
+export function withoutDisabled(project: Project): Project {
+  if (!project.tracks.some((t) => t.clips.some((c) => c.disabled))) return project
+  return { ...project, tracks: project.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => !c.disabled) })) }
+}
+
 /** Source-media time for a clip-local timeline offset, honoring speed and looping. */
 export function clipSourceTime(clip: Clip, asset: MediaAsset | undefined, rel: number): number {
   const speed = clip.speed || 1
@@ -51,7 +65,7 @@ export function overlapFades(track: Track, clip: Clip): { fadeIn: number; fadeOu
   let fadeOut = clip.fadeOut ?? 0
   const end = clip.start + clip.duration
   for (const o of track.clips) {
-    if (o.id === clip.id) continue
+    if (o.id === clip.id || o.disabled) continue
     const oEnd = o.start + o.duration
     // an earlier clip covers our head — fade in over the overlap
     if (o.start <= clip.start + 1e-6 && oEnd > clip.start + 1e-6 && oEnd < end - 1e-6) {
@@ -72,7 +86,7 @@ export function videoLayersAt(project: Project, t: number): ActiveLayer[] {
     const track = project.tracks[i]
     if (track.kind !== 'video' || track.muted) continue
     const active = track.clips
-      .filter((c) => t >= c.start && t < c.start + c.duration)
+      .filter((c) => !c.disabled && t >= c.start && t < c.start + c.duration)
       .sort((a, b) => a.start - b.start)
     for (const clip of active) {
       layers.push({
@@ -89,9 +103,9 @@ export function videoLayersAt(project: Project, t: number): ActiveLayer[] {
 export function audibleClipsAt(project: Project, t: number): ActiveLayer[] {
   const out: ActiveLayer[] = []
   for (const track of project.tracks) {
-    if (track.muted) continue
+    if (!trackHeard(project, track)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled) continue
       if (!audioFollowsSpeed(clip.speed || 1)) continue // silent, as in the export
       if (t < clip.start || t >= clip.start + clip.duration) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
@@ -107,7 +121,7 @@ export function upcomingClipsAt(project: Project, t: number, horizon: number): A
   for (const track of project.tracks) {
     if (track.muted) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media') continue
+      if (clip.kind !== 'media' || clip.disabled) continue
       if (clip.start <= t || clip.start > t + horizon) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (asset && asset.kind !== 'image') out.push({ clip, track, asset })
@@ -378,7 +392,7 @@ export function drawFrame(
     const trackOpacity = Math.min(1, Math.max(0, track.gain ?? 1))
     if (trackOpacity <= 0.001) continue
     const active = track.clips
-      .filter((c) => t >= c.start && t < c.start + c.duration)
+      .filter((c) => !c.disabled && t >= c.start && t < c.start + c.duration)
       .sort((a, b) => a.start - b.start)
     const assetOf = (c: Clip) =>
       c.assetId ? project.assets.find((a) => a.id === c.assetId) : undefined

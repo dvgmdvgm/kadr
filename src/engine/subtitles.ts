@@ -7,7 +7,7 @@ import { useEditor, uid } from '@/state/store'
 import { dirOf, baseOf } from '@shared/paths'
 import { audioFollowsSpeed } from '@shared/audioSpeed'
 import { gainKeys as gainKeysOf } from '@shared/gainKeys'
-import { overlapFades } from './player'
+import { overlapFades, trackHeard } from './player'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
 
@@ -190,10 +190,11 @@ export function collectRangeAudio(
 ): AudioSegment[] {
   const segs: AudioSegment[] = []
   for (const track of project.tracks) {
-    if (track.muted) continue
+    // an analysis aimed at tracks or clips hears them whatever is soloed
+    if (filter?.trackIds || filter?.clipIds ? track.muted : !trackHeard(project, track)) continue
     if (filter?.trackIds && !filter.trackIds.includes(track.id)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled) continue
       if (filter?.clipIds && !filter.clipIds.includes(clip.id)) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (!asset?.hasAudio) continue

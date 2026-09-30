@@ -178,6 +178,10 @@ export interface Clip {
   transitionIn?: Transition
   transitionOut?: Transition
   label?: string
+  /** colour label 1..LABEL_COLORS (`--label-N` in styles.css); absent = the track's, else the kind's */
+  color?: number
+  /** switched off: neither drawn nor heard, in preview or export (drawn hatched) */
+  disabled?: boolean
   /**
    * remotion clips: the sound under the clip was baked into the fragment
    * (audio.json next to its entry) by «Реакция на звук». `hash` fingerprints
@@ -197,12 +201,19 @@ export interface AudioBake {
 
 export type TrackKind = 'video' | 'audio'
 
+/** how many colour labels there are (`--label-1…8`) */
+export const LABEL_COLORS = 8
+
 export interface Track {
   id: string
   kind: TrackKind
   name: string
   muted: boolean
   locked: boolean
+  /** while any track is soloed, only soloed tracks are heard (preview and export); the picture is untouched */
+  solo?: boolean
+  /** colour label 1..LABEL_COLORS: the header's stripe and the default of its clips */
+  color?: number
   /** audio: volume 0..2; video: whole-track opacity 0..1 */
   gain: number
   /** video tracks: animated whole-track transform */

@@ -2,7 +2,7 @@ import { type WaveBins, type FollowMode, waveColumns, trackOverlaps, formatTime,
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
-import type { AudioDefect, Clip, MediaAsset, TimelineMarker, Track } from '@shared/types'
+import { LABEL_COLORS, type AudioDefect, type Clip, type MediaAsset, type TimelineMarker, type Track } from '@shared/types'
 import {
   useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, MIN_ZOOM, setting, timelineView
 } from '@/state/store'
@@ -705,6 +705,33 @@ function TimelineAsks() {
   return null
 }
 
+/** the colour-label row of the track and clip menus (E9); undefined = no colour */
+function Swatches({ value, onPick }: { value?: number; onPick: (n: number | undefined) => void }) {
+  const t = useT()
+  return (
+    <>
+      <div className="ctx-title dim">{t('colorLabel')}</div>
+      <div className="ctx-swatches" role="group" aria-label={t('colorLabel')}>
+        <button
+          data-act="color-none" title={t('colorNone')} aria-label={t('colorNone')}
+          aria-pressed={!value} style={{ '--sw': 'transparent' } as React.CSSProperties}
+          onClick={() => onPick(undefined)}
+        >
+          <Icon name="close" size={12} />
+        </button>
+        {Array.from({ length: LABEL_COLORS }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n} data-act={`color-${n}`}
+            title={t('colorN').replace('{n}', String(n))} aria-label={t('colorN').replace('{n}', String(n))}
+            aria-pressed={value === n} style={{ '--sw': `var(--label-${n})` } as React.CSSProperties}
+            onClick={() => onPick(n)}
+          />
+        ))}
+      </div>
+    </>
+  )
+}
+
 function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
   const t = useT()
   const selCount = useEditor((s) => s.selection.length)
@@ -814,6 +841,15 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {menu.trackKind === 'video' ? t('addVideoTrack') : t('addAudioTrack')}
           </button>
+          <Swatches
+            value={useEditor.getState().project.tracks.find((x) => x.id === menu.trackId)?.color}
+            onPick={(color) => {
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(menu.trackId!, { color })
+              onClose()
+            }}
+          />
           <button
             className="danger"
             onClick={() => {
@@ -863,6 +899,27 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
             {t('animTab')}…
           </button>
           {speedGroup(menu.clipId!).length > 0 && <SpeedDial clipId={menu.clipId!} />}
+          <button
+            data-act="clip-toggle-enable"
+            onClick={() => {
+              const st = useEditor.getState()
+              if (!st.selection.includes(menu.clipId!)) st.select(withLinked(st.project, [menu.clipId!]))
+              st.toggleDisabled()
+              onClose()
+            }}
+          >
+            {findClip(useEditor.getState().project, menu.clipId!)?.clip.disabled ? t('clipEnable') : t('clipDisable')}
+          </button>
+          <Swatches
+            value={findClip(useEditor.getState().project, menu.clipId!)?.clip.color}
+            onPick={(color) => {
+              const st = useEditor.getState()
+              const ids = st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!]
+              st.pushHistory('hEdit')
+              st.setClipProps(ids, { color })
+              onClose()
+            }}
+          />
           {(() => {
             const p = useEditor.getState().project
             const f = findClip(p, menu.clipId!)
@@ -1371,6 +1428,7 @@ function TrackRow({
   const t = useT()
   const reorder = useRef<{ pushed: boolean } | null>(null)
   const gainRef = useRef<HTMLInputElement>(null)
+  const [naming, setNaming] = useState(false)
   // Only what is near the visible stretch goes into the DOM (half a screen on
   // either side, so a scroll finds it drawn), plus the selection — a clip being
   // dragged must not unmount under the pointer. Everything was rendered before:
@@ -1454,8 +1512,9 @@ function TrackRow({
 
   // drag the header vertically to reorder tracks
   const onHeadDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const tag = (e.target as HTMLElement).tagName
-    if (tag === 'BUTTON' || tag === 'INPUT' || e.button !== 0) return
+    // closest, not tagName: a press on a button's ICON (svg/path) used to start
+    // a reorder, whose pointer capture then took the click from the button
+    if ((e.target as HTMLElement).closest('button, input') || e.button !== 0) return
     reorder.current = { pushed: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
@@ -1485,7 +1544,10 @@ function TrackRow({
     <div className="tl-row" style={{ height: trackH }}>
       <div
         className={`tl-head track-head ${track.kind}`}
-        style={{ width: HEADER_W, height: trackH }}
+        style={{
+          width: HEADER_W, height: trackH,
+          ...(track.color ? { boxShadow: `inset 3px 0 0 var(--label-${track.color})` } : {})
+        }}
         data-trackhead={track.id}
         onPointerDown={onHeadDown}
         onPointerMove={onHeadMove}
@@ -1494,9 +1556,34 @@ function TrackRow({
           e.preventDefault()
           onMenu({ x: e.clientX, y: e.clientY, kind: 'track', trackId: track.id, trackKind: track.kind })
         }}
+        onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest('button, input')) setNaming(true) }}
       >
         <div className="track-head-row">
-          <span className="track-name">{track.name}</span>
+          {naming ? (
+            <input
+              className="track-name-edit"
+              data-act="track-name"
+              aria-label={t('trackRenameHint')}
+              autoFocus
+              defaultValue={track.name}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={(e) => {
+                const name = e.currentTarget.value.trim()
+                setNaming(false)
+                if (!name || name === track.name) return
+                const st = useEditor.getState()
+                st.pushHistory('hTrack')
+                st.updateTrack(track.id, { name })
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') { e.currentTarget.value = track.name; e.currentTarget.blur() }
+              }}
+            />
+          ) : (
+            <span className="track-name" title={t('trackRenameHint')}>{track.name}</span>
+          )}
           {track.kind === 'video' && (
             <button
               className={track.motion ? 'toggled-on' : ''}
@@ -1517,6 +1604,20 @@ function TrackRow({
             onClick={() => useEditor.getState().updateTrack(track.id, { muted: !track.muted })}
           >
             <Icon name={track.muted ? 'mute' : 'volume'} size={13} />
+          </button>
+          <button
+            className={track.solo ? 'toggled-on' : ''}
+            data-act="solo"
+            title={t('solo')}
+            aria-label={t('solo')}
+            aria-pressed={!!track.solo}
+            onClick={() => {
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(track.id, { solo: !track.solo })
+            }}
+          >
+            <Icon name="solo" size={13} />
           </button>
           <button
             className={track.locked ? 'toggled' : ''}
@@ -2484,7 +2585,10 @@ const ClipView = memo(function ClipView({
   const isText = clip.kind === 'text'
   const fadeIn = clip.fadeIn ?? 0
   const fadeOut = clip.fadeOut ?? 0
-  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}${offline ? ' offline' : ''}`
+  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}${offline ? ' offline' : ''}${clip.disabled ? ' disabled' : ''}`
+  // a colour label (E9): the clip's own, else its track's
+  const label = clip.color ?? track.color
+  const tint = label ? { background: `var(--label-${label})` } : {}
   // A clip a few pixels wide shows nothing but its colour: its handles, level
   // line, label and waveform can be neither seen nor grabbed. Zoomed out on a
   // long project that is most of them (a 19-minute project: ~600 clips on
@@ -2528,8 +2632,8 @@ const ClipView = memo(function ClipView({
       <div
         className={cls}
         data-clip={clip.id}
-        style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})` }}
-        title={offline ? t('offlineClip') : clip.label ?? asset?.name}
+        style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})`, ...tint }}
+        title={offline ? t('offlineClip') : clip.disabled ? t('clipDisabled') : clip.label ?? asset?.name}
         onPointerDown={onPointerDown}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
@@ -2540,7 +2644,8 @@ const ClipView = memo(function ClipView({
     <div
       className={cls}
       data-clip={clip.id}
-      style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})` }}
+      style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})`, ...tint }}
+      title={clip.disabled ? t('clipDisabled') : undefined}
       onPointerDown={onPointerDown}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}

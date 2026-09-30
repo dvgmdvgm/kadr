@@ -3,7 +3,7 @@ import type {
   Project, Track, Clip, Anim, MediaAsset, TrackKind, TextStyle, TextDoc, FragmentSpec,
   VoiceRun, AudioDefect, DefectState, TimelineMarker, MusicSectionLabel
 } from '@shared/types'
-import { isMusicMarker } from '@shared/types'
+import { isMusicMarker, LABEL_COLORS } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
@@ -193,9 +193,17 @@ export function sanitizeProject(p: Project): Project {
       if (ph.t1 < d.src[1]) ph.t1 = d.src[1]
     }
   }
+  // E9: a colour is a label index, solo/disabled are booleans; junk is dropped
+  const label = (o: { color?: number }) => {
+    if (o.color !== undefined && !(Number.isInteger(o.color) && o.color >= 1 && o.color <= LABEL_COLORS)) delete o.color
+  }
   for (const track of p.tracks) {
     if (!Number.isFinite(track.gain)) track.gain = 1
+    label(track)
+    if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
+      label(c)
+      if (c.disabled !== undefined) { if (c.disabled) c.disabled = true; else delete c.disabled }
       for (const k of ['start', 'duration', 'inPoint'] as const)
         if (!Number.isFinite(c[k])) c[k] = 0
       if (!Number.isFinite(c.speed) || c.speed <= 0) c.speed = 1
@@ -952,6 +960,11 @@ interface EditorState {
    *  changes nothing pushes nothing. */
   updateProjectSettings(patch: ProjectSettingsPatch, session?: number): void
   updateClip(clipId: string, patch: Partial<Clip>): void
+  /** the same patch on several clips, one update (the caller pushes history) */
+  setClipProps(ids: string[], patch: Partial<Clip>): void
+  /** Shift+E: switch the selection off, or back on when all of it is off;
+      one undo step; locked tracks are left alone */
+  toggleDisabled(): void
   /** Change speed/duration, rescaling keyframes and fades to stay on content.
       Optional `start` moves the clip too (a speed drag from the LEFT edge
       keeps the right edge anchored). */
@@ -1914,6 +1927,26 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (f) Object.assign(f.clip, patch)
       return { project: p }
     }),
+
+  setClipProps: (ids, patch) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      for (const id of ids) {
+        const f = findClip(p, id)
+        if (f) Object.assign(f.clip, patch)
+      }
+      return { project: p }
+    }),
+
+  toggleDisabled: () => {
+    const s = get()
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!own.length) return
+    const off = own.some((c) => !c.disabled)
+    s.pushHistory('hEdit')
+    s.setClipProps(own.map((c) => c.id), { disabled: off || undefined })
+  },
 
   setClipStarts: (entries) =>
     set((s) => {

@@ -33,7 +33,7 @@ const hasFragmentsNear = (t: number): boolean => {
   const p = useEditor.getState().project
   return p.tracks.some(
     (tr) => tr.kind === 'video' && !tr.muted && tr.clips.some(
-      (c) => c.kind === 'remotion' && t >= c.start - 2 && t < c.start + c.duration + 0.75
+      (c) => c.kind === 'remotion' && !c.disabled && t >= c.start - 2 && t < c.start + c.duration + 0.75
     )
   )
 }

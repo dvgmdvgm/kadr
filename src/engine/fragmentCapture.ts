@@ -6,7 +6,7 @@
 import type { Anim, Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { evalAnim } from './anim'
-import { fadeFactor, overlapFades } from './player'
+import { fadeFactor, overlapFades, trackHeard } from './player'
 import { ensureFragmentServer } from './fragments'
 import { logError, logWarn } from './log'
 import { useFragmentParams } from './fragmentParams'
@@ -127,7 +127,7 @@ export function fragmentNeedsCapture(track: Track, clip: Clip, project?: Project
     const t = project.tracks[i]
     if (t.kind !== 'video' || t.muted) continue
     for (const c of t.clips) {
-      if (c.start >= end || c.start + c.duration <= clip.start) continue
+      if (c.disabled || c.start >= end || c.start + c.duration <= clip.start) continue
       if (c.kind !== 'remotion' || ownNeedsCapture(t, c)) return true
     }
   }
@@ -158,7 +158,7 @@ function wanted(project: Project, t: number): Map<string, { clip: Clip; track: T
   for (const track of project.tracks) {
     if (track.kind !== 'video' || track.muted) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'remotion' || !clip.fragmentId) continue
+      if (clip.kind !== 'remotion' || !clip.fragmentId || clip.disabled) continue
       if (t < clip.start - 2 || t >= clip.start + clip.duration + 0.75) continue
       if (!forceAll && !fragmentNeedsCapture(track, clip, project)) continue
       out.set(clip.fragmentId, { clip, track })
@@ -195,7 +195,7 @@ export function wireFragmentCapture() {
     const s = useEditor.getState()
     const rel = s.playhead - clip.start
     const inside = rel >= 0 && rel < clip.duration
-    const vol = clip.muted || track.muted || !inside
+    const vol = clip.muted || !trackHeard(s.project, track) || !inside
       ? 0
       : Math.min(1, evalAnim(clip.gain, Math.max(0, rel)) * track.gain *
           fadeFactor(clip, Math.max(0, rel), overlapFades(track, clip)))

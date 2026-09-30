@@ -9,7 +9,7 @@ import type {
 import { uid } from '@/state/store'
 import { Compositor } from '@/gl/compositor'
 import {
-  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime,
+  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime, withoutDisabled,
   type BlendFrame
 } from './player'
 import { Mp4FrameSource } from './demux'
@@ -76,6 +76,8 @@ export function startExport(
   }
 
   async function run(): Promise<void> {
+    // a switched-off clip (E9) is not in the film: not mixed, drawn, rendered or checked for
+    project = withoutDisabled(project)
     // a moved or renamed source used to render black and fail at the mux:
     // refuse up front (before the busy check: nothing awaits between it and the flag) and say which files
     const missing = await missingForExport(project, range)
