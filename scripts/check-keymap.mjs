@@ -27,7 +27,7 @@ try {
 } catch (err) {
   check('shared/keymap.ts loads', false, String(err).split('\n')[0])
 }
-const { ACTIONS, actionFor, sanitizeKeymap, keymapDiff, keysOf, findConflicts, ownsKeys } = mod
+const { ACTIONS, actionFor, sanitizeKeymap, keymapDiff, keysOf, findConflicts, ownsKeys, capturedChord, bindChord, holderOf, chordLabel } = mod
 
 const ev = (code, mods = {}, key = '') => ({
   code, key, ctrlKey: !!mods.ctrl, shiftKey: !!mods.shift, altKey: !!mods.alt, metaKey: !!mods.meta
@@ -112,6 +112,50 @@ if (ACTIONS) {
     ownsKeys(el('TEXTAREA', { inXterm: true })) && ownsKeys(el('DIV', { inXterm: true })) &&
     ownsKeys(el('INPUT')) && ownsKeys(el('SELECT')) && ownsKeys(el('TEXTAREA')) && ownsKeys(el('DIV', { editable: true })))
   check('a button or the page body does not', !ownsKeys(el('BUTTON')) && !ownsKeys(el('BODY')) && !ownsKeys(null))
+
+  // › capture ignores lone modifier presses (the shortcut editor, D7): pressing
+  // Ctrl on the way to Ctrl+B must not bind Ctrl alone
+  if (typeof capturedChord !== 'function') check('capturedChord exists', false)
+  else {
+    const lone = [
+      ev('ControlLeft', { ctrl: true }), ev('ControlRight', { ctrl: true }), ev('ShiftLeft', { shift: true }),
+      ev('ShiftRight', { shift: true }), ev('AltLeft', { alt: true }), ev('AltRight', { alt: true, ctrl: true }),
+      ev('MetaLeft', { meta: true }), ev('OSLeft'), ev('CapsLock'), ev('')
+    ]
+    check('capture ignores lone modifier presses', lone.every((e) => capturedChord(e) === null),
+      lone.filter((e) => capturedChord(e) !== null).map((e) => e.code).join(','))
+    check('capture takes a key with its modifiers, only the ones held',
+      JSON.stringify(capturedChord(ev('KeyB', { ctrl: true }))) === '{"code":"KeyB","ctrl":true}' &&
+      JSON.stringify(capturedChord(ev('KeyB'))) === '{"code":"KeyB"}')
+  }
+
+  // rebinding: S → B splits on B, S does nothing; onto M reports «add marker»; reset brings S back
+  if (typeof bindChord !== 'function' || typeof holderOf !== 'function') check('bindChord and holderOf exist', false)
+  else {
+    const b = bindChord({}, 'edit.split', { code: 'KeyB' })
+    check('split rebound to B: B splits, S does nothing', hit(ev('KeyB'), b) === 'edit.split' && hit(ev('KeyS'), b) === null, JSON.stringify(b))
+    check('a free key has no holder', holderOf({}, 'edit.split', { code: 'KeyB' }) === undefined)
+    check('M is held by «add marker»', holderOf({}, 'edit.split', { code: 'KeyM' })?.id === 'marker.add')
+    check('an action does not conflict with its own key', holderOf({}, 'edit.split', { code: 'KeyS' }) === undefined)
+    const m = bindChord({}, 'edit.split', { code: 'KeyM' })
+    check('replace: M splits, «add marker» is left without a key',
+      hit(ev('KeyM'), m) === 'edit.split' && keysOf('marker.add', m).length === 0 && findConflicts(m).length === 0, JSON.stringify(m))
+    const d = bindChord({}, 'marker.add', { code: 'KeyD' })
+    check('replace takes only that key: delete keeps Delete and Backspace',
+      JSON.stringify(keysOf('edit.delete', d).map((c) => c.code)) === '["Delete","Backspace"]', JSON.stringify(d))
+    const back = keymapDiff({ ...Object.fromEntries(ACTIONS.map((a) => [a.id, keysOf(a.id, b)])), 'edit.split': [{ code: 'KeyS' }] })
+    check('reset: S splits again and the file is empty', hit(ev('KeyS'), back) === 'edit.split' && JSON.stringify(back) === '{}')
+  }
+
+  if (typeof chordLabel !== 'function') check('chordLabel exists', false)
+  else {
+    const got = [
+      chordLabel({ code: 'KeyZ', ctrl: true, shift: true }), chordLabel({ code: 'ArrowLeft', shift: true }),
+      chordLabel({ code: 'Space' }, 'Пробел'), chordLabel({ code: 'Delete' }), chordLabel({ code: 'Comma', ctrl: true }),
+      chordLabel({ code: 'Digit1', alt: true }), chordLabel({ code: 'Escape' })
+    ]
+    check('keys read the way the canvas prints them', got.join(' | ') === 'Ctrl+Shift+Z | Shift+← | Пробел | Del | Ctrl+, | Alt+1 | Esc', got.join(' | '))
+  }
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')

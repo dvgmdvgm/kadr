@@ -525,7 +525,13 @@ mixes audio and muxes/transcodes per preset.
   (`.xterm`) and an open dialog. The user's rebindings are the DIFF from the
   defaults in `userData/keymap.json` (user-store IPC, atomic); `findConflicts`
   reports one key on two actions in one context. Actions with no key are
-  registered too, for the command palette. Test: `node scripts/check-keymap.mjs`.
+  registered too, for the command palette. THE SHORTCUT EDITOR is the
+  «Клавиши» section of the settings (`src/components/KeysSection.tsx`):
+  while it captures, a window CAPTURE-phase listener takes every key
+  (Alt would open the window menu, Escape would close the dialog) and
+  `capturedChord` ignores lone modifiers; a key another action holds asks
+  inline — replacing takes that one key from it (`bindChord`), never its
+  others. Import/Export move the diff file. Test: `node scripts/check-keymap.mjs`.
 - `src/engine/mediaImport.ts` — every media intake path: `importFiles`
   (probe → bin, deduped by path, optional timeline placement),
   `dropPayload` (reads dataTransfer SYNCHRONOUSLY: files → uri-list /

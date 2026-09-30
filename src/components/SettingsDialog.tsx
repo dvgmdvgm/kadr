@@ -13,6 +13,7 @@ import { TRANSITIONS } from '@/gl/transitions'
 import { PRESETS } from '@/presets'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
+import { KeysSection, KeysHeadActions } from './KeysSection'
 import {
   SETTINGS, awaitsRestart, running,
   type SettingDef, type SettingKey, type SettingSection, type SettingValue, type SettingsSnapshot
@@ -249,10 +250,10 @@ function ToolRow({ k, label, hint, placeholder }: { k: SettingKey; label: string
 
 // ------------------------------------------------------------------ sections
 
-type SectionId = SettingSection | 'voice' | 'privacy'
+type SectionId = SettingSection | 'keys' | 'voice' | 'privacy'
 const SECTIONS: [SectionId, TKey][] = [
   ['general', 'setSecGeneral'], ['newProject', 'setSecNewProject'], ['editing', 'setSecEditing'],
-  ['mouse', 'setSecMouse'], ['playback', 'setSecPlayback'], ['save', 'setSecSave'],
+  ['keys', 'setSecKeys'], ['mouse', 'setSecMouse'], ['playback', 'setSecPlayback'], ['save', 'setSecSave'],
   ['export', 'setSecExport'], ['storage', 'setSecStorage'], ['tools', 'setSecTools'],
   ['speech', 'setSecSpeech'], ['claude', 'setSecAI'], ['voice', 'setSecVoice'], ['privacy', 'setSecPrivacy']
 ]
@@ -603,7 +604,7 @@ export function SettingsDialog({ onOpenStorage, onRelaunch }: { onOpenStorage():
   const pending = (Object.keys(SETTINGS) as SettingKey[]).some((k) => awaitsRestart(k, snap))
   const body: Record<SectionId, ReactNode> = {
     general: <General t={t} />, newProject: <NewProject t={t} />, editing: <Editing t={t} />,
-    mouse: <Mouse t={t} />, playback: <Playback t={t} />, save: <Save t={t} />, export: <Export t={t} />,
+    keys: <KeysSection t={t} />, mouse: <Mouse t={t} />, playback: <Playback t={t} />, save: <Save t={t} />, export: <Export t={t} />,
     storage: <Storage t={t} onOpenStorage={() => { close(); onOpenStorage() }} />, tools: <Tools t={t} />,
     speech: <Speech t={t} />, claude: <Claude t={t} />, voice: <Voice t={t} onClose={close} />, privacy: <Privacy t={t} />
   }
@@ -638,6 +639,7 @@ export function SettingsDialog({ onOpenStorage, onRelaunch }: { onOpenStorage():
         <div className="modal-body settings-main" key={sec}>
           <div className="settings-section-head">
             <h3>{t(SECTIONS.find(([id]) => id === sec)![1])}</h3>
+            {sec === 'keys' && <KeysHeadActions />}
             {resettable && (
               <button className="ghost" onClick={() => keysOf(sec).forEach((k) => setKey(k, null))}>
                 {t('setResetSection')}

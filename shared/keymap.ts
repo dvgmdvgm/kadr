@@ -127,6 +127,38 @@ export function findConflicts(diff: KeymapDiff): { chord: KeyChord; context: Act
   return [...seen.values()].filter((h) => h.ids.length > 1)
 }
 
+// ------------------------------------------------------------------ the shortcut editor
+
+const LONE = /^(Shift|Control|Alt|Meta|OS)(Left|Right)?$|^(CapsLock|NumLock|ScrollLock|Fn|FnLock|AltGraph)$/
+/** The chord a key press binds; null for a lone modifier (Ctrl pressed on the way to Ctrl+B). */
+export const capturedChord = (e: KeyEventLike): KeyChord | null =>
+  !e.code || LONE.test(e.code) ? null : compact(chordOf(e))
+
+const ctxOf = (id: string) => byId.get(id)?.context
+/** the other action holding `chord` where `id` lives — the one a rebinding takes it from */
+export const holderOf = (diff: KeymapDiff, id: string, chord: KeyChord) =>
+  ACTIONS.find((a) => a.id !== id && a.context === ctxOf(id) && keysOf(a.id, diff).some((c) => sameChord(c, chord)))
+
+/** `id` bound to exactly `chord`; an action that held it in the same context loses that key only. */
+export function bindChord(diff: KeymapDiff, id: string, chord: KeyChord): KeymapDiff {
+  return keymapDiff(Object.fromEntries(ACTIONS.map((a) => [a.id,
+    a.id === id ? [chord]
+      : a.context === ctxOf(id) ? keysOf(a.id, diff).filter((c) => !sameChord(c, chord))
+        : keysOf(a.id, diff)])))
+}
+
+const NAMES: Record<string, string> = {
+  ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓', Delete: 'Del', Escape: 'Esc',
+  Comma: ',', Period: '.', Slash: '/', Backslash: '\\', Semicolon: ';', Quote: "'", Backquote: '`',
+  Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', PageUp: 'PgUp', PageDown: 'PgDn'
+}
+/** «Ctrl+Shift+Z», «Shift+←» — `space` is the Space key's name in the UI language */
+export function chordLabel(c: KeyChord, space = 'Space'): string {
+  const key = c.code === 'Space' ? space
+    : NAMES[c.code] ?? c.code.replace(/^Key|^Digit/, '').replace(/^Numpad/, 'Num ')
+  return [c.ctrl && 'Ctrl', c.alt && 'Alt', c.shift && 'Shift', c.meta && 'Meta', key].filter(Boolean).join('+')
+}
+
 interface TargetLike { tagName?: string; isContentEditable?: boolean; closest?(sel: string): unknown }
 /**
  * Whether the focused element keeps the keys to itself: a text field, a

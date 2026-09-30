@@ -111,10 +111,14 @@ export async function loadKeymap() {
 export function setActionKeys(id: ActionId, keys: KeyChord[] | null) {
   const diff = useKeymap.getState().diff
   // a key set back to its defaults leaves the file
-  const next = keymapDiff(Object.fromEntries(ACTIONS.map((a) =>
-    [a.id, a.id === id ? keys ?? a.defaultKeys : keysOf(a.id, diff)])))
-  useKeymap.setState({ diff: next })
-  void saveUserStore(KEYMAP_FILE, next)
+  setKeymap(keymapDiff(Object.fromEntries(ACTIONS.map((a) =>
+    [a.id, a.id === id ? keys ?? a.defaultKeys : keysOf(a.id, diff)]))))
+}
+
+/** Replace the whole keymap (the shortcut editor, an imported file; `{}` = every default). */
+export function setKeymap(diff: KeymapDiff) {
+  useKeymap.setState({ diff })
+  void saveUserStore(KEYMAP_FILE, diff)
 }
 
 // ------------------------------------------------------------------ keydown
