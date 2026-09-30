@@ -211,3 +211,41 @@ export function advanceClock(a: ClockAnchor, ts: number, lo: number, hi: number,
   const over = (outside ? Math.abs(t - a.t) : fwd ? t - hi : lo - t) % span
   return { t: fwd ? lo + over : hi - over, stop: false, wrapped: true }
 }
+
+/** px/s bounds of the timeline zoom; the floor fits an hour on one screen (Shift+Z) */
+export const MIN_ZOOM = 0.25
+export const MAX_ZOOM = 4000
+/** px left free on both sides of a span fitted with Shift+Z / Alt+Z */
+export const FIT_MARGIN = 24
+
+/** The zoom and the time at the lanes' left edge that show [a, b] in `lanes` px
+    plus FIT_MARGIN on each side (none before 0, where the view cannot go);
+    a span too short for MAX_ZOOM is centred. */
+export function fitZoom(a: number, b: number, lanes: number): { zoom: number; t0: number } | null {
+  if (!(b > a) || !(lanes > 2 * FIT_MARGIN)) return null
+  const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (lanes - 2 * FIT_MARGIN) / (b - a)))
+  const t0 = (a + b) / 2 - lanes / 2 / zoom
+  if (t0 >= 0) return { zoom, t0 }
+  // the view cannot start before 0: the span starts at the lanes' edge, margin on the right only
+  return { zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, (lanes - FIT_MARGIN) / b)), t0: 0 }
+}
+
+export type FollowMode = 'off' | 'page' | 'smooth'
+/** px of the old page kept in view after a page turn */
+const PAGE_KEEP = 24
+
+/** Playback follow: the new scrollLeft for a playhead at `x` px (lanes coords)
+    in a view [left, left + lanes), heading the way `rate` says — or null when
+    the view stays. 'page' turns a page once the playhead leaves the side it is
+    heading to; 'smooth' holds it at the centre once it gets there. */
+export function followLeft(mode: FollowMode, x: number, left: number, lanes: number, rate: number): number | null {
+  if (mode === 'off' || !(lanes > 0)) return null
+  const fwd = rate >= 0
+  let want: number
+  if (mode === 'smooth') want = x - lanes / 2
+  else if (x < left || x >= left + lanes) want = fwd ? x - PAGE_KEEP : x - lanes + PAGE_KEEP
+  else return null
+  if (mode === 'smooth' && (fwd ? want <= left : want >= left) && x >= left && x < left + lanes) return null
+  want = Math.max(0, want)
+  return Math.abs(want - left) < 0.5 ? null : want
+}

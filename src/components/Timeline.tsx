@@ -1,10 +1,10 @@
-import { type WaveBins, waveColumns, trackOverlaps, formatTime } from '@/engine/timelineMath'
+import { type WaveBins, type FollowMode, waveColumns, trackOverlaps, formatTime, fitZoom, followLeft } from '@/engine/timelineMath'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
 import type { AudioDefect, Clip, MediaAsset, TimelineMarker, Track } from '@shared/types'
 import {
-  useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, setting
+  useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, MIN_ZOOM, setting, timelineView
 } from '@/state/store'
 
 /** «Скорость клипа — перетаскивание с»: the modifier that turns an edge drag into a speed change */
@@ -406,7 +406,7 @@ export function Timeline({ height }: { height: number }) {
         content.style.setProperty('--zo', `${HEADER_W + g.anchorT * g.z0}px`)
         content.classList.add('zooming')
       }
-      g.nz = Math.min(MAX_ZOOM, Math.max(4, target))
+      g.nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, target))
       const k = g.nz / g.z0
       content.style.setProperty('--zs', String(k))
       clearTimeout(gestureTimer)
@@ -414,6 +414,31 @@ export function Timeline({ height }: { height: number }) {
       if (k > 2 || k < 0.5) commit()
       else gestureTimer = setTimeout(commit, 150)
     }
+    // a key zoom (Shift+Z, Alt+Z, -/=) is a gesture committed at once: `anchorT`
+    // lands `off` px into the lanes at the new zoom
+    const zoomNow = (nz: number, anchorT: number, off: number) => {
+      commit()
+      gestureRef.current = { z0: useEditor.getState().zoom, nz: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nz)), anchorT, off }
+      commit()
+    }
+    const lanes = () => el.clientWidth - HEADER_W
+    timelineView.fit = (a, b) => {
+      const f = fitZoom(a, b, lanes())
+      if (f) zoomNow(f.zoom, f.t0, 0)
+    }
+    timelineView.zoomBy = (k) => {
+      // about the playhead where it is on screen, else it comes to the middle
+      const s = useEditor.getState()
+      const off = s.playhead * s.zoom - el.scrollLeft
+      zoomNow(s.zoom * k, s.playhead, off >= 0 && off <= lanes() ? off : lanes() / 2)
+    }
+    // PLAYBACK FOLLOW («Следовать за курсором»): page or centre the view while
+    // playing — never during a zoom gesture, whose stretch is anchored to the view
+    const unfollow = useEditor.subscribe((s, p) => {
+      if (!s.playing || s.playhead === p.playhead || gestureRef.current) return
+      const left = followLeft(setting<FollowMode>('playback.follow'), s.playhead * s.zoom, el.scrollLeft, lanes(), s.playRate)
+      if (left !== null) el.scrollLeft = left
+    })
     const onWheel = (e: WheelEvent) => {
       // «Колесо на таймлайне»: the wheel (and Ctrl+wheel) zooms around the cursor and Shift pans,
       // or the wheel scrolls and Ctrl zooms
@@ -440,6 +465,8 @@ export function Timeline({ height }: { height: number }) {
       gestureRef.current = null
       zoomGestureRef.current = null
       commitGestureRef.current = null
+      timelineView.fit = timelineView.zoomBy = null
+      unfollow()
     }
   }, [])
 
@@ -526,7 +553,7 @@ export function Timeline({ height }: { height: number }) {
           <input
             type="range"
             ref={zoomSliderRef}
-            min={Math.log(4)}
+            min={Math.log(MIN_ZOOM)}
             max={Math.log(MAX_ZOOM)}
             step={0.01}
             defaultValue={Math.log(zoom)}

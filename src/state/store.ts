@@ -7,7 +7,7 @@ import { isMusicMarker } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
-import { toFrame, nextEdit } from '../engine/timelineMath'
+import { toFrame, nextEdit, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
 import {
   SETTINGS, effective, fromLegacy, healValue,
   type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
@@ -775,7 +775,13 @@ export const useFxPresets = create<FxPresetState>((set) => ({
   } catch { /* file store unavailable — cache keeps working */ }
 })()
 
-export const MAX_ZOOM = 4000
+export { MAX_ZOOM, MIN_ZOOM }
+/** The mounted timeline's view commands (Shift+Z, Alt+Z, -/=), set by Timeline.tsx:
+    both go through its zoom-gesture commit, so culling and the anchor stay right. */
+export const timelineView: {
+  fit: ((a: number, b: number) => void) | null
+  zoomBy: ((k: number) => void) | null
+} = { fit: null, zoomBy: null }
 
 export interface TimeRange {
   start: number
@@ -2275,7 +2281,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
   setPreviewGpuLost: (previewGpuLost) => set({ previewGpuLost }),
-  setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(4, zoom)) }),
+  setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
   setExportOpen: (exportOpen) => set({ exportOpen }),
   setRange: (range) => {
     const fps = get().project.fps

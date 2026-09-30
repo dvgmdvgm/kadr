@@ -417,6 +417,10 @@ function Playback({ t }: { t: T }) {
       <Row label={t('setLimiter')} keys={['playback.previewLimiter']} shown={t('setOn')}>
         <Check k="playback.previewLimiter" label={t('setLimiter')} />
       </Row>
+      <Row label={t('setFollow')} keys={['playback.follow']} shown={t('setFollowPage')}>
+        <Choice k="playback.follow" label={t('setFollow')} width={240}
+                options={[['off', t('setFollowOff')], ['page', t('setFollowPage')], ['smooth', t('setFollowSmooth')]]} />
+      </Row>
     </>
   )
 }

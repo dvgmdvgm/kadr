@@ -74,6 +74,8 @@ export const SETTINGS = {
   'playback.proxies': { type: 'boolean', default: true, section: 'playback' },
   /** sources at or above this short side get a proxy, px */
   'playback.proxyMinSide': { type: 'number', min: 240, max: 4320, default: 720, section: 'playback' },
+  /** the timeline view during playback: 'page' turns a page at the edge, 'smooth' keeps the playhead centred */
+  'playback.follow': { type: 'enum', options: ['off', 'page', 'smooth'], default: 'page', section: 'playback' },
   // the timeline's mouse (Timeline.tsx)
   /** 'zoom': the wheel zooms, Shift scrolls; 'scroll': the wheel scrolls, Ctrl zooms */
   'mouse.wheel': { type: 'enum', options: ['zoom', 'scroll'], default: 'zoom', section: 'mouse' },

@@ -634,7 +634,12 @@ mixes audio and muxes/transcodes per preset.
   gestures (wheel, slider) only scale the drawn lanes, ruler and
   `.tl-overlays` about the anchor and commit once the gesture pauses (or
   stretches past 0.5–2×, or on any pointerdown), keeping the anchor time
-  across chained commits. Waveform columns are sliding-window maxima,
+  across chained commits. Key zooms (Shift+Z fit, Alt+Z the selection, =/-
+  about the playhead; `fitZoom` in timelineMath, zoom floor `MIN_ZOOM` 0.25
+  px/s so an hour fits) go through `timelineView`, the same commit. The
+  playback follow (`playback.follow`: off / page / smooth, `followLeft`)
+  scrolls while playing and never during a zoom gesture. Test:
+  `node scripts/check-zoom-fit.mjs`. Waveform columns are sliding-window maxima,
   k chosen per pixel — EXACTLY the old full scan (a merged-bin pyramid
   smeared lone clicks and was rejected); overlap zones are one sweep.
   Measured and rejected: CPU rasterisation (faster timeline, worse preview

@@ -3,7 +3,7 @@
 // keydown handler App.tsx installs. Every hotkey used to be a branch of one
 // if/else in App.tsx that ignored modifiers (Ctrl+D deleted clips).
 import { create } from 'zustand'
-import { useEditor, useSettings, projectDuration, setting } from '../state/store'
+import { useEditor, useSettings, projectDuration, setting, timelineView } from '../state/store'
 import {
   ACTIONS, actionFor, keymapDiff, keysOf, ownsKeys, sanitizeKeymap,
   type ActionId, type KeyChord, type KeymapDiff
@@ -95,6 +95,17 @@ const HANDLERS: Record<ActionId, Handler> = {
   'edit.trimStart': { run: (s) => s.trimToPlayhead('in') },
   'edit.trimEnd': { run: (s) => s.trimToPlayhead('out') },
   'edit.link': { enabled: (s) => s.selection.length > 0, why: 'whyNoClips', run: (s) => s.toggleLinkSelection() },
+  'view.zoomFit': { run: (s) => timelineView.fit?.(0, projectDuration(s.project)) },
+  'view.zoomSel': {
+    enabled: hasSel, why: 'whyNoSel',
+    run: (s) => {
+      const sel = s.project.tracks.flatMap((t) => t.clips).filter((c) => s.selection.includes(c.id))
+      if (sel.length) timelineView.fit?.(Math.min(...sel.map((c) => c.start)), Math.max(...sel.map((c) => c.start + c.duration)))
+      else if (s.range) timelineView.fit?.(s.range.start, s.range.end)
+    }
+  },
+  'view.zoomIn': { run: () => timelineView.zoomBy?.(1.5) },
+  'view.zoomOut': { run: () => timelineView.zoomBy?.(1 / 1.5) },
   'marker.add': { run: (s) => s.addMarker(s.playhead) },
   'playhead.prevFrame': { run: (s) => s.setPlayhead(s.playhead - 1 / s.project.fps) },
   'playhead.nextFrame': { run: (s) => s.setPlayhead(s.playhead + 1 / s.project.fps) },
