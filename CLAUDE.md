@@ -132,6 +132,11 @@ mixes audio and muxes/transcodes per preset.
   3D parsed, the reference sampler and the REAL Compositor within 2/255 of
   ffmpeg's lut3d/lut1d on the same pixels, an identity LUT and intensity 0
   within 1);
+  `check-blend.mjs` wants the installed electron (J3: every blend mode
+  through the REAL Compositor within 1/255 of the W3C formula applied to the
+  two layers as drawn alone — opaque, at 0.6 opacity, over a transparent
+  background, with a blur effect — and a normal draw bit-identical after a
+  blend pass ran);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -868,6 +873,17 @@ mixes audio and muxes/transcodes per preset.
   the export and snapshots await it first. `lutImport` copies a file into
   `<project>/kadr-lib/luts`, and the path is one of the project's
   (`projectPaths` kind `lut`), so it is saved relative and collected.
+  BLEND MODES (J3, `Clip.blend`, `shared/blend.ts`): screen, multiply, add,
+  overlay, soft light, difference — W3C separable formulas on the encoded
+  straight colour (add = min(1, Cb + Cs) through the same formula). A blended
+  clip is drawn ALONE into a buffer of its own (effects and frame blending
+  included), the destination is blitted into a second one, and one pass mixes
+  them (`drawBlended`) — two extra full-frame buffers and a copy per blended
+  clip. Normal (or absent, or an unknown value — `blendOf`) never comes there:
+  its export frames are byte-identical to before. Inside a transition or an
+  edge effect the clip is drawn into an empty overlay, so its mode has nothing
+  to mix with and it draws as normal. A blended fragment goes through pixel
+  capture.
   `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.

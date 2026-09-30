@@ -6,6 +6,7 @@ import { chromiumCanDecode } from './codecs'
 import { playsProxy } from '@shared/proxyChoice'
 import { packSourceHeight } from '@shared/streamColour'
 import { gradeAt } from '@shared/colour'
+import { blendOf } from '@shared/blend'
 import { lutFor } from './lut'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
@@ -420,7 +421,8 @@ export function frameSignature(
     drawTransition: (type: string, p: number, op: number) => parts.push(`T${type}|${p}|${op}`),
     drawLayer: (l: LayerDraw) => parts.push(`L${sig(l)}`),
     drawLayerFx: (layers: LayerDraw[], blur: number, glows: unknown[], rel: number) =>
-      parts.push(`F${blur}|${JSON.stringify(glows)}|${rel}|${layers.map(sig).join('~')}`)
+      parts.push(`F${blur}|${JSON.stringify(glows)}|${rel}|${layers.map(sig).join('~')}`),
+    drawBlended: (mode: string, draw: () => void) => { parts.push(`M${mode}`); draw(); parts.push('m') }
   }
   try {
     drawFrame(rec as unknown as Compositor, project, t, pool, frames, blends, packed)
@@ -614,13 +616,16 @@ function drawClipLayer(
     const blurFx = (clip.effects ?? []).find((e) => e.enabled && e.type === 'blur')
     const blurSize = typeof blurFx?.params.size === 'number' ? blurFx.params.size : 0
     const blurFrac = Math.max(0, blurSize) / Math.max(1, project.height)
-    const emit = (...layers: LayerDraw[]) => {
+    const draw = (layers: LayerDraw[]) => {
       if (glows.length || blurFrac > 0.0002) {
         comp.drawLayerFx(layers, blurFrac, glows.map((g) => glowParams(g.params)), rel)
       } else {
         for (const l of layers) comp.drawLayer(l)
       }
     }
+    // J3: a blend mode takes the whole clip (effects, frame blend) through one composite pass
+    const mode = blendOf(clip.blend)
+    const emit = (...layers: LayerDraw[]) => (mode ? comp.drawBlended(mode, () => draw(layers)) : draw(layers))
     if (clip.kind === 'remotion') {
       // captured fragments draw like any layer — masks/3D/transitions work;
       // uncaptured ones render through the iframe overlay instead

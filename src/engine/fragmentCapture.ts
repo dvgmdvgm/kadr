@@ -7,6 +7,7 @@ import type { Anim, Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { evalAnim } from './anim'
 import { GRADE_KEYS } from '@shared/colour'
+import { blendOf } from '@shared/blend'
 import { fadeFactor, overlapFades, trackHeard } from './player'
 import { ensureFragmentServer } from './fragments'
 import { logError, logWarn } from './log'
@@ -151,6 +152,7 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   const g = clip.grade
   if (g && GRADE_KEYS.some((k) => animActive(g[k]))) return true
   if (clip.lut) return true // J2
+  if (blendOf(clip.blend)) return true // J3: mixes with the GL picture under it
   if (clip.transitionIn && clip.transitionIn.type !== 'none') return true
   if (clip.transitionOut && clip.transitionOut.type !== 'none') return true
   const end = clip.start + clip.duration

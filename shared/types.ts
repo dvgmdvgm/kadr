@@ -2,6 +2,7 @@
 // All times are in seconds, all dimensions in pixels.
 
 import type { ClipGrade } from './colour'
+import type { BlendMode } from './blend'
 import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
@@ -222,6 +223,8 @@ export interface Clip {
   grade?: ClipGrade
   /** J2: a .cube LUT (shared/lut.ts) after the grade; `intensity` mixes it 0…1. Absent = none */
   lut?: ClipLut
+  /** J3: how the clip mixes with what is under it (shared/blend.ts); absent = normal */
+  blend?: BlendMode
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string

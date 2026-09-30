@@ -8,6 +8,7 @@ import type { ClipFit } from '@shared/types'
 import { PACK_GAP, packHeight } from '@shared/streamColour'
 import { GRADE_GLSL } from '@shared/colour'
 import { LUT_GLSL, type CubeLut } from '@shared/lut'
+import { BLEND_FS, blendIndex, type BlendMode } from '@shared/blend'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -312,6 +313,9 @@ export class Compositor {
     uDir: WebGLUniformLocation
     uRadius: WebGLUniformLocation
   } | null = null
+  /** J3: the blended layer drawn alone, and a copy of what lies under it */
+  private blendBufs: { src: Overlay; dst: Overlay; size: number } | null = null
+  private blendProg: { prog: WebGLProgram; uBlend: WebGLUniformLocation } | null = null
   private fieldProg: { prog: WebGLProgram; uSize: WebGLUniformLocation; uRatio: WebGLUniformLocation } | null = null
   private glowProg: {
     prog: WebGLProgram
@@ -770,6 +774,54 @@ export class Compositor {
     gl.useProgram(this.prog)
   }
 
+  // ------------------------------------------------------------ blend modes
+  // J3: the layer (with its effects, frame blend and all) is drawn alone into
+  // its own buffer, the destination is copied, and one pass mixes the two by
+  // the W3C formula (shared/blend.ts). Normal never comes here.
+
+  /** Draw what `draw` draws, composited onto the current destination with `mode` */
+  drawBlended(mode: BlendMode, draw: () => void) {
+    const gl = this.gl
+    const size = this.pw * 65536 + this.ph
+    if (!this.blendBufs || this.blendBufs.size !== size) {
+      if (this.blendBufs) for (const o of [this.blendBufs.src, this.blendBufs.dst]) {
+        gl.deleteFramebuffer(o.fbo)
+        gl.deleteTexture(o.tex)
+      }
+      this.blendBufs = { src: this.makeFbo(this.pw, this.ph), dst: this.makeFbo(this.pw, this.ph), size }
+    }
+    const { src, dst } = this.blendBufs
+    const dest = this.curFbo
+    this.curFbo = src.fbo
+    gl.bindFramebuffer(gl.FRAMEBUFFER, src.fbo)
+    gl.clearColor(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    draw()
+    this.curFbo = dest
+    // the backdrop: a blit converts the canvas's RGB (alpha: false) to RGBA with alpha 1
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, dest)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fbo)
+    gl.blitFramebuffer(0, 0, this.pw, this.ph, 0, 0, this.pw, this.ph, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dest)
+    if (!this.blendProg) {
+      const prog = this.buildProgram(TRANS_VS, BLEND_FS)
+      gl.useProgram(prog)
+      gl.uniform1i(gl.getUniformLocation(prog, 'uSrc'), 0)
+      gl.uniform1i(gl.getUniformLocation(prog, 'uDst'), 1)
+      this.blendProg = { prog, uBlend: gl.getUniformLocation(prog, 'uBlend')! }
+    }
+    gl.useProgram(this.blendProg.prog)
+    gl.uniform1i(this.blendProg.uBlend, blendIndex(mode))
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, dst.tex)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, src.tex)
+    gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    this.fsQuad()
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.useProgram(this.prog)
+  }
+
   private fsQuad() {
     const gl = this.gl
     const data = new Float32Array([
@@ -1057,10 +1109,16 @@ export class Compositor {
           gl.deleteTexture(o.tex)
         }
       }
+      if (this.blendBufs) {
+        for (const o of [this.blendBufs.src, this.blendBufs.dst]) {
+          gl.deleteFramebuffer(o.fbo)
+          gl.deleteTexture(o.tex)
+        }
+      }
       for (const b of this.pbos) if (b) gl.deleteBuffer(b)
       gl.deleteBuffer(this.vbo)
       for (const t of this.transProgs.values()) gl.deleteProgram(t.prog)
-      for (const prog of [this.prog, this.blitProg, this.blurProg?.prog, this.fieldProg?.prog, this.glowProg?.prog]) {
+      for (const prog of [this.prog, this.blitProg, this.blurProg?.prog, this.fieldProg?.prog, this.glowProg?.prog, this.blendProg?.prog]) {
         if (prog) gl.deleteProgram(prog)
       }
       // the extension is what actually frees the context; the deletes above
@@ -1074,6 +1132,8 @@ export class Compositor {
     this.overlaySize = 0
     this.fx = null
     this.fxSize = 0
+    this.blendBufs = null
+    this.blendProg = null
     this.pbos = [null, null]
     this.blitProg = null
     this.blurProg = null

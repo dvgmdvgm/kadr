@@ -30,6 +30,7 @@ import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
+import { blendOf } from '@shared/blend'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -227,6 +228,8 @@ export function sanitizeProject(p: Project): Project {
         if (!c.lut || typeof c.lut.path !== 'string' || !c.lut.path) delete c.lut
         else c.lut.intensity = anim(c.lut.intensity, 1)
       }
+      // J3: normal is the implicit default; an unknown mode is dropped
+      if (c.blend !== undefined && !blendOf(c.blend)) delete c.blend
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
