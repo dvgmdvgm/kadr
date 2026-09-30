@@ -9,6 +9,7 @@ import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment
 import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
+import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
 const execFileP = promisify(execFile)
 
@@ -836,14 +837,34 @@ export class ExportMuxer {
       segs = [{ path: premix, inPoint: 0, duration: job.duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0 }]
     }
     const muxBase = premix ? 0.5 : 0 // mux progress after a premix continues from its half
+    let metaFile: string | null = null
+    let subsFile: string | null = null
     const cleanupTemps = () => {
-      if (filterScript) fsp.unlink(filterScript).catch(() => { /* already gone */ })
+      for (const f of [filterScript, metaFile, subsFile]) if (f) fsp.unlink(f).catch(() => { /* already gone */ })
       if (premix) fsp.unlink(premix).catch(() => { /* already gone */ })
     }
 
     if (hasVideo) args.push('-i', videoTemp)
     for (const s of segs) {
       args.push(...segmentInput(s))
+    }
+    // G7: title and chapters come in as an ffmetadata input, embedded subtitles as an srt one
+    const x = job.extras
+    let next = (hasVideo ? 1 : 0) + segs.length
+    let metaIdx = -1
+    let subsIdx = -1
+    const tmp = (ext: string) => join(TMP_DIR || tmpdir(), `kadr-${ext}-${process.pid}-${Date.now()}.${ext}`)
+    if (x?.title || x?.chapters?.length) {
+      metaFile = tmp('txt')
+      await fsp.writeFile(metaFile, ffmetadata(x))
+      args.push('-f', 'ffmetadata', '-i', metaFile)
+      metaIdx = next++
+    }
+    if (x?.embedSubs && x.cues?.length && hasVideo && embedsSubs(job.preset.container)) {
+      subsFile = tmp('srt')
+      await fsp.writeFile(subsFile, cuesToSrt(x.cues))
+      args.push('-f', 'srt', '-i', subsFile)
+      subsIdx = next++
     }
 
     const filters: string[] = []
@@ -899,6 +920,8 @@ export class ExportMuxer {
     } else if (hasVideo) {
       args.push('-an')
     }
+    if (metaIdx >= 0) args.push('-map_metadata', String(metaIdx), '-map_chapters', String(metaIdx))
+    if (subsIdx >= 0) args.push('-map', `${subsIdx}:s`, '-c:s', 'mov_text')
     // moov before mdat, so a web player starts before the whole file is in.
     // Keyed on the file, not preset.container: mixdownWav says 'mp4' and writes .wav
     if (/\.(mp4|mov|m4v|m4a)$/i.test(job.outputPath)) args.push('-movflags', '+faststart')
@@ -930,8 +953,12 @@ export class ExportMuxer {
         this.child = null
         cleanupTemps()
         if (this.cancelled) reject(new Error('cancelled'))
-        else if (code === 0) resolve()
-        else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
+        else if (code === 0) {
+          // the sidecar goes beside the finished file only: `<name>.srt` / `<name>.vtt`
+          if (!x?.sidecar || !x.cues) return resolve()
+          const side = job.outputPath.replace(/\.[^./\\]+$/, '') + '.' + x.sidecar
+          fsp.writeFile(side, x.sidecar === 'vtt' ? cuesToVtt(x.cues) : cuesToSrt(x.cues)).then(resolve, reject)
+        } else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
       })
     })
   }

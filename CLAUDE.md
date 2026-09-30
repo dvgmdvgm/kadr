@@ -28,6 +28,9 @@ mixes audio and muxes/transcodes per preset.
   changed fps keeps the duration); `check-alpha-export.mjs` wants ffmpeg
   (codec choice, and a premultiplied title over transparency read back from
   ProRes 4444, VP9 alpha and PNG: alpha 0 outside, no dark fringe);
+  `check-chapters.mjs` wants ffmpeg (G7: SRT cues and marker chapters moved
+  into the export range and clipped to it, then muxed: ffmetadata chapters and
+  title, a mov_text track, the `.srt`/`.vtt` sidecar);
   `check-mixdown.mjs` wants ffmpeg too (every segment lands at its own
   timeline position);
   `check-beats.mjs [resources/music]` (beat analysis; with the folder it is
@@ -156,6 +159,11 @@ mixes audio and muxes/transcodes per preset.
   and that many clips build a `-filter_complex` past it — spawn failed with
   E2BIG. The graph is written to a file and passed as `-filter_complex_script`,
   on every export rather than only the big ones.
+  EXTRAS (`ExportJob.extras`, shared/exportExtras.ts) arrive in EXPORT time —
+  the renderer maps the transcript to the timeline and cuts cues and chapters
+  to the range; the muxer adds an `-f ffmetadata` input (title, chapters,
+  `-map_metadata`/`-map_chapters`), an srt input as `mov_text` for mp4/mov, and
+  writes the sidecar next to the output only after ffmpeg succeeded.
   A FAILED MUX NO LONGER BINS THE VIDEO: the stream is rendered first and can
   take hours, and the mux ran with that temp file scheduled for deletion in
   `finally`. A non-cancelled failure that has video keeps it, and the error

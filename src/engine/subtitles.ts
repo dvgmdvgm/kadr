@@ -11,29 +11,21 @@ import { overlapFades, trackHeard } from './player'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
 import { tr } from '../i18n'
+import {
+  srtTime, cuesToSrt, cuesInRange, chaptersInRange, chapterMarks, type ExportExtras
+} from '@shared/exportExtras'
 
 // ------------------------------------------------------------------ SRT
 
 const pad = (n: number, w: number) => String(n).padStart(w, '0')
 
-export function srtTime(t: number): string {
-  const ms = Math.max(0, Math.round(t * 1000))
-  const h = Math.floor(ms / 3600000)
-  const m = Math.floor((ms % 3600000) / 60000)
-  const s = Math.floor((ms % 60000) / 1000)
-  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms % 1000, 3)}`
-}
+// the writers live in shared/exportExtras.ts — the export's sidecar uses them too
+export { srtTime, cuesToSrt }
 
 export function parseSrtTime(s: string): number {
   const m = s.trim().match(/(\d+):(\d+):(\d+)[,.](\d+)/)
   if (!m) return 0
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000
-}
-
-export function cuesToSrt(cues: SubCue[]): string {
-  return cues
-    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text.trim()}\n`)
-    .join('\n') + (cues.length ? '' : '')
 }
 
 export function parseSrt(content: string): SubCue[] {
@@ -368,4 +360,37 @@ export function docTimeToProject(project: Project, doc: TextDoc, t: number): num
     return null
   }
   return t
+}
+
+/** What the export dialog's «Дополнительно» asked for (G7). */
+export interface ExtrasChoice {
+  title?: string
+  /** the transcript the subtitles come from */
+  subsDoc?: TextDoc
+  sidecar?: 'srt' | 'vtt'
+  embedSubs?: boolean
+  chapters?: 'markers' | 'sections'
+  /** the first chapter's title when no marker precedes the range */
+  lead?: string
+}
+
+/** The extras in EXPORT time: the doc's cues mapped to the timeline, then into [start, end). */
+export async function rangeExtras(project: Project, start: number, end: number, x?: ExtrasChoice): Promise<ExportExtras | undefined> {
+  if (!x) return undefined
+  let cues: SubCue[] | undefined
+  const doc = x.subsDoc
+  if (doc && (x.sidecar || x.embedSubs)) {
+    const text = await window.kadr.readTextFile(doc.path)
+    if (text == null) throw new Error(`${tr('exSubsMissing')}: ${doc.path}`)
+    const onTimeline = parseSrt(text).flatMap((c) => {
+      const s = docTimeToProject(project, doc, c.start)
+      const e = docTimeToProject(project, doc, c.end)
+      return s == null || e == null ? [] : [{ start: s, end: e, text: c.text }]
+    })
+    cues = cuesInRange(onTimeline, start, end)
+  }
+  const chapters = x.chapters
+    ? chaptersInRange(chapterMarks(project.markers ?? [], x.chapters), start, end, x.lead ?? '')
+    : undefined
+  return { title: x.title, chapters, cues, sidecar: cues && x.sidecar, embedSubs: !!cues && x.embedSubs }
 }

@@ -125,6 +125,12 @@ export const SETTINGS = {
   'export.bitrate': { type: 'number', min: 0, max: 400, default: 0, section: 'export' },
   /** a size other than the project's: bars, crop or stretch (shared/rawEncode.ts outputRect) */
   'export.fit': { type: 'enum', options: ['fit', 'fill', 'stretch'], default: 'fit', section: 'export' },
+  /** G7: a subtitle file beside the export, from a transcript */
+  'export.subs': { type: 'enum', options: ['off', 'srt', 'vtt'], default: 'off', section: 'export' },
+  /** G7: the subtitles as a mov_text track inside an mp4 / mov */
+  'export.subsEmbed': { type: 'boolean', default: false, section: 'export' },
+  /** G7: chapters from the user's markers or the song's sections */
+  'export.chapters': { type: 'enum', options: ['off', 'markers', 'sections'], default: 'off', section: 'export' },
   /** the name the save dialog proposes: {project} {preset} {date} (shared/exportPresets.ts fileNameFrom) */
   'export.fileName': { type: 'string', default: '{project}', section: 'export' },
   /** where the REBUILDABLE caches live (proxies, decoded, fragment renders, LUTs); empty = userData */

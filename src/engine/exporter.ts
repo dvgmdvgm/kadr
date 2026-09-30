@@ -24,7 +24,7 @@ import {
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
-import { collectRangeAudio } from './subtitles'
+import { collectRangeAudio, rangeExtras, type ExtrasChoice } from './subtitles'
 import { tr, trf } from '../i18n'
 
 export interface ExportHandle {
@@ -56,6 +56,8 @@ export interface ExportOptions {
       desktop-NLE quality; 'webcodecs' keeps the old in-browser encoder
       (faster, but Chromium's OpenH264 ignores the preset bitrate) */
   encoder?: 'x264' | 'webcodecs'
+  /** G7: title, chapters and subtitles — moved into the range here, written by the mux */
+  extras?: ExtrasChoice
 }
 
 export function startExport(
@@ -144,7 +146,8 @@ export function startExport(
       height,
       fps,
       duration,
-      audioSegments: collectRangeAudio(project, span.start, span.end)
+      audioSegments: collectRangeAudio(project, span.start, span.end),
+      extras: await rangeExtras(project, span.start, span.end, opts?.extras)
     })
 
     if (preset.audioOnly) {

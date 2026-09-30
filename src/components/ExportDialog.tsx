@@ -5,6 +5,7 @@ import {
   saveExportPreset, renameExportPreset, deleteExportPreset
 } from '@/presets'
 import { fileNameFrom, withOutput } from '@shared/exportPresets'
+import { chaptersInRange, chapterMarks, youtubeChapters, youtubeProblems, embedsSubs } from '@shared/exportExtras'
 import {
   X264_PRESETS, VIDEO_ENCODERS, VIDEO_CODECS, OPTIONAL_ENCODERS, withCodec, videoCodecOf, pickEncoder,
   type OutputFit, type VideoEncoder, type VideoCodec
@@ -13,7 +14,7 @@ import { effective, type SettingKey } from '@shared/settings'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
 import { useEditor, useSettings, setting, projectDuration } from '@/state/store'
-import { useT } from '@/i18n'
+import { useT, trf } from '@/i18n'
 import { Icon } from './icons'
 import { Modal } from './Modal'
 
@@ -57,6 +58,13 @@ export function ExportDialog() {
   // the preset name being typed: null = not editing; `mode` says what OK does
   const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  // G7: which transcript, and the title tag — per export, not settings (they belong to the project)
+  const subs = String(effective('export.subs', snap).value) as 'off' | 'srt' | 'vtt'
+  const subsEmbed = on('export.subsEmbed')
+  const chapKind = String(effective('export.chapters', snap).value) as 'off' | 'markers' | 'sections'
+  const [docId, setDocId] = useState<string | null>(null)
+  const [title, setTitle] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const handle = useRef<ExportHandle | null>(null)
 
   useEffect(() => {
@@ -70,6 +78,8 @@ export function ExportDialog() {
 
   useEffect(() => {
     if (open) void window.kadr.hwEncoders().then(setHwEncoders, () => setHwEncoders([]))
+    setTitle(null)
+    setCopied(false)
   }, [open])
 
   if (!open) return null
@@ -96,6 +106,15 @@ export function ExportDialog() {
   // a codec with no encoder in this ffmpeg (HEVC without libx265 and without a GPU) is shown, not offered
   const codecMissing = (c: VideoCodec) => !!hwEncoders && !pickEncoder(c, 'x264', hwEncoders)
   const own = isUserPreset(preset)
+  // G7: extras exist where a mux runs — not for PNG frames
+  const muxed = !!preset.audioOnly || vcodec !== 'png'
+  const srtDocs = (project.texts ?? []).filter((d) => d.format === 'srt').reverse()
+  const subsDoc = srtDocs.find((d) => d.id === docId) ?? srtDocs[0]
+  const canEmbed = !preset.audioOnly && embedsSubs(job.container)
+  const span = range ?? { start: 0, end: projectDuration(project) }
+  const chapters = chapKind === 'off' ? []
+    : chaptersInRange(chapterMarks(project.markers ?? [], chapKind), span.start, span.end, t('exChLead'))
+  const metaTitle = title ?? project.name
   const fileName = fileNameFrom(setting<string>('export.fileName'),
     { project: project.name, preset: presetName(preset), date: new Date() })
 
@@ -143,7 +162,17 @@ export function ExportDialog() {
       out,
       (p) => setStatus({ kind: 'running', phase: p.phase, progress: p.progress }),
       s.range,
-      { motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264' }
+      {
+        motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264',
+        extras: muxed ? {
+          title: metaTitle.trim() || undefined,
+          subsDoc,
+          sidecar: subs === 'off' ? undefined : subs,
+          embedSubs: canEmbed && subsEmbed,
+          chapters: chapKind === 'off' ? undefined : chapKind,
+          lead: t('exChLead')
+        } : undefined
+      }
     )
     handle.current = h
     h.done.catch((err) => {
@@ -410,6 +439,63 @@ export function ExportDialog() {
         ? `${t('exportRange')}: ${range.start.toFixed(2)}–${range.end.toFixed(2)} ${sec}`
         : `${t('wholeProject')} · ${projectDuration(project).toFixed(2)} ${sec}`)}
       {!range && <div className="dim">{t('rangeHint')}</div>}
+
+      <div className="insp-section">{t('exExtras')}</div>
+      {!muxed ? <div className="dim">{t('exExtrasPng')}</div> : (
+        <>
+          <div className="insp-field">
+            <span>{t('exSubs')}</span>
+            <select aria-label={t('exSubs')} value={subs} disabled={running || !subsDoc}
+                    onChange={(e) => put('export.subs', e.target.value)}>
+              <option value="off">{t('exNone')}</option>
+              <option value="srt">{t('exSubsSrt')}</option>
+              <option value="vtt">{t('exSubsVtt')}</option>
+            </select>
+          </div>
+          {!subsDoc && <div className="dim">{t('exSubsNone')}</div>}
+          {subsDoc && (subs !== 'off' || (canEmbed && subsEmbed)) && (
+            <div className="insp-field">
+              <span>{t('exSubsDoc')}</span>
+              <select aria-label={t('exSubsDoc')} value={subsDoc.id} disabled={running} onChange={(e) => setDocId(e.target.value)}>
+                {srtDocs.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+          )}
+          {subsDoc && canEmbed && (
+            <label className="anim-check export-mb">
+              <input type="checkbox" checked={subsEmbed} disabled={running}
+                     onChange={(e) => put('export.subsEmbed', e.target.checked)} />
+              {t('exSubsEmbed')}
+            </label>
+          )}
+          <div className="insp-field">
+            <span>{t('exChapters')}</span>
+            <select aria-label={t('exChapters')} value={chapKind} disabled={running}
+                    onChange={(e) => { put('export.chapters', e.target.value); setCopied(false) }}>
+              <option value="off">{t('exNone')}</option>
+              <option value="markers">{t('exChMarkers')}</option>
+              <option value="sections">{t('exChSections')}</option>
+            </select>
+          </div>
+          {chapKind !== 'off' && (
+            <div className="insp-field">
+              <span>{trf('exChCount', { n: chapters.length })}</span>
+              <button disabled={running || !chapters.length}
+                      onClick={() => navigator.clipboard.writeText(youtubeChapters(chapters)).then(() => setCopied(true), () => setCopied(false))}>
+                {copied ? <><Icon name="check" /> {t('exChCopied')}</> : t('exChCopy')}
+              </button>
+            </div>
+          )}
+          {chapters.length > 0 && youtubeProblems(chapters).map((p) => (
+            <div key={p} className="dim">{t(p === 'count' ? 'exYtCount' : 'exYtShort')}</div>
+          ))}
+          <div className="insp-field">
+            <span>{t('exMetaTitle')}</span>
+            <input type="text" aria-label={t('exMetaTitle')} value={metaTitle} placeholder={project.name} disabled={running}
+                   onChange={(e) => setTitle(e.target.value)} />
+          </div>
+        </>
+      )}
 
       <div className="insp-section">{t('exFile')}</div>
       {value(t('exFormat'), `${job.container.toUpperCase()} (.${job.container})`)}

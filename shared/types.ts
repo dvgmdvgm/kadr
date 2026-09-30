@@ -1026,6 +1026,8 @@ export interface ExportJob {
    * false for analysis mixdowns, which must see the mix unaltered.
    */
   master?: boolean
+  /** G7: title, chapters, subtitles (shared/exportExtras.ts), already in export time */
+  extras?: import('./exportExtras').ExportExtras
 }
 
 export interface AudioSegment {

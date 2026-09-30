@@ -507,6 +507,17 @@ function Export({ t }: { t: T }) {
         <Choice k="export.fit" label={t('exFit')} width={240}
                 options={[['fit', t('exFitFit')], ['fill', t('exFitFill')], ['stretch', t('exFitStretch')]]} />
       </Row>
+      <Row label={t('exSubs')} keys={['export.subs']} shown={t('exNone')}>
+        <Choice k="export.subs" label={t('exSubs')} width={240}
+                options={[['off', t('exNone')], ['srt', t('exSubsSrt')], ['vtt', t('exSubsVtt')]]} />
+      </Row>
+      <Row label={t('exSubsEmbed')} keys={['export.subsEmbed']} shown={t('setOff')}>
+        <Check k="export.subsEmbed" label={t('exSubsEmbed')} />
+      </Row>
+      <Row label={t('exChapters')} keys={['export.chapters']} shown={t('exNone')}>
+        <Choice k="export.chapters" label={t('exChapters')} width={240}
+                options={[['off', t('exNone')], ['markers', t('exChMarkers')], ['sections', t('exChSections')]]} />
+      </Row>
       <Row label={t('setFileName')} keys={['export.fileName']} shown="{project}" detail={t('setFileNameHint')}>
         <Text k="export.fileName" label={t('setFileName')} mono />
       </Row>
