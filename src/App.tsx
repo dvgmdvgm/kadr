@@ -18,6 +18,7 @@ import { DefectsDialog } from './components/DefectsDialog'
 import { DebugPanel } from './components/DebugPanel'
 import { StoragePanel } from './components/StoragePanel'
 import { SettingsDialog, useSettingsUi } from './components/SettingsDialog'
+import { CommandPalette } from './components/CommandPalette'
 import { RelinkDialog } from './components/RelinkDialog'
 import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
@@ -456,6 +457,7 @@ export default function App() {
         onOpenStorage={() => setStorageOpen(true)}
         onRelaunch={() => void confirmDiscard().then((go) => go && window.kadr.relaunch())}
       />
+      <CommandPalette />
       {/* The preview renders into one host div for the whole session; popping
           it out moves that div into another window's document, and the portal
           container never changes identity — so the GL canvas, its context and

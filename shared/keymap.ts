@@ -45,6 +45,7 @@ export const ACTIONS = [
   { id: 'playhead.start', labelKey: 'toStart', context: g, defaultKeys: [k('Home')], prevent: true },
   { id: 'edit.escape', labelKey: 'actEscape', context: g, defaultKeys: [k('Escape')] },
   { id: 'app.settings', labelKey: 'setTitle', context: g, defaultKeys: [k('Comma', ctrl)], prevent: true },
+  { id: 'app.palette', labelKey: 'actPalette', context: g, defaultKeys: [k('KeyK', ctrl)], prevent: true },
   // no key yet — listed so the command palette can find them
   { id: 'file.new', labelKey: 'newProject', context: g, defaultKeys: [] },
   { id: 'file.open', labelKey: 'actOpen', context: g, defaultKeys: [] },
@@ -168,4 +169,55 @@ export function ownsKeys(t: TargetLike | null | undefined): boolean {
   if (!t) return false
   const tag = t.tagName
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable || !!t.closest?.('.xterm')
+}
+
+// ------------------------------------------------------------------ the command palette
+
+export interface PaletteItem { id: string; /** [current language, the other one] */ labels: string[] }
+export interface PaletteHit {
+  id: string
+  /** 0 = a word of the label starts with the query, 1 = somewhere inside a word */
+  rank: 0 | 1
+  /** which label matched: 0 = the current language, 1 = the other */
+  via: number
+  /** where in that label, for the bold letters */
+  at: number
+  len: number
+}
+
+const fold = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
+const WORD = /[\p{L}\p{N}]/u
+
+/** [rank, at] of the best place `q` sits in `label`, or null */
+function place(label: string, q: string): [0 | 1, number] | null {
+  const l = fold(label)
+  let first = -1
+  for (let i = l.indexOf(q); i >= 0; i = l.indexOf(q, i + 1)) {
+    if (i === 0 || !WORD.test(l[i - 1])) return [0, i]
+    if (first < 0) first = i
+  }
+  return first < 0 ? null : [1, first]
+}
+
+/**
+ * The palette's search: an action matches when either language's label
+ * contains the query (an English word finds a Russian label). Word-prefix
+ * matches come first, then substrings; the current language wins a tie
+ * between labels; the given order (the registry's) breaks ties between
+ * actions. An empty query returns every item in order.
+ */
+export function paletteMatch(items: PaletteItem[], query: string): PaletteHit[] {
+  const q = fold(query.trim())
+  const hits: PaletteHit[] = []
+  for (const it of items) {
+    if (!q) { hits.push({ id: it.id, rank: 0, via: 0, at: 0, len: 0 }); continue }
+    let best: PaletteHit | null = null
+    it.labels.forEach((label, via) => {
+      const p = place(label, q)
+      if (p && (!best || p[0] < best.rank)) best = { id: it.id, rank: p[0], via, at: p[1], len: q.length }
+    })
+    if (best) hits.push(best)
+  }
+  // Array.prototype.sort is stable: equal ranks keep the registry's order
+  return hits.sort((a, b) => a.rank - b.rank)
 }

@@ -3194,3 +3194,32 @@ div.tr-error {
 .key-conflict { display: flex; align-items: center; gap: var(--s3); margin: var(--s2) 0 var(--s3); padding: var(--s3) var(--s4); border: 1px solid var(--c-warn); border-radius: var(--r2); background: rgb(var(--rgb-warn) / 0.10); font-size: var(--fz-sm); color: var(--c-text); }
 .key-conflict > .ico { color: var(--c-warn); flex-shrink: 0; }
 .key-conflict > span { flex-grow: 1; }
+
+/* The command palette, Ctrl+K (canvas D, RULES 22–30): the context-menu
+   recipe as a floating panel; above the floating panels like a dialog */
+.palette-back { position: fixed; inset: 0; z-index: 70; display: flex; justify-content: center; align-items: flex-start; padding: 72px var(--s5) var(--s5); background: rgb(var(--rgb-shadow) / 0.35); }
+.palette { width: 600px; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; background: var(--c-bg-2); border: 1px solid var(--c-line-2); border-radius: var(--r3); box-shadow: var(--sh-2); overflow: hidden; }
+.palette-search { display: flex; align-items: center; gap: var(--s4); padding: var(--s4) var(--s5); border-bottom: 1px solid var(--c-line); }
+.palette-search > .ico { color: var(--c-text-3); flex-shrink: 0; }
+.palette-input { flex-grow: 1; min-height: 30px; border-color: transparent; background: none; font-size: var(--fz-lg); }
+.palette-input:hover:not(:disabled), .palette-input:focus { border-color: transparent; }
+.palette-input:focus-visible { outline: none; }
+.palette-list { display: flex; flex-direction: column; padding: var(--s2); max-height: 420px; overflow-y: auto; }
+.palette-row { display: flex; flex-shrink: 0; align-items: center; gap: var(--s4); min-height: 32px; padding: var(--s2) var(--s4); border-radius: var(--r2); color: var(--c-text-2); cursor: pointer; }
+.palette-row > :first-child { width: 16px; flex-shrink: 0; }
+.palette-row.active { background: var(--c-accent-solid); color: var(--c-on-solid); }
+.palette-row[aria-disabled] { color: var(--c-text-off); cursor: default; }
+.palette-row[aria-disabled].active { background: var(--c-bg-3); color: var(--c-text-2); }
+.palette-label { flex-grow: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.palette-row b { color: var(--c-text); }
+.palette-row.active:not([aria-disabled]) b { color: inherit; }
+.palette-why { font-size: var(--fz-sm); color: var(--c-text-3); }
+/* c-text-3 on c-bg-3 measured 4.29:1 — the active row's reason steps up to hold AA */
+.palette-row.active .palette-why { color: var(--c-text-2); }
+.palette-alt { font-size: var(--fz-sm); flex-shrink: 0; }
+.palette-row .keycap { background: none; color: var(--c-text-2); flex-shrink: 0; }
+.palette-row.active .keycap { border-color: currentColor; color: inherit; }
+.palette-row[aria-disabled] .keycap { border-color: var(--c-line); color: inherit; }
+.palette-empty { display: flex; align-items: center; gap: var(--s4); padding: var(--s6) var(--s5); font-size: var(--fz-sm); color: var(--c-text-2); }
+.palette-empty > span { flex-grow: 1; }
+.palette-foot { display: flex; gap: var(--s5); padding: var(--s3) var(--s5); border-top: 1px solid var(--c-line); font-size: var(--fz-label); color: var(--c-text-3); }

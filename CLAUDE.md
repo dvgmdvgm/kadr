@@ -532,6 +532,15 @@ mixes audio and muxes/transcodes per preset.
   `capturedChord` ignores lone modifiers; a key another action holds asks
   inline — replacing takes that one key from it (`bindChord`), never its
   others. Import/Export move the diff file. Test: `node scripts/check-keymap.mjs`.
+  THE COMMAND PALETTE (Ctrl+K, `app.palette`; `src/components/CommandPalette.tsx`)
+  lists every registered action and finds it by its label in EITHER language
+  (`paletteMatch`: word prefix before substring, the current language before
+  the other, registry order breaks ties) — so a new action is findable the
+  moment it is registered with a label. It is not a Modal but counts for
+  `modalsOpen()` (`useCountsAsModal`). A disabled action stays listed with
+  its reason (`why` beside `enabled` in actions.ts, `whyOff`); Enter on it
+  does nothing. Test: `node scripts/check-palette-match.mjs` (also fails on an
+  action without a ru and an en label).
 - `src/engine/mediaImport.ts` — every media intake path: `importFiles`
   (probe → bin, deduped by path, optional timeline placement),
   `dropPayload` (reads dataTransfer SYNCHRONOUSLY: files → uri-list /

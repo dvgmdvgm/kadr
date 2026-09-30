@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App, { openProjectAt } from './App'
-import { runAction, useKeymap, setActionKeys } from './engine/actions'
+import { runAction, useKeymap, setActionKeys, usePaletteUi } from './engine/actions'
 import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints, setting } from './state/store'
 import { PRESETS } from './presets'
 import { startExport } from './engine/exporter'
@@ -94,7 +94,7 @@ wireOffline()
   // offline media: the runtime set, and relink by map or by folder (one undo)
   useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink,
   // the action registry: any action by id, the keymap diff, rebinding
-  runAction, useKeymap, setActionKeys,
+  runAction, useKeymap, setActionKeys, usePaletteUi,
   // the settings (shared/settings.ts): `settings.effective(key)`, `settings.set(key, value | null)`
   settings: useSettings.getState(), setting,
   reverseClip, importFiles, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,

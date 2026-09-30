@@ -36,7 +36,12 @@ export const appCommands = {
   openProject: () => {}
 }
 
-interface Handler { run(s: EditorState): void; enabled?(s: EditorState): boolean }
+interface Handler {
+  run(s: EditorState): void
+  enabled?(s: EditorState): boolean
+  /** why it is off, said by the command palette under the label */
+  why?: TKey
+}
 const hasSel = (s: EditorState) => s.selection.length > 0 || !!s.range
 
 const HANDLERS: Record<ActionId, Handler> = {
@@ -45,13 +50,13 @@ const HANDLERS: Record<ActionId, Handler> = {
   'file.save': { run: () => appCommands.save() },
   'file.saveAs': { run: () => appCommands.saveAs() },
   'edit.delete': {
-    enabled: hasSel,
+    enabled: hasSel, why: 'whyNoSel',
     run: (s) => { if (s.selection.length) s.deleteSelection(); else if (s.range) s.deleteRange() }
   },
-  'edit.undo': { enabled: (s) => s.past.length > 0, run: (s) => s.undo() },
-  'edit.redo': { enabled: (s) => s.future.length > 0, run: (s) => s.redo() },
+  'edit.undo': { enabled: (s) => s.past.length > 0, why: 'whyNoUndo', run: (s) => s.undo() },
+  'edit.redo': { enabled: (s) => s.future.length > 0, why: 'whyNoRedo', run: (s) => s.redo() },
   'edit.copy': {
-    enabled: hasSel,
+    enabled: hasSel, why: 'whyNoSel',
     run: (s) => { if (s.selection.length) s.copySelection(); else if (s.range) s.copyRange() }
   },
   'edit.paste': {
@@ -64,7 +69,7 @@ const HANDLERS: Record<ActionId, Handler> = {
       }).catch((err) => logError('буфер обмена', 'вставить не удалось', err))
     }
   },
-  'edit.link': { enabled: (s) => s.selection.length > 0, run: (s) => s.toggleLinkSelection() },
+  'edit.link': { enabled: (s) => s.selection.length > 0, why: 'whyNoClips', run: (s) => s.toggleLinkSelection() },
   'marker.add': { run: (s) => s.addMarker(s.playhead) },
   'playhead.prevFrame': { run: (s) => s.setPlayhead(s.playhead - 1 / s.project.fps) },
   'playhead.nextFrame': { run: (s) => s.setPlayhead(s.playhead + 1 / s.project.fps) },
@@ -73,11 +78,12 @@ const HANDLERS: Record<ActionId, Handler> = {
   'playhead.start': { run: (s) => s.setPlayhead(0) },
   'edit.escape': { run: (s) => { if (s.animClipId) s.setAnimClip(null); else s.setRange(null) } },
   'app.settings': { run: () => useSettingsUi.getState().setOpen(true) },
+  'app.palette': { run: () => usePaletteUi.setState({ open: true }) },
   'file.new': { run: () => appCommands.newProject() },
   'file.open': { run: () => appCommands.openProject() },
   'file.export': { run: (s) => s.setExportOpen(true) },
   'tools.transcribe': {
-    enabled: (s) => !!s.range,
+    enabled: (s) => !!s.range, why: 'whyNoRange',
     run: (s) => { if (s.range) useTextUi.getState().openTranscribe({ kind: 'range', start: s.range.start, end: s.range.end }) }
   },
   'tools.captions': { run: () => useCaptionsUi.getState().setOpen(true) },
@@ -92,10 +98,19 @@ const HANDLERS: Record<ActionId, Handler> = {
   'preview.popout': { run: () => void togglePreviewWindow() }
 }
 
+/** null when the action can run now, else why not (an i18n key; '' when it has no reason text) */
+export function whyOff(id: ActionId): TKey | '' | null {
+  const h = HANDLERS[id]
+  return h.enabled?.(useEditor.getState()) ?? true ? null : h.why ?? ''
+}
+
 export function runAction(id: ActionId) {
   const s = useEditor.getState()
   if (HANDLERS[id].enabled?.(s) ?? true) HANDLERS[id].run(s)
 }
+
+/** the command palette's open flag (src/components/CommandPalette.tsx) */
+export const usePaletteUi = create<{ open: boolean }>(() => ({ open: false }))
 
 // ------------------------------------------------------------------ keymap
 

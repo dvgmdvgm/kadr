@@ -12,6 +12,10 @@ import { useT } from '@/i18n'
  */
 let openCount = 0
 export const modalsOpen = () => openCount > 0
+/** a surface that is not a Modal but owns the keyboard like one (the command palette) */
+export function useCountsAsModal() {
+  useEffect(() => { openCount++; return () => { openCount-- } }, [])
+}
 
 const FOCUSABLE =
   'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled),' +

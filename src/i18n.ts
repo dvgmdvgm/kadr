@@ -828,6 +828,19 @@ const ru = {
   actChecks: 'Проверка',
   actSnapshot: 'Снимок кадра',
   actPopout: 'Предпросмотр в отдельном окне',
+  actPalette: 'Палитра команд',
+  palLabel: 'Команды',
+  palHint: 'Команда — по-русски или по-английски',
+  palPick: '↑ ↓ — выбрать',
+  palRun: 'Enter — выполнить',
+  palClose: 'Esc — закрыть',
+  palNone: 'Нет команды «{q}»',
+  palAll: 'Все команды',
+  whyNoSel: 'ничего не выделено',
+  whyNoClips: 'не выделены клипы',
+  whyNoRange: 'Сначала выделите диапазон: Shift+драг по таймлайну',
+  whyNoUndo: 'нечего отменять',
+  whyNoRedo: 'нечего повторять',
   setSecKeys: 'Клавиши',
   keysImport: 'Импорт…',
   keysExport: 'Экспорт…',
@@ -1681,6 +1694,19 @@ const en: typeof ru = {
   actChecks: 'Checks',
   actSnapshot: 'Frame snapshot',
   actPopout: 'Preview in its own window',
+  actPalette: 'Command palette',
+  palLabel: 'Commands',
+  palHint: 'A command — in English or Russian',
+  palPick: '↑ ↓ select',
+  palRun: 'Enter run',
+  palClose: 'Esc close',
+  palNone: 'No command «{q}»',
+  palAll: 'All commands',
+  whyNoSel: 'nothing is selected',
+  whyNoClips: 'no clips selected',
+  whyNoRange: 'Select a range first: Shift+drag on the timeline',
+  whyNoUndo: 'nothing to undo',
+  whyNoRedo: 'nothing to redo',
   setSecKeys: 'Keyboard',
   keysImport: 'Import…',
   keysExport: 'Export…',
@@ -1718,3 +1744,6 @@ export function useT(): (k: TKey) => string {
 export function tr(k: TKey): string {
   return (useSettings.getState().lang === 'ru' ? ru : en)[k]
 }
+
+/** The label in a named language — the command palette searches both. */
+export const trIn = (lang: 'ru' | 'en', k: TKey): string => (lang === 'ru' ? ru : en)[k]
