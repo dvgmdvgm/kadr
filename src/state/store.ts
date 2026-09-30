@@ -7,7 +7,7 @@ import { isMusicMarker } from '@shared/types'
 import { saveUserStore } from '../engine/userStore'
 import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
-import { toFrame } from '../engine/timelineMath'
+import { toFrame, nextEdit } from '../engine/timelineMath'
 import {
   SETTINGS, effective, fromLegacy, healValue,
   type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
@@ -981,6 +981,18 @@ interface EditorState {
   extractRange(range?: { start: number; end: number }): void
   /** `ripple` (Ctrl+Shift+V) inserts, like a Shift-drop. */
   pasteAtPlayhead(ripple?: boolean): void
+  /** Ctrl+X: copy the selection (else the range) and lift it — one undo step, no ripple. */
+  cut(): void
+  /** I / O: the range's in / out at the playhead; the other end is kept while it
+      still lies on its side, else it becomes the timeline's end / 0. */
+  markIn(): void
+  markOut(): void
+  /** X: the range = the clip under the playhead (the selected one, else the top unlocked track's). */
+  markClip(): void
+  /** Up (-1) / Down (1): the playhead to the previous / next clip edge on the unlocked tracks. */
+  goToEdit(dir: 1 | -1): void
+  /** Ctrl+A: every clip on the unlocked tracks. */
+  selectAll(): void
 
   select(ids: string[]): void
   toggleSelect(id: string): void
@@ -2186,6 +2198,34 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p, selection: ids }
     })
   },
+
+  cut: () => {
+    const s = get()
+    if (s.selection.length) { s.copySelection(); s.deleteSelection() }
+    else if (s.range) { s.copyRange(); s.deleteRange() }
+  },
+  markIn: () => {
+    const { playhead: t, range, project } = get()
+    get().setRange({ start: t, end: range && range.end > t ? range.end : projectDuration(project) })
+  },
+  markOut: () => {
+    const { playhead: t, range } = get()
+    get().setRange({ start: range && range.start < t ? range.start : 0, end: t })
+  },
+  markClip: () => {
+    const s = get()
+    const t = s.playhead
+    const under = s.project.tracks.flatMap((tr) =>
+      tr.locked ? [] : tr.clips.filter((c) => c.start <= t + 1e-6 && c.start + c.duration > t + 1e-6))
+    const c = under.find((x) => s.selection.includes(x.id)) ?? under[0]
+    if (c) s.setRange({ start: c.start, end: c.start + c.duration })
+  },
+  goToEdit: (dir) => {
+    const s = get()
+    const t = nextEdit(s.project.tracks, s.playhead, dir)
+    if (t !== null) s.setPlayhead(t)
+  },
+  selectAll: () => set((s) => ({ selection: s.project.tracks.flatMap((tr) => tr.locked ? [] : tr.clips.map((c) => c.id)) })),
 
   select: (selection) => set({ selection }),
   toggleSelect: (id) =>

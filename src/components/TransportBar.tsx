@@ -7,17 +7,8 @@ import { useT, type TKey } from '@/i18n'
 import { Icon, Spinner } from './icons'
 import { logWarn } from '@/engine/log'
 import { useOnion, toggleOnion } from '@/engine/onion'
+import { formatTime, parseTimecode } from '@/engine/timelineMath'
 
-export function formatTime(t: number, fps: number): string {
-  const sign = t < 0 ? '-' : ''
-  t = Math.abs(t)
-  const h = Math.floor(t / 3600)
-  const m = Math.floor((t % 3600) / 60)
-  const s = Math.floor(t % 60)
-  const f = Math.floor((t % 1) * fps)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${sign}${pad(h)}:${pad(m)}:${pad(s)}.${pad(f)}`
-}
 
 export function TransportBar() {
   const t = useT()
@@ -135,13 +126,52 @@ export function TransportBar() {
             {rate < 0 ? '−' : ''}{Math.abs(rate)}×
           </span>
         )}
-        {formatTime(playhead, fps)} <span className="dim">/ {formatTime(duration, fps)}</span>
+        <TimecodeField playhead={playhead} fps={fps} /> <span className="dim">/ {formatTime(duration, fps)}</span>
         <span className="frame-counter dim">
           {' '}· {t('frameLbl')} {Math.floor(playhead * fps + 1e-6)}
           <span> / {Math.floor(duration * fps + 1e-6)}</span>
         </span>
       </span>
     </div>
+  )
+}
+
+/** The playhead's timecode; a click turns it into a go-to field (parseTimecode). */
+function TimecodeField({ playhead, fps }: { playhead: number; fps: number }) {
+  const t = useT()
+  const [text, setText] = useState<string | null>(null)
+  const [bad, setBad] = useState(false)
+  const close = () => { setText(null); setBad(false) }
+  if (text === null) {
+    return (
+      <button className="tc" data-act="timecode" title={t('tcGoto')} aria-label={t('tcGoto')}
+              onClick={() => setText(formatTime(playhead, fps))}>
+        {formatTime(playhead, fps)}
+      </button>
+    )
+  }
+  return (
+    <input
+      className="tc-input"
+      data-act="timecode-input"
+      autoFocus
+      spellCheck={false}
+      value={text}
+      aria-label={t('tcGoto')}
+      aria-invalid={bad}
+      title={bad ? t('tcBad') : t('tcGoto')}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => { setText(e.target.value); setBad(false) }}
+      onBlur={close}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') { e.preventDefault(); close() }
+        if (e.key !== 'Enter') return
+        const to = parseTimecode(text, fps, playhead)
+        if (to === null) { setBad(true); return }
+        useEditor.getState().setPlayhead(to)
+        close()
+      }}
+    />
   )
 }
 

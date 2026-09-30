@@ -844,6 +844,21 @@ body.kadr-popout .preview {
   color: var(--c-text);
 }
 .frame-counter { font-size: var(--fz-sm); }
+/* the playhead timecode: text until clicked, then a go-to field (E6) */
+.transport .tc {
+  padding: 0 var(--s2);
+  border: 1px solid transparent;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: text;
+}
+.transport .tc:hover { border-color: var(--c-line-hover); }
+.transport .tc-input {
+  width: 14ch;
+  font: inherit;
+}
+.transport .tc-input[aria-invalid='true'] { border-color: var(--c-danger); }
 /* J/L shuttle rate beside the timecode, shown only off 1× */
 .rate-badge {
   margin-right: var(--s3);

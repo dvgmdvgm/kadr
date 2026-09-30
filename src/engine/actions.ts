@@ -3,7 +3,7 @@
 // keydown handler App.tsx installs. Every hotkey used to be a branch of one
 // if/else in App.tsx that ignored modifiers (Ctrl+D deleted clips).
 import { create } from 'zustand'
-import { useEditor } from '../state/store'
+import { useEditor, projectDuration } from '../state/store'
 import {
   ACTIONS, actionFor, keymapDiff, keysOf, ownsKeys, sanitizeKeymap,
   type ActionId, type KeyChord, type KeymapDiff
@@ -73,6 +73,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   },
   'edit.undo': { enabled: (s) => s.past.length > 0, why: 'whyNoUndo', run: (s) => s.undo() },
   'edit.redo': { enabled: (s) => s.future.length > 0, why: 'whyNoRedo', run: (s) => s.redo() },
+  'edit.cut': { enabled: hasSel, why: 'whyNoSel', run: (s) => s.cut() },
   'edit.copy': {
     enabled: hasSel, why: 'whyNoSel',
     run: (s) => { if (s.selection.length) s.copySelection(); else if (s.range) s.copyRange() }
@@ -99,6 +100,14 @@ const HANDLERS: Record<ActionId, Handler> = {
   'playhead.back1s': { run: (s) => s.setPlayhead(s.playhead - 1) },
   'playhead.fwd1s': { run: (s) => s.setPlayhead(s.playhead + 1) },
   'playhead.start': { run: (s) => s.setPlayhead(0) },
+  'playhead.end': { run: (s) => s.setPlayhead(projectDuration(s.project)) },
+  'playhead.prevEdit': { run: (s) => s.goToEdit(-1) },
+  'playhead.nextEdit': { run: (s) => s.goToEdit(1) },
+  'range.in': { run: (s) => s.markIn() },
+  'range.out': { run: (s) => s.markOut() },
+  'range.clip': { run: (s) => s.markClip() },
+  'edit.selectAll': { run: (s) => s.selectAll() },
+  'edit.deselect': { run: (s) => s.select([]) },
   'edit.escape': { run: (s) => { if (s.animClipId) s.setAnimClip(null); else s.setRange(null) } },
   'app.settings': { run: () => useSettingsUi.getState().setOpen(true) },
   'app.palette': { run: () => usePaletteUi.setState({ open: true }) },

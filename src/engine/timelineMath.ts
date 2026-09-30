@@ -127,10 +127,70 @@ export function trackOverlaps(clips: Clip[]) {
     time already on a frame from dropping one below it under floor. */
 export function toFrame(t: number, fps: number, snap: (x: number) => number = Math.round): number {
   if (!(fps > 0) || !Number.isFinite(t)) return t
-  const ntsc = Math.round(fps * 1.001)
-  const r = fps % 1 && Math.abs(fps * 1.001 - ntsc) < 0.01 ? ntsc / 1.001 : fps
+  const r = frameRate(fps)
   const x = t * r
   return snap(snap === Math.floor ? x + 1e-6 : snap === Math.ceil ? x - 1e-6 : x) / r
+}
+
+/** frames per second as the frames really sit: 29.97 → 30000/1001 */
+function frameRate(fps: number): number {
+  const ntsc = Math.round(fps * 1.001)
+  return fps % 1 && Math.abs(fps * 1.001 - ntsc) < 0.01 ? ntsc / 1.001 : fps
+}
+
+/** `hh:mm:ss.ff` — the transport's timecode (real seconds, then the frame within
+    the second). The 1e-7 s nudge keeps a time on a frame from showing the one
+    before it (1.4 s at 30 fps is 1.3999…, which read «01.11»). */
+export function formatTime(t: number, fps: number): string {
+  const sign = t < 0 ? '-' : ''
+  t = Math.abs(t) + 1e-7
+  const h = Math.floor(t / 3600)
+  const m = Math.floor((t % 3600) / 60)
+  const s = Math.floor(t % 60)
+  const f = Math.floor((t % 1) * frameRate(fps))
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${sign}${pad(h)}:${pad(m)}:${pad(s)}.${pad(f)}`
+}
+
+/**
+ * What the go-to-timecode field typed means, as a playhead time on a frame
+ * (null = not a timecode). Absolute: `hh:mm:ss:ff`, `mm:ss:ff`, `ss:ff`,
+ * `ss.ff` (any `:`/`.` mix, so the display's own `hh:mm:ss.ff` reads back),
+ * bare `ss`, `1.5s`, `90f`. A leading + or − makes it relative to `current`.
+ * An absolute timecode names the frame the display calls that — the first
+ * frame at or after it, since `formatTime` floors.
+ */
+export function parseTimecode(text: string, fps: number, current: number): number | null {
+  const m = /^([+-]?)(?:(\d+(?:\.\d+)?)s|(\d+)f|(\d+(?:[:.]\d+){0,3}))$/.exec(text.trim())
+  if (!m) return null
+  const [, sign, secs, frames, tc] = m
+  let v: number
+  if (secs !== undefined) v = Number(secs)
+  else if (frames !== undefined) v = toFrame(Number(frames) / frameRate(fps), fps)
+  else {
+    const n = tc.split(/[:.]/).map(Number)
+    if (n.length === 1) v = n[0]
+    else {
+      const ff = n.pop()!
+      if (ff >= Math.round(fps)) return null
+      v = n.reduce((acc, x) => acc * 60 + x, 0) + ff / frameRate(fps)
+    }
+  }
+  const t = sign ? toFrame(current + (sign === '-' ? -v : v), fps) : toFrame(v, fps, Math.ceil)
+  return Math.max(0, t)
+}
+
+/** The next (dir 1) or previous (dir −1) clip edge on the unlocked tracks, 0 included; null when none. */
+export function nextEdit(tracks: { locked?: boolean; clips: { start: number; duration: number }[] }[],
+  t: number, dir: 1 | -1): number | null {
+  let best: number | null = dir < 0 && t > 1e-6 ? 0 : null
+  for (const tr of tracks) {
+    if (tr.locked) continue
+    for (const c of tr.clips) for (const x of [c.start, c.start + c.duration]) {
+      if (dir > 0 ? x > t + 1e-6 && (best === null || x < best) : x < t - 1e-6 && (best === null || x > best)) best = x
+    }
+  }
+  return best
 }
 
 /** The playback clock's anchor: the playhead `t` at rAF time `ts`, moving at `rate` (signed). */

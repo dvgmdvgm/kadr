@@ -1,4 +1,4 @@
-import { type WaveBins, waveColumns, trackOverlaps } from '@/engine/timelineMath'
+import { type WaveBins, waveColumns, trackOverlaps, formatTime } from '@/engine/timelineMath'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
@@ -41,7 +41,6 @@ import { useDefectsUi, targetRun } from './DefectsDialog'
 import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
-import { formatTime } from './TransportBar'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
