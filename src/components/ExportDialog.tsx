@@ -11,16 +11,18 @@ import {
   type OutputFit, type VideoEncoder, type VideoCodec
 } from '@shared/rawEncode'
 import { effective, type SettingKey } from '@shared/settings'
+import { etaOf, fmtClock, estimateBytes, ETA_WINDOW, type EtaSample } from '@shared/exportEta'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
 import { useEditor, useSettings, setting, projectDuration } from '@/state/store'
 import { useT, trf } from '@/i18n'
 import { Icon } from './icons'
 import { Modal } from './Modal'
+import { size as fmtSize } from './StoragePanel'
 
 type Status =
   | { kind: 'idle' }
-  | { kind: 'running'; phase: ExportProgress['phase']; progress: number }
+  | { kind: 'running'; phase: ExportProgress['phase']; progress: number; est: ReturnType<typeof etaOf> }
   | { kind: 'done' }
   | { kind: 'error'; message: string }
   | { kind: 'cancelled' }
@@ -66,13 +68,23 @@ export function ExportDialog() {
   const [title, setTitle] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const handle = useRef<ExportHandle | null>(null)
+  // G8: the progress events of the current phase, for the moving-average fps and ETA
+  const track = useRef<{ phase: string; s: EtaSample[] }>({ phase: '', s: [] })
+  const progressed = (p: ExportProgress) => {
+    const r = track.current
+    if (r.phase !== p.phase) { r.phase = p.phase; r.s = [] }
+    const now = performance.now() / 1000
+    r.s.push({ t: now, p: p.progress })
+    while (now - r.s[0].t > 2 * ETA_WINDOW) r.s.shift()
+    setStatus({ kind: 'running', phase: p.phase, progress: p.progress, est: etaOf(r.s, p.frames) })
+  }
 
   useEffect(() => {
     return window.kadr.onExportProgress((p) => {
       if (p.phase === 'done') setStatus({ kind: 'done' })
       else if (p.phase === 'error') setStatus({ kind: 'error', message: p.message ?? '' })
       else if (p.phase === 'cancelled') setStatus({ kind: 'cancelled' })
-      else setStatus({ kind: 'running', phase: p.phase, progress: p.progress })
+      else progressed(p)
     })
   }, [])
 
@@ -115,6 +127,9 @@ export function ExportDialog() {
   const chapters = chapKind === 'off' ? []
     : chaptersInRange(chapterMarks(project.markers ?? [], chapKind), span.start, span.end, t('exChLead'))
   const metaTitle = title ?? project.name
+  // bitrate × duration; null where no bitrate rules the size (constant quality, ProRes, PNG)
+  // (Chromium's fast encoder ignores the bitrate — no promise there either)
+  const bytes = fast ? null : estimateBytes(job, span.end - span.start)
   const fileName = fileNameFrom(setting<string>('export.fileName'),
     { project: project.name, preset: presetName(preset), date: new Date() })
 
@@ -155,12 +170,13 @@ export function ExportDialog() {
     const out = await window.kadr.exportDialog(fileName, ext)
     if (!out) return
     s.setPlaying(false)
-    setStatus({ kind: 'running', phase: 'video', progress: 0 })
+    track.current = { phase: '', s: [] }
+    setStatus({ kind: 'running', phase: 'video', progress: 0, est: null })
     const h = startExport(
       s.project,
       job,
       out,
-      (p) => setStatus({ kind: 'running', phase: p.phase, progress: p.progress }),
+      progressed,
       s.range,
       {
         motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264',
@@ -228,10 +244,23 @@ export function ExportDialog() {
       <div className="export-progress">
         <div>{phaseLabel}</div>
         <progress value={status.progress} max={1} />
-        <div className="dim">{Math.round(status.progress * 100)}%</div>
+        <div className="dim">
+          {[
+            `${Math.round(status.progress * 100)}%`,
+            status.est?.fps && trf('exFpsNow', { n: Math.round(status.est.fps) }),
+            status.est && trf('exLeft', { t: fmtClock(status.est.eta) }),
+            bytes !== null && `≈ ${fmtSize(Math.round(bytes), t)}`
+          ].filter(Boolean).join(' · ')}
+        </div>
       </div>
     ) : status.kind === 'done' ? (
-      <div className="export-ok"><Icon name="check" /> {t('exportDone')}</div>
+      <div className="export-ok">
+        <Icon name="check" /> {t('exportDone')}
+        <button className="ghost" onClick={() => void window.kadr.exportReveal(false)}>
+          <Icon name="folderOpen" /> {t('exReveal')}
+        </button>
+        <button className="ghost" onClick={() => void window.kadr.exportReveal(true)}>{t('exOpen')}</button>
+      </div>
     ) : status.kind === 'cancelled' ? (
       <div className="dim">{t('exportCancelled')}</div>
     ) : status.kind === 'error' ? (
@@ -501,6 +530,7 @@ export function ExportDialog() {
       {value(t('exFormat'), `${job.container.toUpperCase()} (.${job.container})`)}
       {/* a PNG sequence is numbered beside the chosen name (shared/rawEncode.ts seqPattern) */}
       {value(t('exName'), job.container === 'png' ? `${fileName}_000001.png …` : `${fileName}.${job.container}`)}
+      {bytes !== null && value(t('exFileSize'), `≈ ${fmtSize(Math.round(bytes), t)}`)}
       <div className="dim">{t('exAskPath')}</div>
     </Modal>
   )

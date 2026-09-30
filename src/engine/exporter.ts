@@ -98,10 +98,13 @@ export function startExport(
       throw new Error('уже идёт другой экспорт — дождитесь его или отмените')
     }
     activity.exporting = true
+    // an export can take hours: the system must not sleep under it
+    void window.kadr.exportAwake(true)
     try {
       await runInner()
     } finally {
       activity.exporting = false
+      void window.kadr.exportAwake(false)
     }
   }
 
@@ -403,7 +406,7 @@ export function startExport(
           while (encoder!.encodeQueueSize > 8) await sleep(4)
         }
         if (k % 5 === 0 || k === totalFrames - 1) {
-          onProgress({ phase: 'video', progress: (k + 1) / totalFrames })
+          onProgress({ phase: 'video', progress: (k + 1) / totalFrames, frames: totalFrames })
         }
         mark = performance.now()
         if (k % 30 === 29) {
@@ -472,6 +475,8 @@ export function startExport(
       // further progress arrives via onExportProgress events
       await window.kadr.exportVideoDone()
     } catch (err) {
+      // frames still in the pipe fail with the kill below — nobody awaits them any more
+      for (const p of slotPending) p?.catch(() => { /* the export is over */ })
       if (rawDirect) window.kadr.rawEncodeKill()
       await window.kadr.exportCancel().catch(() => { /* already gone */ })
       throw err

@@ -27,7 +27,7 @@ const ABOUT: Record<StorageGroupId, TKey> = {
 }
 
 /** bytes → «1.4 ГБ»: the number is for a human, the unit comes from i18n */
-function size(n: number, t: (k: TKey) => string): string {
+export function size(n: number, t: (k: TKey) => string): string {
   if (n < 1024) return `${n} ${t('stB')}`
   if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} ${t('stKB')}`
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} ${t('stMB')}`

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard, shell, powerSaveBlocker } from 'electron'
 import { join, dirname, basename } from 'path'
 import { promises as fs, createReadStream, statSync, existsSync, appendFileSync } from 'fs'
 import { createHash, randomBytes } from 'crypto'
@@ -7,7 +7,7 @@ import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
   ExportMuxer, RawVideoEncoder, meanVolume, probeBasic, configureFfmpeg, detectEncoders
 } from './ffmpeg'
-import { rawCodec, rawTempExt, seqPattern } from '@shared/rawEncode'
+import { rawCodec, rawTempExt, seqPattern, isSeqFrame } from '@shared/rawEncode'
 import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
 import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
@@ -391,6 +391,11 @@ let exportState: {
   rawChain: Promise<void>
   rawErr: Error | null
 } | null = null
+
+/** the last finished export — the only file «Показать в папке» / «Открыть» may touch (the page is scriptable) */
+let lastExport: string | null = null
+/** powerSaveBlocker id while an export runs; null = not held */
+let awakeId: number | null = null
 
 function sendProgress(p: import('@shared/types').ExportProgress) {
   win?.webContents.send('export:progress', p)
@@ -1038,6 +1043,7 @@ function registerIpc() {
     st.fh = null
     if (st.job.preset.container === 'png') {
       // the frames ARE the export: done, and kept
+      lastExport = st.videoTemp.replace('%06d', '000001')
       sendProgress({ phase: 'done', progress: 1 })
       await cleanupExport(true)
       return
@@ -1049,6 +1055,7 @@ function registerIpc() {
         ? { ...st.job, preset: { ...st.job.preset, ffmpegVideo: 'copy' as const } }
         : st.job
       await st.muxer.run(job, st.videoTemp, sendProgress)
+      lastExport = st.job.outputPath
       sendProgress({ phase: 'done', progress: 1 })
       await cleanupExport()
     } catch (err: any) {
@@ -1063,6 +1070,18 @@ function registerIpc() {
       })
       await cleanupExport(keep)
     }
+  })
+
+  ipcMain.handle('export:awake', (_e, on?: boolean) => {
+    if (on === true && awakeId === null) awakeId = powerSaveBlocker.start('prevent-app-suspension')
+    if (on === false && awakeId !== null) { powerSaveBlocker.stop(awakeId); awakeId = null }
+    return awakeId !== null && powerSaveBlocker.isStarted(awakeId)
+  })
+
+  ipcMain.handle('export:reveal', async (_e, open: boolean) => {
+    if (!lastExport) return
+    if (open) await shell.openPath(lastExport)
+    else shell.showItemInFolder(lastExport)
   })
 
   ipcMain.handle('export:cancel', async () => {
@@ -1082,7 +1101,13 @@ async function cleanupExport(keepVideo = false) {
   st.raw?.kill()
   st.rawWss?.close()
   try { await st.fh?.close() } catch { /* already closed */ }
-  if (!keepVideo) {
+  if (!keepVideo && st.job.preset.container === 'png') {
+    // an unfinished sequence is not an export (the preload's encoder drops what it writes after this)
+    const dir = dirname(st.videoTemp)
+    for (const f of await fs.readdir(dir).catch(() => [])) {
+      if (isSeqFrame(st.videoTemp, f)) await fs.unlink(join(dir, f)).catch(() => { /* taken */ })
+    }
+  } else if (!keepVideo) {
     try { await fs.unlink(st.videoTemp) } catch { /* never created */ }
   }
 }

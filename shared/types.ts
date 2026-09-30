@@ -1052,6 +1052,8 @@ export interface ExportProgress {
   /** 0..1 within the current phase */
   progress: number
   message?: string
+  /** the video phase: frames in the whole export (fps = progress rate × frames) */
+  frames?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -1336,6 +1338,10 @@ export interface KadrApi {
   exportRawEnd(): Promise<void>
   exportVideoDone(): Promise<void>
   exportCancel(): Promise<void>
+  /** hold (true) / release (false) the system awake during an export; returns whether it is held (no arg = ask) */
+  exportAwake(on?: boolean): Promise<boolean>
+  /** the LAST finished export: show it in its folder, or open it (a PNG sequence: its first frame) */
+  exportReveal(open: boolean): Promise<void>
   onExportProgress(cb: (p: ExportProgress) => void): () => void
 
   /** Remotion fragments: shared workspace, dev server, create and render. */

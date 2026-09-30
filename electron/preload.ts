@@ -1,9 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
+import { readdirSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import type { KadrApi, ExportProgress } from '@shared/types'
-import { rawEncodeArgs, rawTempExt } from '@shared/rawEncode'
+import { rawEncodeArgs, rawTempExt, isSeqFrame } from '@shared/rawEncode'
 import { running, type SettingsSnapshot } from '@shared/settings'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
@@ -14,10 +15,19 @@ import { running, type SettingsSnapshot } from '@shared/settings'
 let rawEnc: ChildProcess | null = null
 let rawEncErr = ''
 let rawEncExit: Promise<void> | null = null
+let rawOut = ''
 
 // capability token for the kadr:// media protocol (issue #13). Sync on purpose:
 // fileUrl must work from the renderer's very first frame.
 const MEDIA_TOKEN: string = ipcRenderer.sendSync('media:token')
+
+function dropSequence(pattern: string) {
+  try {
+    for (const f of readdirSync(dirname(pattern))) {
+      if (isSeqFrame(pattern, f)) try { unlinkSync(join(dirname(pattern), f)) } catch { /* taken */ }
+    }
+  } catch { /* the folder went */ }
+}
 
 const api: KadrApi = {
   rawEncodeStart: (o) => {
@@ -29,8 +39,11 @@ const api: KadrApi = {
       stdio: ['pipe', 'ignore', 'pipe']
     })
     rawEnc = child
+    rawOut = out
     rawEncErr = ''
     child.stderr!.on('data', (c) => { rawEncErr += c })
+    // a kill mid-frame is EPIPE here; the frame's write callback already reports it
+    child.stdin!.on('error', () => { /* see rawEncodeFrame */ })
     rawEncExit = new Promise<void>((resolve, reject) => {
       child.on('close', (code) => {
         rawEnc = null
@@ -70,6 +83,9 @@ const api: KadrApi = {
     rawEncExit = null
   },
   rawEncodeKill: () => {
+    // a killed PNG sequence is not an export: its frames go once ffmpeg has let go of them
+    const seq = rawOut.includes('%06d') ? rawOut : ''
+    if (seq && rawEnc) rawEnc.once('close', () => dropSequence(seq))
     try { rawEnc?.kill('SIGKILL') } catch { /* gone */ }
     rawEnc = null
     rawEncExit = null
@@ -162,6 +178,8 @@ const api: KadrApi = {
   exportUseVideo: (path) => ipcRenderer.invoke('export:use-video', path),
   exportVideoDone: () => ipcRenderer.invoke('export:video-done'),
   exportCancel: () => ipcRenderer.invoke('export:cancel'),
+  exportAwake: (on) => ipcRenderer.invoke('export:awake', on),
+  exportReveal: (open) => ipcRenderer.invoke('export:reveal', open),
   onExportProgress: (cb) => {
     const handler = (_e: unknown, p: ExportProgress) => cb(p)
     ipcRenderer.on('export:progress', handler)

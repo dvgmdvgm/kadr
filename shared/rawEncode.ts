@@ -214,3 +214,9 @@ export function rawEncodeArgs(o: RawEncodeOpts): string[] {
     o.out
   ]
 }
+
+/** a file of the sequence `pattern` (seqPattern's): its own base name and six digits — nothing else in the folder */
+export function isSeqFrame(pattern: string, name: string): boolean {
+  const base = pattern.replace(/^.*[\/]/, '').replace('%06d.png', '')
+  return name.length === base.length + 10 && name.startsWith(base) && /^\d{6}\.png$/.test(name.slice(base.length))
+}
