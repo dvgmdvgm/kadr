@@ -9,6 +9,8 @@ import { useEditor } from '@/state/store'
 import type { MusicEntry, SfxEntry, SoundLibrary } from '@shared/types'
 import { detectBeats, type BeatGrid } from './beats'
 import { logWarn } from './log'
+import { tr } from '../i18n'
+import { soundTitle } from '@shared/sfxTitle'
 
 let lib: Promise<SoundLibrary> | null = null
 
@@ -73,7 +75,7 @@ export function findSfx(all: SfxEntry[], q: SfxQuery = {}): SfxEntry[] {
     (!q.family || s.family === q.family) &&
     (!q.use || s.uses.includes(q.use)) &&
     (!q.soft || s.hfRisk !== 'high') &&
-    (!text || s.id.toLowerCase().includes(text) || s.tags.some((t) => t.includes(text)) ||
+    (!text || s.id.toLowerCase().includes(text) || soundTitle(s.id).toLowerCase().includes(text) || s.tags.some((t) => t.includes(text)) ||
       !!s.note?.toLowerCase().includes(text)))
   const bright = { warm: 0, balanced: 1, bright: 2 } as const
   out.sort((a, b) =>
@@ -154,7 +156,7 @@ export async function addSound(id: string, opts: AddSoundOpts = {}): Promise<Add
       result.beatMarkers = b.placed
     } catch (err) {
       // the music is on the timeline either way; a failed analysis is a warning
-      logWarn('биты', 'музыка добавлена, но биты разметить не удалось', err)
+      logWarn(tr('lgBeats'), tr('lmMusicBeatsFail'), err)
     }
   }
   return result

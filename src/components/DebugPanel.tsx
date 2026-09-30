@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useLog, clearLog, logAsText, logTime, markLogSeen, type LogEntry } from '@/engine/log'
-import { useT } from '@/i18n'
+import { useT, trf, type TKey } from '@/i18n'
 import type { GpuInfo, GpuPref } from '@shared/types'
 import { Icon } from './icons'
 
@@ -111,7 +111,7 @@ function GpuRow() {
   return (
     <div className="gpu-row">
       <span className="dim">{t('gpuLabel')}</span>
-      <span className="gpu-name" title={info.why}>{info.renderer || '—'}</span>
+      <span className="gpu-name" title={trf(info.why.key as TKey, info.why.args ?? {})}>{info.renderer || '—'}</span>
       {info.available && (
         <select
           value={info.pref}
@@ -131,7 +131,7 @@ function GpuRow() {
         </select>
       )}
       {changed && <span className="gpu-note">{t('gpuRestart')}</span>}
-      {!changed && info.fallback && <span className="gpu-note" title={info.fallback.reason}>{t('gpuFellBack')}</span>}
+      {!changed && info.fallback && <span className="gpu-note" title={info.fallback.said ? trf(info.fallback.said.key as TKey, info.fallback.said.args ?? {}) : info.fallback.reason}>{t('gpuFellBack')}</span>}
     </div>
   )
 }

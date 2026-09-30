@@ -120,11 +120,11 @@ export function openPreviewWindow(): boolean {
   try {
     w = window.open('', WIN_NAME, feat)
   } catch (err) {
-    logWarn('превью', 'отдельное окно предпросмотра не открылось', err)
+    logWarn(tr('lgPreview'), tr('lmPopoutFail'), err)
     return false
   }
   if (!w) {
-    logWarn('превью', 'отдельное окно предпросмотра не открылось')
+    logWarn(tr('lgPreview'), tr('lmPopoutFail'))
     return false
   }
   const doc = w.document

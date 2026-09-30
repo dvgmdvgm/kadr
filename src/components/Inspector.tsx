@@ -9,32 +9,48 @@ import { useFragmentParams, paramValues, setParam, resetParams, rememberParamVal
 import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
 import { fontChoices } from '@/engine/fonts'
+import { audioTwin } from '@/engine/timelineSelect'
 
 function Num({
   label, value, step = 1, min, max, onChange,
-  onFocus = () => useEditor.getState().pushHistory('hEdit')
+  onFocus = () => useEditor.getState().pushHistory('hEdit'),
+  onCommit
 }: {
   label: string
   value: number
   step?: number
   min?: number
   max?: number
-  onChange: (v: number) => void
+  onChange?: (v: number) => void
   onFocus?: () => void
+  /** typed digits stay a draft until Enter or leaving the field (a value that
+      rounds, like W/H to even, would otherwise rewrite «1» as 2 mid-typing);
+      the spinner arrows still apply at once */
+  onCommit?: (v: number) => void
 }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = () => {
+    if (draft === null) return
+    const v = Number(draft)
+    setDraft(null)
+    if (draft.trim() !== '' && !Number.isNaN(v)) onCommit!(v)
+  }
   return (
     <label className="insp-field">
       <span>{label}</span>
       <input
         type="number"
-        value={Number(value.toFixed(3))}
+        value={draft ?? Number(value.toFixed(3))}
         step={step}
         min={min}
         max={max}
         onFocus={onFocus}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit() }}
         onChange={(e) => {
+          if (onCommit && (e.nativeEvent as InputEvent).inputType) { setDraft(e.target.value); return }
           const v = Number(e.target.value)
-          if (!Number.isNaN(v)) onChange(v)
+          if (!Number.isNaN(v)) (onCommit ?? onChange!)(v)
         }}
       />
     </label>
@@ -77,9 +93,9 @@ function ProjectProps() {
         <input value={project.name} onFocus={focus} onChange={(e) => patch({ name: e.target.value })} />
       </label>
       <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
-        onFocus={focus} onChange={(v) => patch({ width: Math.round(v / 2) * 2 })} />
+        onFocus={focus} onCommit={(v) => patch({ width: Math.max(16, Math.round(v / 2) * 2) })} />
       <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
-        onFocus={focus} onChange={(v) => patch({ height: Math.round(v / 2) * 2 })} />
+        onFocus={focus} onCommit={(v) => patch({ height: Math.max(16, Math.round(v / 2) * 2) })} />
       <Num label={t('framerate')} value={project.fps} step={1} min={1} max={120}
         onFocus={focus} onChange={(v) => patch({ fps: v })} />
     </>
@@ -96,8 +112,8 @@ function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<Text
   // the system list needs a user gesture: asked on the first press of the list
   const loadFonts = () => { if (!fonts) void fontChoices(useEditor.getState().projectPath).then(setFonts) }
   const listed = fonts ? [...fonts.project, ...fonts.system] : []
-  const color = (k: 'color' | 'outlineColor' | 'background' | 'shadowColor') => (
-    <input type="color" value={style[k] || '#000000'} onFocus={hist} onChange={(e) => set({ [k]: e.target.value })} />
+  const color = (k: 'color' | 'outlineColor' | 'background' | 'shadowColor', label: string) => (
+    <input type="color" aria-label={label} value={style[k] || '#000000'} onFocus={hist} onChange={(e) => set({ [k]: e.target.value })} />
   )
   return (
     <>
@@ -138,11 +154,11 @@ function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<Text
       </label>
       <label className="insp-field">
         <span>{t('color')}</span>
-        {color('color')}
+        {color('color', t('color'))}
       </label>
       <label className="insp-field">
         <span>{t('outline')}</span>
-        {color('outlineColor')}
+        {color('outlineColor', t('outline'))}
       </label>
       <Num label={`${t('outline')} px`} value={style.outlineWidth} min={0} max={40}
         onChange={(v) => set({ outlineWidth: v })} />
@@ -151,7 +167,7 @@ function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<Text
         <span className="insp-inline">
           <input type="checkbox" data-act="text-bg" checked={!!style.background} aria-label={t('background')}
             onChange={(e) => step({ background: e.target.checked ? '#000000' : '' })} />
-          {!!style.background && color('background')}
+          {!!style.background && color('background', t('background'))}
         </span>
       </label>
       {!!style.background && (
@@ -165,7 +181,7 @@ function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<Text
             onChange={(e) => step(e.target.checked
               ? { shadowColor: '#000000', ...(style.shadowBlur || style.shadowX || style.shadowY ? {} : { shadowBlur: 8, shadowX: 4, shadowY: 4 }) }
               : { shadowColor: '' })} />
-          {!!style.shadowColor && color('shadowColor')}
+          {!!style.shadowColor && color('shadowColor', t('shadow'))}
         </span>
       </label>
       {!!style.shadowColor && (
@@ -190,6 +206,8 @@ function ClipProps({ clip }: { clip: Clip }) {
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
   const named = useRef(false)
   const visual = useEditor((s) => clip.kind !== 'media' || s.project.assets.some((a) => a.id === clip.assetId && a.kind !== 'audio'))
+  const project = useEditor((s) => s.project)
+  const twin = useMemo(() => audioTwin(project, clip), [project, clip])
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
   const setGain = (v: number) => update({ gain: { ...clip.gain, value: v } as Anim })
@@ -262,12 +280,25 @@ function ClipProps({ clip }: { clip: Clip }) {
         </>
       )}
       <div className="insp-section">{t('volume')}</div>
-      <Num label={t('volume')} value={clip.gain.value} step={0.05} min={0} max={2} onChange={setGain} />
-      <label className="insp-field">
-        <span>{t('muted')}</span>
-        <input type="checkbox" checked={clip.muted}
-          onChange={(e) => update({ muted: e.target.checked })} />
-      </label>
+      {twin && clip.muted ? (
+        // an AV import: the picture's own sound is off because it plays from the audio clip
+        <div className="insp-field">
+          <span>{t('audioOnTwin').replace('{track}', twin.track.name)}</span>
+          <button data-act="select-twin" title={t('audioOnTwinHint')}
+            onClick={() => useEditor.getState().select([twin.clip.id])}>
+            <Icon name="link" size={13} /> {twin.clip.label}
+          </button>
+        </div>
+      ) : (
+        <>
+          <Num label={t('volume')} value={clip.gain.value} step={0.05} min={0} max={2} onChange={setGain} />
+          <label className="insp-field">
+            <span>{t('muted')}</span>
+            <input type="checkbox" checked={clip.muted}
+              onChange={(e) => update({ muted: e.target.checked })} />
+          </label>
+        </>
+      )}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
       <EffectsSection clip={clip} />
@@ -544,6 +575,7 @@ function EffectsSection({ clip }: { clip: Clip }) {
             <input
               value={name}
               placeholder={t('presetName')}
+              aria-label={t('presetName')}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') saveFx()

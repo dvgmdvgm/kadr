@@ -126,6 +126,8 @@ export function MediaBin() {
             key={a.id}
             className={`bin-item${sel.includes(a.id) ? ' selected' : ''}${offline.has(a.id) ? ' offline' : ''}`}
             title={offline.has(a.id) ? `${t('offlineBadge')}: ${a.path}` : a.path}
+            role="button"
+            aria-pressed={sel.includes(a.id)}
             draggable
             onDragStart={(e) => {
               e.dataTransfer.setData('kadr/asset', a.id)
@@ -226,6 +228,8 @@ export function MediaBin() {
         <>
           <div
             className="panel-head texts-head"
+            role="button"
+            aria-expanded={textsOpen}
             onClick={toggleTexts}
             title={textsOpen ? t('textsCollapse') : t('textsExpand')}
           >
@@ -278,6 +282,10 @@ export function MediaBin() {
  * fragment on the timeline at the playhead. Fragments use them as
  * `import m from '@lib/models/<name>.glb'` + useModel(m) from '@kadr/three'.
  */
+/** the line a fragment imports a model with — code, the same in any UI language */
+const importLine = (m: { name: string; file: string }) =>
+  `import ${m.name.replace(/[^a-zA-Z0-9_$]/g, '_')} from '@lib/models/${m.file}'`
+
 function ModelsSection() {
   const t = useT()
   const models = useModelsUi((s) => s.models)
@@ -292,7 +300,7 @@ function ModelsSection() {
   }
   return (
     <>
-      <div className="panel-head texts-head" onClick={toggle} title={open ? t('textsCollapse') : t('textsExpand')}>
+      <div className="panel-head texts-head" role="button" aria-expanded={open} onClick={toggle} title={open ? t('textsCollapse') : t('textsExpand')}>
         <span>
           <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />
           {t('models3d')} ({models.length}){busy > 0 && <> <Spinner size={10} /></>}
@@ -302,7 +310,7 @@ function ModelsSection() {
         <div className="bin-grid">
           {models.map((m) => (
             <div key={m.name} className="bin-item model" data-model={m.name}
-                 title={`${m.source}\n${m.parts.length} ${t('modelParts')} · ${m.trianglesOut} ${t('modelTris')}\nimport ${m.name.replace(/[^a-zA-Z0-9_$]/g, '_')} from '@lib/models/${m.file}'`}
+                 title={`${m.source}\n${m.parts.length} ${t('modelParts')} · ${m.trianglesOut} ${t('modelTris')}\n${importLine(m)}`}
                  onDoubleClick={() => insert(m.name)}>
               <img src={window.kadr.fileUrl(`${m.dir}/${m.thumb}`)} alt="" crossOrigin="anonymous" />
               <button className="tr-badge" data-act="model-insert" title={t('modelInsert')} aria-label={t('modelInsert')}

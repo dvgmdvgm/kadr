@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { StorageGroupId, StorageScan } from '@shared/types'
 import { scanStorage, pruneStorage } from '@/engine/storage'
 import { logError } from '@/engine/log'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, trf, type TKey } from '@/i18n'
 import { Icon } from './icons'
 
 const NAME: Record<StorageGroupId, TKey> = {
@@ -54,7 +54,7 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
     try {
       setScan(await scanStorage())
     } catch (err) {
-      logError('хранилище', 'не удалось посчитать занятое место', err)
+      logError(tr('lgStorage'), tr('lmStSize'), err)
     } finally {
       setBusy(false)
     }
@@ -67,13 +67,13 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
     setAsk(null)
     try {
       const r = await pruneStorage({ group: a.group, scope: a.scope, project: a.project })
-      if (r.error) logError('хранилище', `удаление отклонено: ${r.error}`)
+      if (r.error) logError(tr('lgStorage'), trf('lmStRefused', { why: r.error }))
       else setFreed({ removed: r.removed, bytes: r.bytes })
       // re-count instead of showing what was just deleted: a line that still
       // claims 2.5 GB after freeing them is simply a lie
       setScan(await scanStorage())
     } catch (err) {
-      logError('хранилище', 'удалить не удалось', err)
+      logError(tr('lgStorage'), tr('lmStDelFail'), err)
     } finally {
       setBusy(false)
     }

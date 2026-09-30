@@ -22,7 +22,7 @@ import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
 import { missingForExport } from './offline'
 import { collectRangeAudio } from './subtitles'
-import { tr } from '../i18n'
+import { tr, trf } from '../i18n'
 
 export interface ExportHandle {
   cancel(): void
@@ -205,7 +205,7 @@ export function startExport(
         })
         for (let s = 0; s < 2; s++) slots.push(new Uint8Array(rw * rh * 4))
       } catch (err) {
-        logWarn('экспорт', 'прямой кодировщик недоступен, работаю запасным путём', err)
+        logWarn(tr('lgExport'), tr('lmExpDirect'), err)
         rawDirect = null
       }
       if (!rawDirect) {
@@ -568,7 +568,7 @@ export function startExport(
               }
               // no frame is never acceptable — fall back so the output can
               // only ever be slower, not frozen
-              logWarn('экспорт', `${asset.name}: быстрый декодер не дал кадр, перехожу на перемотку`)
+              logWarn(tr('lgExport'), trf('lmExpNoFrame', { name: asset.name }))
               sources.set(clip.id, null)
               packed?.delete(clip.id) // element frames are plain RGBA
               s.close()
@@ -576,7 +576,7 @@ export function startExport(
             },
             () => {
               // fast path died (codec quirk?) — element seeks from here on
-              logWarn('экспорт', `${asset.name}: быстрый декодер отказал, перехожу на перемотку`)
+              logWarn(tr('lgExport'), trf('lmExpDecoderFail', { name: asset.name }))
               sources.set(clip.id, null)
               packed?.delete(clip.id) // element frames are plain RGBA
               s.close()
@@ -618,7 +618,7 @@ function alphaPackedFallback(asset: MediaAsset): Promise<MediaAsset | null> {
         { packed: true, alpha: true, codec: asset.codec })
       return { ...asset, path }
     })().catch((err) => {
-      logWarn('экспорт', `${asset.name}: упаковать альфу не вышло, остаюсь на перемотке`, err)
+      logWarn(tr('lgExport'), trf('lmExpAlphaFail', { name: asset.name }), err)
       return null
     })
     alphaPacks.set(asset.path, p)
@@ -665,7 +665,7 @@ function intermediateFallback(asset: MediaAsset): Promise<MediaAsset | null> {
         { alpha: !!hasAlpha, codec })
       return { ...asset, path }
     })().catch((err) => {
-      logWarn('экспорт', `${asset.name}: запасное декодирование не удалось`, err)
+      logWarn(tr('lgExport'), trf('lmExpFallbackFail', { name: asset.name }), err)
       return null
     })
     undecodable.set(asset.path, p)
@@ -694,9 +694,9 @@ async function materializeFragments(
   // bake that is there — a dead export would be the worse outcome.
   try {
     const n = await refreshStaleBakes(project)
-    if (n) logInfo('экспорт', `звук под фрагментами обновлён перед рендером: ${n}`)
+    if (n) logInfo(tr('lgExport'), trf('lmExpRebaked', { n }))
   } catch (err) {
-    logWarn('экспорт', 'не удалось обновить звук под фрагментом — рендер с прежним', err)
+    logWarn(tr('lgExport'), tr('lmExpRebakeFail'), err)
   }
   const p = JSON.parse(JSON.stringify(project)) as Project
   const rendered = new Map<string, string>() // fragmentId → assetId

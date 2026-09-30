@@ -40,7 +40,6 @@ export function ChecksDialog() {
       closeDisabled={running}
       actions={
         <>
-          <button onClick={close} disabled={running}>{t('close')}</button>
           <button className="primary" onClick={run} disabled={running} data-act="checks-run">{t('checksRun')}</button>
         </>
       }

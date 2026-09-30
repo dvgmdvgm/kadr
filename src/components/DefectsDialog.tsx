@@ -146,7 +146,6 @@ export function DefectsDialog() {
       titleIcon={<Icon name="target" size={17} />}
       wide
       closeDisabled={running || regenerating}
-      actions={<button onClick={close} disabled={running || regenerating}>{t('close')}</button>}
     >
 
       {!run && (
@@ -169,7 +168,7 @@ export function DefectsDialog() {
       {env && env.ok && (
         <div className="dim hint-inline">
           <Icon name="check" size={13} /> {t('dfEnvOk')}
-          {env.cuda?.available ? ` · CUDA ${env.cuda.name ?? ''} ${env.cuda.freeMb ?? '?'} МБ` : ' · CPU'}
+          {env.cuda?.available ? ` · CUDA ${env.cuda.name ?? ''} ${env.cuda.freeMb ?? '?'} ${t('mbUnit')}` : ' · CPU'}
         </div>
       )}
       <label className="insp-field">

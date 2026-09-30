@@ -9,6 +9,7 @@
 // it: this is a window into the running session, not a diary, and a log file
 // would be one more thing growing quietly on a disk with 16 GB free.
 import { create } from 'zustand'
+import { trf, tr } from '../i18n'
 
 export type LogLevel = 'info' | 'warn' | 'error'
 
@@ -123,14 +124,14 @@ export function wireLog() {
     // a failed <video>/<img> load also lands here, with the element as target
     const el = e.target as HTMLElement | null
     if (el && (el instanceof HTMLVideoElement || el instanceof HTMLImageElement)) return
-    const msg = e.message || 'необработанная ошибка'
+    const msg = e.message || tr('lmUncaught')
     if (RESIZE_NOTICE.test(msg)) {
-      logInfo('раскладка', `${msg} — не сбой: доставку перенесли на следующий кадр`)
+      logInfo(tr('lgLayout'), trf('lmLayoutNotice', { msg }))
       return
     }
-    logError('сбой', msg, e.error ?? e.filename)
+    logError(tr('lgCrash'), msg, e.error ?? e.filename)
   })
   window.addEventListener('unhandledrejection', (e) => {
-    logError('сбой', 'необработанный отказ промиса', e.reason)
+    logError(tr('lgCrash'), tr('lmRejection'), e.reason)
   })
 }

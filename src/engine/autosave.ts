@@ -7,6 +7,7 @@
 import type { Project } from '@shared/types'
 import { useEditor, setting } from '@/state/store'
 import { logWarn } from './log'
+import { tr } from '../i18n'
 
 /** Heavy activities flip these; autosave skips its tick while any is set. */
 export const activity = {
@@ -33,7 +34,7 @@ async function tick() {
     await window.kadr.autosaveProject(snapshot, s.projectPath)
     lastSnapshot = snapshot
   } catch (err) {
-    logWarn('автосохранение', 'не удалось записать, повторю через 5 минут', err)
+    logWarn(tr('lgAutosave'), tr('lmAutosaveFail'), err)
   } finally {
     busy = false
   }

@@ -45,6 +45,7 @@ import { detectBeats, clearBeats, beatTimes, useBeatsUi } from './engine/beats'
 import { bakeAudio, bakeState, bakePlan, refreshStaleBakes } from './engine/audioReact'
 import { loadSoundLibrary, findSfx, addSound, setSoundMeta, sfxFamilies, SFX_FAMILIES, SFX_USES } from './engine/sounds'
 import { useSoundsUi } from './components/SoundsDialog'
+import { tr } from './i18n'
 
 wireLog()   // first: everything below may want to report a failure
 // «Масштаб интерфейса»: the page's zoom factor, now and on every change
@@ -80,7 +81,7 @@ wireFonts()
       gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
   } catch { /* 'none' */ }
-  void window.kadr.gpuReport?.(name).then((mode) => logInfo('видеокарта', `${name} (${mode === 'discrete' ? 'дискретная' : 'по умолчанию'})`))
+  void window.kadr.gpuReport?.(name).then((mode) => logInfo(tr('lgGpu'), `${name} (${tr(mode === 'discrete' ? 'gpuModeDiscrete' : 'gpuModeDefault')})`))
 }
 
 // Scripting surface for automation and AI integration (Claude Code / MCP):

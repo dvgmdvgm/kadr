@@ -30,7 +30,9 @@ export function SidePanel({ width }: { width: number }) {
             {t('animTab')}
             <span
               className="tab-close"
+              role="button"
               title={t('close')}
+              aria-label={t('close')}
               onClick={(e) => {
                 e.stopPropagation()
                 useEditor.getState().setAnimClip(null)
@@ -45,7 +47,9 @@ export function SidePanel({ width }: { width: number }) {
             {t('motionTab')}
             <span
               className="tab-close"
+              role="button"
               title={t('close')}
+              aria-label={t('close')}
               onClick={(e) => {
                 e.stopPropagation()
                 useEditor.getState().setMotionTrack(null)

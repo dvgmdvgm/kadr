@@ -30,7 +30,7 @@ import { usePopout, previewHost, setPreviewSlot, dockPreviewWindow } from './eng
 import { useEditor, newProject } from './state/store'
 import { dropPayload, dropUsable, importDrop } from './engine/mediaImport'
 import { syncProjectFragments } from './engine/fragments'
-import { useT, type TKey } from './i18n'
+import { useT, tr, trf, type TKey } from './i18n'
 import { create } from 'zustand'
 import { baseOf } from '@shared/paths'
 import type { BackupOffer, Project } from '@shared/types'
@@ -69,7 +69,7 @@ async function writeAndConfirm(path: string): Promise<boolean> {
     return true
   } catch (err) {
     flashSave('saveError', String(err), true)
-    logError('сохранение', `не удалось записать ${path}, файл на диске не тронут`, err)
+    logError(tr('lgSave'), trf('lmSaveFail', { path }), err)
     return false
   }
 }
@@ -144,7 +144,7 @@ function RestorePrompt() {
       useEditor.getState().setProject(await window.kadr.readProject(offer.file), null)
       checkOfflineOnOpen()
     } catch (err) {
-      logError('восстановление', `не удалось открыть ${offer.file}`, err)
+      logError(tr('lgRestore'), trf('lmOpenFail', { path: offer.file }), err)
     }
   }
   return (
@@ -229,7 +229,7 @@ export default function App() {
   }), [])
   // a .kadr from the command line, or from a second launch (single instance)
   useEffect(() => window.kadr.onOpenProject((path) => {
-    openProjectAt(path).catch((err) => logError('проект', `не удалось открыть ${path}`, err))
+    openProjectAt(path).catch((err) => logError(tr('lgProject'), trf('lmOpenFail', { path }), err))
   }), [])
   const dirty = savedProject !== null && project !== savedProject
   const undoLabel = useEditor((s) => s.past[s.past.length - 1]?.label)
@@ -238,8 +238,11 @@ export default function App() {
     Math.min(Number(localStorage.getItem('kadr.tlh')) || 330, window.innerHeight - 220)
   )
   const [claudeOpen, setClaudeOpen] = useState(false)
-  const [debugOpen, setDebugOpen] = useState(false)
-  const [storageOpen, setStorageOpen] = useState(false)
+  // the log and the storage panel float in the same corner: one at a time
+  const [panel, setPanel] = useState<'log' | 'storage' | null>(null)
+  const debugOpen = panel === 'log'
+  const storageOpen = panel === 'storage'
+  const togglePanel = (p: 'log' | 'storage') => setPanel((v) => (v === p ? null : p))
   const settingsOpen = useSettingsUi((s) => s.open)
   const popWin = usePopout((s) => s.win)
   // the log button stays quiet until something actually fails
@@ -359,17 +362,20 @@ export default function App() {
           </button>
         </span>
         <span className="bar-group">
+          {/* in a narrow window the three keep their icons and lose their words (the title says them) */}
           <button
             data-act="new-project"
+            title={t('newProject')}
+            aria-label={t('newProject')}
             onClick={newProjectGuarded}
           >
-            <Icon name="filePlus" /> {t('newProject')}
+            <Icon name="filePlus" /> <span className="bar-label">{t('newProject')}</span>
           </button>
-          <button data-act="open-project" onClick={openProject}>
-            <Icon name="folderOpen" /> {t('open')}
+          <button data-act="open-project" onClick={openProject} title={t('open')} aria-label={t('open')}>
+            <Icon name="folderOpen" /> <span className="bar-label">{t('open')}</span>
           </button>
-          <button data-act="save" onClick={saveProject} title="Ctrl+S">
-            <Icon name="save" /> {t('save')}
+          <button data-act="save" onClick={saveProject} title={`${t('save')} · Ctrl+S`} aria-label={t('save')}>
+            <Icon name="save" /> <span className="bar-label">{t('save')}</span>
           </button>
           <button data-act="save-as" onClick={saveProjectAs} title="Ctrl+Shift+S">{t('saveAs')}</button>
         </span>
@@ -382,7 +388,7 @@ export default function App() {
           data-act="storage"
           title={t('stBtn')}
           aria-label={t('stBtn')}
-          onClick={() => setStorageOpen((v) => !v)}
+          onClick={() => togglePanel('storage')}
         >
           <Icon name="layers" />
         </button>
@@ -400,7 +406,7 @@ export default function App() {
           data-act="debug"
           title={t('logBtn')}
           aria-label={t('logBtn')}
-          onClick={() => setDebugOpen((v) => !v)}
+          onClick={() => togglePanel('log')}
         >
           <Icon name="terminal" />
           {logUnseen > 0 && <span className="log-badge">{logUnseen > 99 ? '99+' : logUnseen}</span>}
@@ -451,10 +457,10 @@ export default function App() {
       <RestorePrompt />
       <RelinkDialog />
       {claudeOpen && <ClaudePanel key={project.id} onClose={() => setClaudeOpen(false)} />}
-      {debugOpen && <DebugPanel onClose={() => setDebugOpen(false)} />}
-      {storageOpen && <StoragePanel onClose={() => setStorageOpen(false)} />}
+      {debugOpen && <DebugPanel onClose={() => setPanel(null)} />}
+      {storageOpen && <StoragePanel onClose={() => setPanel(null)} />}
       <SettingsDialog
-        onOpenStorage={() => setStorageOpen(true)}
+        onOpenStorage={() => setPanel('storage')}
         onRelaunch={() => void confirmDiscard().then((go) => go && window.kadr.relaunch())}
       />
       <CommandPalette />

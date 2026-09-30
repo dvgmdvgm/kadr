@@ -3,7 +3,7 @@ import { useEditor, projectDuration } from '@/state/store'
 import { useSettings } from '@/state/store'
 import { snapshotFrame } from '@/engine/snapshot'
 import { usePopout, togglePreviewWindow } from '@/engine/popout'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, type TKey } from '@/i18n'
 import { Icon, Spinner } from './icons'
 import { logWarn } from '@/engine/log'
 import { useOnion, toggleOnion } from '@/engine/onion'
@@ -103,7 +103,7 @@ export function TransportBar() {
             () => setShot('ok'),
             (err) => {
               if (String(err).includes('cancelled')) { setShot('idle'); return }
-              logWarn('снимок', 'снимок кадра не удался', err)
+              logWarn(tr('lgSnapshot'), tr('lmSnapFail'), err)
               setShot('fail')
             }
           ).finally(() => setTimeout(() => setShot('idle'), 2000))
@@ -179,13 +179,14 @@ function TimecodeField({ playhead, fps }: { playhead: number; fps: number }) {
 }
 
 export function LangSwitch() {
+  const t = useT()
   const lang = useSettings((s) => s.lang)
   const setLang = useSettings((s) => s.setLang)
   return (
     <button
       className="lang"
       data-act="lang"
-      title={lang === 'ru' ? 'Язык интерфейса: русский' : 'Interface language: English'}
+      title={t('langTitle')}
       onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}
     >
       <Icon name="language" size={14} /> {lang === 'ru' ? 'RU' : 'EN'}

@@ -5,6 +5,7 @@ import type { FragmentInfo, Project } from '@shared/types'
 import { dirOf } from '@shared/paths'
 import { useEditor } from '@/state/store'
 import { logWarn } from './log'
+import { tr } from '../i18n'
 
 interface FragServerState {
   url: string | null
@@ -91,7 +92,7 @@ export async function syncProjectFragments(project: Project, projectPath: string
     const changed = await window.kadr.fragmentRelocate(dirOf(projectPath), ids)
     if (changed.length) console.info(`[kadr] fragments relocated to the project folder: ${changed.join(', ')}`)
   } catch (err) {
-    logWarn('фрагменты', 'не удалось перенести папки фрагментов к проекту', err)
+    logWarn(tr('lgFragments'), tr('lmFragMoveFail'), err)
   }
 }
 

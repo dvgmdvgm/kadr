@@ -87,6 +87,7 @@ export function Modal({
   return (
     <div
       className="modal-back"
+      role="presentation"
       onClick={() => { if (!closeDisabled) onClose() }}
       onKeyDown={onKeyDown}
     >

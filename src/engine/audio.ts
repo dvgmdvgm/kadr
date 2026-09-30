@@ -5,6 +5,7 @@
 // takes it out, and until its module has loaded the master goes straight on.
 import { useSettings } from '../state/store'
 import { logWarn } from './log'
+import { tr } from '../i18n'
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
@@ -38,7 +39,7 @@ export function ensureAudio(): AudioContext {
       route()
     }).catch((e) => {
       limiterState = 'failed'
-      logWarn('звук', 'лимитер превью не загрузился — превью звучит без него', String(e))
+      logWarn(tr('lgSound'), tr('lmLimiterFail'), String(e))
     })
     useSettings.subscribe((s, prev) => { if (s.previewLimiter !== prev.previewLimiter) route() })
     route()

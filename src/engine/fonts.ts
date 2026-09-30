@@ -6,6 +6,7 @@ import { fontFromFileName } from '@shared/fontName'
 import { bumpFontEpoch } from './text'
 import { logWarn } from './log'
 import { useEditor } from '@/state/store'
+import { tr } from '../i18n'
 
 export const FALLBACK_FONTS = [
   'sans-serif', 'serif', 'monospace',
@@ -27,7 +28,7 @@ export async function registerLibFonts(projectPath: string | null): Promise<stri
     if (!p) {
       const face = new FontFace(family, `url("${window.kadr.fileUrl(path)}")`, desc)
       document.fonts.add(face)
-      p = face.load().then(bumpFontEpoch, (e) => logWarn('fonts', 'font failed to load', { path, error: String(e) }))
+      p = face.load().then(bumpFontEpoch, (e) => logWarn(tr('lgFonts'), tr('lmFontFail'), { path, error: String(e) }))
       registered.set(path, p)
     }
     return p

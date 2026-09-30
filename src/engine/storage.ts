@@ -5,6 +5,7 @@ import type { StorageProject, StoragePruneRequest } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { logWarn } from './log'
 import { saveUserStore } from './userStore'
+import { tr } from '../i18n'
 
 const STORE = 'recent-projects'
 const CAP = 20
@@ -39,7 +40,7 @@ export async function rememberProject(path: string): Promise<void> {
   try {
     await window.kadr.writeUserStore(STORE, cache)
   } catch (err) {
-    logWarn('хранилище', 'не удалось запомнить проект в списке недавних', err)
+    logWarn(tr('lgStorage'), tr('lmRecentFail'), err)
   }
 }
 

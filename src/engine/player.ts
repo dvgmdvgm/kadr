@@ -9,6 +9,7 @@ import { getTextLayer } from './text'
 import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
 import { logError } from './log'
 import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
+import { tr } from '../i18n'
 
 export interface ActiveLayer {
   clip: Clip
@@ -785,7 +786,7 @@ export class Player {
         this.comp = new Compositor(canvas)
         this.hooks.setGpuLost(false)
       } catch (err) {
-        logError('превью', 'контекст GPU вернулся, но композитор не пересобрался', err)
+        logError(tr('lgPreview'), tr('lmGlCtx'), err)
       }
     }
     canvas.addEventListener('webglcontextlost', this.onLost)
@@ -800,7 +801,7 @@ export class Player {
       } catch (err) {
         if (ts - lastErrLog > 2000) {
           lastErrLog = ts
-          logError('превью', 'кадр не отрисовался', err)
+          logError(tr('lgPreview'), tr('lmDrawFail'), err)
         }
       }
       schedule()

@@ -53,7 +53,7 @@ function schedule() {
   // task. Not rAF: a window behind others gets no frames, and nothing would run.
   setTimeout(() => {
     pending = false
-    refreshOffline().catch((err) => logError(tr('logRelink'), 'stat', err))
+    refreshOffline().catch((err) => logError(tr('logRelink'), tr('lmStatFail'), err))
   }, 0)
 }
 

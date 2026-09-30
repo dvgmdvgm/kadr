@@ -21,7 +21,7 @@ import { usePasteAttrsUi } from '../components/PasteAttrsMenu'
 import { modalsOpen } from '../components/Modal'
 import { logError, logWarn } from './log'
 import { saveUserStore } from './userStore'
-import type { TKey } from '../i18n'
+import { tr, type TKey } from '../i18n'
 
 type EditorState = ReturnType<typeof useEditor.getState>
 
@@ -98,7 +98,7 @@ const HANDLERS: Record<ActionId, Handler> = {
       // copied files or a copied image (e.g. from Telegram/browser)
       void window.kadr.clipboardMedia().then((paths) => {
         if (paths.length) return importFiles(paths, { trackId: null, at: useEditor.getState().playhead })
-      }).catch((err) => logError('буфер обмена', 'вставить не удалось', err))
+      }).catch((err) => logError(tr('lgClipboard'), tr('lmPasteFail'), err))
     }
   },
   'edit.pasteInsert': {
@@ -155,7 +155,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   'tools.checks': { run: () => useChecksUi.getState().setOpen(true) },
   'preview.snapshot': {
     run: () => void snapshotFrame({ interactive: true }).catch((err) => {
-      if (!String(err).includes('cancelled')) logWarn('снимок', 'снимок кадра не удался', err)
+      if (!String(err).includes('cancelled')) logWarn(tr('lgSnapshot'), tr('lmSnapFail'), err)
     })
   },
   'preview.popout': { run: () => void togglePreviewWindow() }

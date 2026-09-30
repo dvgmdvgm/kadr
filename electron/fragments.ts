@@ -1177,7 +1177,7 @@ async function captureStart(
     }
   })
   win.webContents.on('render-process-gone', (_e, d) => {
-    getWin()?.webContents.send('fragment:capture-log', { id, level: 'error', msg: `страница захвата упала: ${d.reason}` })
+    getWin()?.webContents.send('fragment:capture-log', { id, level: 'error', msg: d.reason, said: { key: 'lmCaptureCrashed', args: { reason: d.reason } } })
   })
   win.webContents.on('paint', (_ev, _dirty, image) => {
     const size = image.getSize()

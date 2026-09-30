@@ -1126,15 +1126,18 @@ export interface StoragePruneResult {
 }
 
 export type GpuPref = 'auto' | 'discrete' | 'integrated'
+/** A message main hands the renderer to say in the user's language: an i18n key and its {args}. */
+export interface Said { key: string; args?: Record<string, string | number> }
 export interface GpuInfo {
   pref: GpuPref
   /** what this launch actually asked Chromium for */
   applied: 'discrete' | 'default'
-  why: string
+  why: Said
   /** WebGL's renderer string (empty until the page reports it) */
   renderer: string
   available: boolean
-  fallback: { at: number; reason: string } | null
+  /** `reason` is the raw text (all a file written before `said` has) */
+  fallback: { at: number; reason: string; said?: Said } | null
 }
 
 /** An imported 3D model (electron/models.ts): <name>.glb (metres) + <name>.png in kadr-lib/models. */
@@ -1357,7 +1360,7 @@ export interface KadrApi {
   /** tsc over one fragment (its @lib and @kadr paths); only its own errors */
   fragmentTypecheck(id: string): Promise<{ ok: boolean; errors: { file: string; line: number; col: number; code: string; message: string }[]; more: number }>
   /** errors from inside a capture window (WebGL failures, a crashed page) */
-  onFragmentCaptureLog(cb: (p: { id: string; level: 'error' | 'warn'; msg: string }) => void): () => void
+  onFragmentCaptureLog(cb: (p: { id: string; level: 'error' | 'warn'; msg: string; said?: Said }) => void): () => void
   fragmentCaptureSync(id: string, msg: unknown): void
   onFragmentFrame(cb: (p: { id: string; w: number; h: number; data: Uint8Array }) => void): () => void
   fragmentRender(id: string, opts?: { transparent?: boolean }): Promise<{ path: string; cached: boolean }>

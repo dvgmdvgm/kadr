@@ -14,6 +14,7 @@ import { ensureFragmentServer } from './fragments'
 import { importFiles } from './mediaImport'
 import { logWarn } from './log'
 import { token } from '@/theme'
+import { trf, tr } from '../i18n'
 
 let previewCanvas: HTMLCanvasElement | null = null
 let previewPlayer: { setSourceQuality(on: boolean): void; drawNow(): void } | null = null
@@ -148,7 +149,7 @@ async function settleAt(t: number): Promise<void> {
         got: await window.kadr.fragmentCaptureQuery(x.fragmentId),
         v: captureVersion(x.fragmentId)
       })))
-      logWarn('снимок', `фрагменты не успели нарисовать кадр ${t.toFixed(2)} с за 20 с — снимок может быть неполным`, dbg)
+      logWarn(tr('lgSnapshot'), trf('lmSnapLate', { t: t.toFixed(2) }), dbg)
     }
   }
   await sleep(forced ? 250 : 600)

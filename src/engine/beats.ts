@@ -8,6 +8,7 @@ import { pickBeats, type BeatGrid } from '@shared/audioAnalysis'
 import type { AudioAnalysisResult, Project, RhythmSummary } from '@shared/types'
 import { collectRangeAudio, type RangeAudioFilter } from './subtitles'
 import { logInfo } from './log'
+import { trPlural, trf, tr } from '../i18n'
 
 export type { BeatGrid }
 
@@ -93,8 +94,8 @@ export async function detectBeats(opts: DetectBeatsOpts = {}): Promise<DetectBea
       pauses: rh.pauses.map((p) => ({ start: range.start + p.start, end: range.start + p.end }))
     })
     const at = analysis.attack
-    logInfo('биты', `${analysis.tempo.toFixed(1)} BPM, ${placed} меток (${grid}) на ${range.start.toFixed(2)}–${range.end.toFixed(2)} с` +
-      (at ? `; сетка выровнена по атаке (${at.band === 'low' ? 'бас' : 'вся полоса'}): ${at.shiftMs > 0 ? '+' : ''}${Math.round(at.shiftMs)} мс, точно на удар ${at.snapped}/${at.total}` : '') +
+    logInfo(tr('lgBeats'), trf('lmBeats', { bpm: analysis.tempo.toFixed(1), n: placed, grid, from: range.start.toFixed(2), to: range.end.toFixed(2) }) +
+      (at ? trf('lmBeatsAligned', { band: tr(at.band === 'low' ? 'lmBandLow' : 'lmBandFull'), ms: `${at.shiftMs > 0 ? '+' : ''}${Math.round(at.shiftMs)}`, hit: at.snapped, total: at.total }) : '') +
       (rh ? `; ${rhythmLine(rh)}` : ''))
     return { tempo: analysis.tempo, placed, found: analysis.beats.length, range, source, analysis, attackShiftMs: at?.shiftMs }
   } finally {
@@ -117,17 +118,11 @@ export function beatTimes(project: Project, opts: { strongOnly?: boolean } = {})
 
 /** "4/4 · раз уверенно · бочка −11 мс · 7 разделов · 2 паузы" — the dialog and the log */
 export function rhythmLine(rh: RhythmSummary): string {
-  const conf = (x: number) => (x >= 0.5 ? 'уверенно' : x >= 0.2 ? 'вероятно' : 'неуверенно')
-  const parts = [`${rh.meter}/4`, `«раз» ${conf(rh.phaseConfidence)}`]
-  if (rh.kickOffsetMs) parts.push(`бочка ${rh.kickOffsetMs.median > 0 ? '+' : ''}${rh.kickOffsetMs.median} мс от сетки`)
-  parts.push(`${rh.sections.length} ${plural(rh.sections.length, 'раздел', 'раздела', 'разделов')}`)
-  if (rh.pauses.length) parts.push(`${rh.pauses.length} ${plural(rh.pauses.length, 'пауза', 'паузы', 'пауз')}`)
+  const conf = (x: number) => tr(x >= 0.5 ? 'rhSure' : x >= 0.2 ? 'rhLikely' : 'rhUnsure')
+  const parts = [`${rh.meter}/4`, trf('rhOne', { conf: conf(rh.phaseConfidence) })]
+  if (rh.kickOffsetMs) parts.push(trf('rhKick', { ms: `${rh.kickOffsetMs.median > 0 ? '+' : ''}${rh.kickOffsetMs.median}` }))
+  parts.push(`${rh.sections.length} ${trPlural('rhSections', rh.sections.length)}`)
+  if (rh.pauses.length) parts.push(`${rh.pauses.length} ${trPlural('rhPauses', rh.pauses.length)}`)
   return parts.join(' · ')
 }
 
-const plural = (n: number, one: string, few: string, many: string) => {
-  const m10 = n % 10, m100 = n % 100
-  if (m10 === 1 && m100 !== 11) return one
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few
-  return many
-}

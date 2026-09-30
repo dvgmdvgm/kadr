@@ -1,4 +1,9 @@
 import type { ExportPreset } from '@shared/types'
+import { tr, type TKey } from './i18n'
+
+/** The name shown for a preset: the three that describe themselves in words are translated. */
+const NAME_KEY: Record<string, TKey> = { source: 'presetSource', webm: 'presetWebm', mp3: 'presetMp3' }
+export const presetName = (p: ExportPreset): string => (NAME_KEY[p.id] ? tr(NAME_KEY[p.id]) : p.name)
 
 export const PRESETS: ExportPreset[] = [
   {
@@ -81,7 +86,7 @@ export const PRESETS: ExportPreset[] = [
   },
   {
     id: 'mp3',
-    name: 'MP3 (только аудио / audio only)',
+    name: 'MP3 (audio only)',
     container: 'mp3',
     codec: 'avc',
     ffmpegVideo: 'copy',

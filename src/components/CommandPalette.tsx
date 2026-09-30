@@ -82,6 +82,7 @@ function Palette({ close }: { close: () => void }) {
             aria-controls="pal-list"
             aria-activedescendant={hits.length ? `pal-${cur}` : undefined}
             placeholder={t('palHint')}
+            aria-label={t('palHint')}
             value={q}
             onChange={(e) => { setQ(e.target.value); setSel(0) }}
           />

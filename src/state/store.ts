@@ -9,6 +9,7 @@ import { logWarn } from '../engine/log'
 import { tr } from '../i18n'
 import { toFrame, nextEdit, clipSourceTime, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
 import { evalAnim } from '../engine/anim'
+import { existingClips } from '../engine/timelineSelect'
 import {
   SETTINGS, effective, fromLegacy, healValue,
   type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
@@ -1214,7 +1215,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         // chats are not an edit: undoing the clip before one must not drop it
         project: { ...entry.project, claudeChats: s.project.claudeChats },
         future: [{ project: cloneProject(s.project), label: entry.label }, ...s.future],
-        selection: []
+        // what is still there stays selected: the gizmo and the Inspector survive a Ctrl+Z
+        selection: existingClips(entry.project, s.selection)
       }
     }),
   redo: () =>
@@ -1225,7 +1227,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         future,
         project: { ...entry.project, claudeChats: s.project.claudeChats },
         past: [...s.past, { project: cloneProject(s.project), label: entry.label }],
-        selection: []
+        selection: existingClips(entry.project, s.selection)
       }
     }),
 

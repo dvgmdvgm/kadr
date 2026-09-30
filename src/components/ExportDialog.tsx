@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ExportProgress } from '@shared/types'
-import { PRESETS } from '@/presets'
+import { PRESETS, presetName } from '@/presets'
 import { startExport, type ExportHandle } from '@/engine/exporter'
 import { useVoiceUi } from '@/engine/voiceCheck'
 import { useEditor, setting } from '@/state/store'
@@ -102,7 +102,6 @@ export function ExportDialog() {
           <button onClick={cancel}>{t('cancel')}</button>
         ) : (
           <>
-            <button onClick={close}>{t('close')}</button>
             <button className="primary" disabled={checking} onClick={begin}
                     title={checking ? t('dfLong') : undefined}>
               <Icon name="download" /> {t('startExport')}
@@ -115,7 +114,7 @@ export function ExportDialog() {
         <span>{t('preset')}</span>
         <select value={presetId} disabled={running} onChange={(e) => setPresetId(e.target.value)}>
           {PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+            <option key={p.id} value={p.id}>{presetName(p)}</option>
           ))}
         </select>
       </label>

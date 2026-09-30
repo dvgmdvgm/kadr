@@ -10,6 +10,7 @@ import { gainKeys as gainKeysOf } from '@shared/gainKeys'
 import { overlapFades, trackHeard } from './player'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
+import { tr } from '../i18n'
 
 // ------------------------------------------------------------------ SRT
 
@@ -324,7 +325,7 @@ export async function transcribeFlow(opts: TranscribeFlowOpts): Promise<Transcri
   const result: TranscribeResult = await window.kadr.transcribe({
     audioSegments, duration, model, language
   })
-  if (result.python) logInfo('распознавание речи', `${result.python} · ${result.device ?? 'cpu'} · ${model}`)
+  if (result.python) logInfo(tr('lgSpeech'), `${result.python} · ${result.device ?? 'cpu'} · ${model}`)
 
   const cues = segmentsToCues(result.segments, cueOffset, opts.maxWords ?? 3)
   const known = (st().project.texts ?? []).map((t) => t.path)

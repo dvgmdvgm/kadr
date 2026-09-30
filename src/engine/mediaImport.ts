@@ -4,6 +4,7 @@ import { useEditor, uid } from '@/state/store'
 import { baseOf } from '@shared/paths'
 import type { TextDoc } from '@shared/types'
 import { logError, logWarn } from './log'
+import { trf, tr } from '../i18n'
 
 /** files/URLs currently being imported (drop or dialog) — drives the '…' hint */
 export const useImportUi = create<{ active: number }>(() => ({ active: 0 }))
@@ -36,7 +37,7 @@ async function importFilesInner(
   const textDocs: TextDoc[] = []
   // 3D models are not timeline media: they go into the project's kadr-lib/models
   const models = paths.filter(isModelPath)
-  if (models.length) await importModels(models).catch((e) => logWarn('импорт', String((e as Error)?.message ?? e)))
+  if (models.length) await importModels(models).catch((e) => logWarn(tr('lgImport'), String((e as Error)?.message ?? e)))
   for (const path of paths.filter((p) => !isModelPath(p))) {
     const ext = path.split('.').pop()?.toLowerCase()
     if (ext === 'srt' || ext === 'txt') {
@@ -59,7 +60,7 @@ async function importFilesInner(
       st().addAsset({ id, ...asset })
       assetIds.push(id)
     } catch (err) {
-      logError('импорт', `не удалось прочитать файл: ${path}`, err)
+      logError(tr('lgImport'), trf('lmReadFail', { path }), err)
     }
   }
   if (textDocs.length) st().addTexts(textDocs)
@@ -152,7 +153,7 @@ export async function importDrop(
       try {
         paths.push(...await window.kadr.portalFiles(payload.portalKey))
       } catch (err) {
-        logError('импорт', 'portal: не удалось забрать файлы из переноса', err)
+        logError(tr('lgImport'), tr('lmPortalFail'), err)
       }
     }
     if (!paths.length) {
@@ -166,7 +167,7 @@ export async function importDrop(
             paths.push(await window.kadr.downloadMedia(url))
           }
         } catch (err) {
-          logError('импорт', `не удалось скачать ${url}`, err)
+          logError(tr('lgImport'), trf('lmDownloadFail', { url }), err)
         }
       }
       if (!paths.length) {
@@ -175,13 +176,13 @@ export async function importDrop(
             const data = new Uint8Array(await f.arrayBuffer())
             if (data.length) paths.push(await window.kadr.saveBlobMedia(f.name, f.type, data))
           } catch (err) {
-            logError('импорт', `не удалось сохранить ${f.name}`, err)
+            logError(tr('lgImport'), trf('lmBlobFail', { name: f.name }), err)
           }
         }
       }
     }
     if (paths.length) await importFilesInner(paths, place)
-    else logWarn('импорт', 'в перетаскивании не нашлось ничего, что можно импортировать')
+    else logWarn(tr('lgImport'), tr('lmDropEmpty'))
   } finally {
     useImportUi.setState((s) => ({ active: s.active - 1 }))
   }

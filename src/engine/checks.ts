@@ -16,6 +16,7 @@ import { evalAnim } from './anim'
 import { framePixels } from './snapshot'
 import { logInfo } from './log'
 import { fitSize } from '@/gl/compositor'
+import { trf, tr } from '../i18n'
 
 /** The limits, named. Each is a rule a reviewer would apply by eye. */
 export const CHECK_LIMITS = {
@@ -512,7 +513,7 @@ export async function runChecks(opts: { clipIds?: string[]; pixels?: boolean; co
     const result = { issues, events: events.sort((a, b) => a.t - b.t), checked }
     useChecksUi.setState({ result })
     const warns = issues.filter((i) => i.level === 'warn').length
-    logInfo('проверка', `${checked.clips} клипов, ${checked.events} событий, ${checked.texts} надписей: ${warns} замечаний`)
+    logInfo(tr('lgCheck'), trf('lmChecked', { clips: checked.clips, events: checked.events, texts: checked.texts, warns }))
     return result
   } finally {
     useChecksUi.setState({ running: false })

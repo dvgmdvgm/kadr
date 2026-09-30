@@ -22,6 +22,7 @@ import { sampleCurve } from '@shared/audioAnalysis'
 import type { AudioAnalysisResult, AudioSegment, Clip, Project } from '@shared/types'
 import { collectRangeAudio } from './subtitles'
 import { logInfo, logWarn } from './log'
+import { tr, trf } from '@/i18n'
 
 /** default beat pulse decay in audio.ts, seconds */
 export const BEAT_DECAY = 0.15
@@ -446,7 +447,7 @@ export async function bakeClip(project: Project, clipId: string, source = 'mix')
       return { project: p }
     })
   }
-  logInfo('звук→фрагмент', `${clip.fragmentId}: ${json.frames} кадров, ${json.beats.length} битов, ${analysis.tempo.toFixed(1)} BPM`)
+  logInfo(tr('lgSoundFrag'), trf('lmBaked', { id: clip.fragmentId ?? '', frames: json.frames, beats: json.beats.length, bpm: analysis.tempo.toFixed(1) }))
   return {
     clipId,
     fragmentId: clip.fragmentId,
@@ -478,7 +479,7 @@ export async function refreshStaleBakes(project: Project): Promise<number> {
     if (!clip.audioBake || bakeState(project, clip) !== 'stale') continue
     const users = clips.filter((c) => c.fragmentId === clip.fragmentId)
     if (users.length > 1) {
-      logWarn('звук→фрагмент', `фрагмент ${clip.fragmentId} стоит на таймлайне ${users.length} раза — звук запечён для одного места, обновите вручную`)
+      logWarn(tr('lgSoundFrag'), trf('lmBakedMany', { id: clip.fragmentId ?? '', n: users.length }))
       continue
     }
     await bakeClip(project, clip.id, clip.audioBake.source)

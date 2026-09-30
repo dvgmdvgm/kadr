@@ -99,7 +99,6 @@ export function BeatsDialog() {
       actions={
         <>
           <button onClick={clear} disabled={busy} data-act="beats-clear">{t('beatsClear')}</button>
-          <button onClick={close} disabled={busy}>{t('close')}</button>
           <button className="primary" onClick={run} disabled={busy} data-act="beats-run">{t('beatsRun')}</button>
         </>
       }

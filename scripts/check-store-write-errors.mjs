@@ -26,7 +26,7 @@ try {
     name: 'stub-i18n',
     setup(b) {
       b.onResolve({ filter: /i18n$/ }, () => ({ path: 'i18n', namespace: 'stub' }))
-      b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export const tr = (k) => k', loader: 'js' }))
+      b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export const tr = (k) => k; export const trf = (k) => k; export const trPlural = (k) => k', loader: 'js' }))
     }
   }
   const out = await build({

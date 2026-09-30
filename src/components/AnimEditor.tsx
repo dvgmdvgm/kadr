@@ -1113,6 +1113,7 @@ export function AnimEditor({ width }: { width: number }) {
             <input
               value={presetName}
               placeholder={t('presetName')}
+              aria-label={t('presetName')}
               onChange={(e) => setPresetName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') savePose()

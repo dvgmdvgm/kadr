@@ -263,6 +263,7 @@ export function SubtitlePanel() {
         {doc.format === 'txt' ? (
           <textarea
             className="sub-txt"
+            aria-label={t('subText')}
             value={txt}
             onChange={(e) => {
               setTxt(e.target.value)
@@ -278,11 +279,13 @@ export function SubtitlePanel() {
                     <Icon name="chevronRight" size={11} /> {i + 1}
                   </button>
                   <input
+                    aria-label={t('cueStart')}
                     value={srtTime(c.start)}
                     onChange={(e) => setCue(i, { start: parseSrtTime(e.target.value) })}
                   />
                   <span className="dim"><Icon name="arrowRight" size={13} /></span>
                   <input
+                    aria-label={t('cueEnd')}
                     value={srtTime(c.end)}
                     onChange={(e) => setCue(i, { end: parseSrtTime(e.target.value) })}
                   />
@@ -297,6 +300,7 @@ export function SubtitlePanel() {
                   ><Icon name="close" size={13} /></button>
                 </div>
                 <textarea
+                  aria-label={t('cueText')}
                   rows={Math.max(1, c.text.split('\n').length)}
                   value={c.text}
                   onChange={(e) => setCue(i, { text: e.target.value })}

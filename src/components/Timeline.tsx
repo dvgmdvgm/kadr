@@ -14,7 +14,7 @@ const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
 }
 /** «Радиус прилипания», in seconds at this zoom */
 const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, type TKey } from '@/i18n'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
 import { CtxMenu } from './CtxMenu'
@@ -280,6 +280,48 @@ interface MenuState {
   clipIds?: [string, string]
 }
 
+/** The mouse gestures, one per line behind a «?» — as a toolbar row they
+    wrapped onto three lines at 1500 px and into a column in a narrow window. */
+function TimelineHelp() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  return (
+    <>
+      <button
+        className={`icon-only tl-help${at ? ' active' : ''}`}
+        data-act="timeline-help"
+        title={t('tlHelp')}
+        aria-label={t('tlHelp')}
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        ?
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="tl-help-pop">
+          <div className="ctx-title">{t('tlHelp')}</div>
+          {t('dropHint').split(' · ').map((line) => <div key={line} className="tl-help-line">{line}</div>)}
+        </CtxMenu>
+      )}
+    </>
+  )
+}
 
 export function Timeline({ height }: { height: number }) {
   const t = useT()
@@ -537,7 +579,7 @@ export function Timeline({ height }: { height: number }) {
           <Icon name="speech" /> {t('ttsButton')}
         </button>
         <DefectButtons />
-        <span className="dim hint-inline">{t('dropHint')}</span>
+        <TimelineHelp />
         <span className="flex1" />
         <label className="zoom-ctl">
           {t('trackHeight')}
@@ -980,7 +1022,7 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
               <button
                 onClick={() => {
                   normalizeClip(menu.clipId!).catch((err) =>
-                    logWarn('громкость', 'нормализовать не удалось', err)
+                    logWarn(tr('lgVolume'), tr('lmNormFail'), err)
                   )
                   onClose()
                 }}
@@ -1665,6 +1707,7 @@ function TrackRow({
               step={0.01}
               value={track.gain}
               title={track.kind === 'audio' ? t('volume') : t('opacity')}
+              aria-label={track.kind === 'audio' ? t('volume') : t('opacity')}
               onPointerDown={(e) => {
                 e.stopPropagation()
                 useEditor.getState().pushHistory('hEdit')
@@ -2719,7 +2762,7 @@ const ClipView = memo(function ClipView({
       {fadeIn > 0 && <div className="fade-shade left" style={{ width: zpx(fadeIn) }} />}
       {fadeOut > 0 && <div className="fade-shade right" style={{ width: zpx(fadeOut) }} />}
       {loopMarks.map((x) => (
-        <div key={x} className="loop-mark" style={{ left: zpx(x) }} title="loop" />
+        <div key={x} className="loop-mark" style={{ left: zpx(x) }} title={t('loopMark')} />
       ))}
       <span className="clip-label">
         {offline && <span className="clip-offline" title={t('offlineClip')}><Icon name="unlink" size={11} /></span>}
@@ -2745,13 +2788,17 @@ const ClipView = memo(function ClipView({
         <>
           <div
             className={`clip-tip left ${tipIn ? 'set' : ''}`}
+            role="button"
             title={t('edgeTipHint')}
+            aria-label={t('edgeTipHint')}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={openTipMenu('in')}
           />
           <div
             className={`clip-tip right ${tipOut ? 'set' : ''}`}
+            role="button"
             title={t('edgeTipHint')}
+            aria-label={t('edgeTipHint')}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={openTipMenu('out')}
           />
@@ -2764,23 +2811,23 @@ const ClipView = memo(function ClipView({
           <div
             className="fade-handle left"
             style={{ left: fadeInX }}
-            title="Fade in"
+            title={t('fadeInHandle')}
             onPointerDown={startFadeDrag('fadeIn')}
           />
           <div
             className="fade-handle right"
             style={{ right: fadeOutX }}
-            title="Fade out"
+            title={t('fadeOutHandle')}
             onPointerDown={startFadeDrag('fadeOut')}
           />
           <div
             className="extend-handle"
-            title="Drag: resize/loop · Ctrl/Alt: speed"
+            title={t('extendRightHint')}
             onPointerDown={startExtendDrag('right')}
           />
           <div
             className="extend-handle left"
-            title="Drag: resize · Ctrl/Alt: speed"
+            title={t('extendLeftHint')}
             onPointerDown={startExtendDrag('left')}
           />
         </>

@@ -10,7 +10,7 @@ import { Icon } from './icons'
 import { useT, type TKey } from '@/i18n'
 import { useSettings } from '@/state/store'
 import { TRANSITIONS } from '@/gl/transitions'
-import { PRESETS } from '@/presets'
+import { PRESETS, presetName } from '@/presets'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
 import { KeysSection, KeysHeadActions } from './KeysSection'
@@ -460,9 +460,9 @@ function Save({ t }: { t: T }) {
 function Export({ t }: { t: T }) {
   return (
     <>
-      <Row label={t('setPreset')} keys={['export.preset']} shown={PRESETS[0].name}>
+      <Row label={t('setPreset')} keys={['export.preset']} shown={presetName(PRESETS[0])}>
         <Choice k="export.preset" label={t('setPreset')} width={240}
-                options={PRESETS.map((p) => [p.id, p.name])} />
+                options={PRESETS.map((p) => [p.id, presetName(p)])} />
       </Row>
       <Row label={t('setMblur')} keys={['export.motionBlur']} shown={t('setOn')}>
         <Check k="export.motionBlur" label={t('setMblur')} />

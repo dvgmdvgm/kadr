@@ -131,7 +131,7 @@ export function TtsSettingsDialog() {
             {voices.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
         ) : (
-          <input value={settings.voiceId} placeholder="voice id"
+          <input value={settings.voiceId} placeholder={t('ttsVoiceIdPh')} aria-label={t('ttsVoice')}
                  onChange={(e) => update({ voiceId: e.target.value })} style={{ flex: 1 }} />
         )}
         <button disabled={busy} onClick={refreshVoices}>{t('ttsVoiceRefresh')}</button>
@@ -309,7 +309,7 @@ export function SpeakDialog() {
       )}
       {source === 'input' && (
         <>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8}
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} aria-label={t('ttsTextLabel')}
                     placeholder={t('ttsTextPlaceholder')}
                     style={{ width: '100%', resize: 'vertical' }} />
           <div className="dim hint-inline">{text.length} {t('ttsChars')}</div>

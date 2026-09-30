@@ -25,7 +25,6 @@ export function RelinkDialog() {
       onClose={() => openRelink(false)}
       actions={
         <>
-          <button onClick={() => openRelink(false)} data-act="relink-close">{t('close')}</button>
           <button className="primary" disabled={busy || !missing.length} data-act="relink-folder"
                   onClick={() => act(() => relinkFromFolder())}>
             {busy ? <Spinner size={12} /> : <Icon name="folderOpen" />} {t('relinkFolder')}

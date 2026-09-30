@@ -5,7 +5,7 @@
 // the defaults (userData/keymap.json), so «ваше» is exactly «in the diff».
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, type TKey } from '@/i18n'
 import { useKeymap, setKeymap, setActionKeys } from '@/engine/actions'
 import { logWarn } from '@/engine/log'
 import {
@@ -40,13 +40,13 @@ export function KeysHeadActions() {
       setNote(fill(t('keysImported'), { n: kept }) + (skipped ? fill(t('keysSkipped'), { n: skipped }) : ''))
     } catch (err) {
       setNote(t('keysBadFile'))
-      logWarn('клавиши', 'файл клавиш не прочитан', err)
+      logWarn(tr('lgKeys'), tr('lmKeysRead'), err)
     }
   }
   const onExport = async () => {
     const path = await window.kadr.exportDialog('keymap', 'json')
     if (!path) return
-    try { await window.kadr.writeTextFile(path, JSON.stringify(diff, null, 2) + '\n') } catch (err) { logWarn('клавиши', 'файл клавиш не записан', err) }
+    try { await window.kadr.writeTextFile(path, JSON.stringify(diff, null, 2) + '\n') } catch (err) { logWarn(tr('lgKeys'), tr('lmKeysWrite'), err) }
   }
   return (
     <>
