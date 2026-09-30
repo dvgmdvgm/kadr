@@ -38,9 +38,10 @@ import { layoutSpeeds, SPEED_MIN, SPEED_MAX, type SpeedItem } from '@/engine/spe
 import { useVoiceUi, setVerdict, clearVerdict, addUserDefect, setDefectsHidden } from '@/engine/voiceCheck'
 import { confirmDefect } from '@/engine/voiceRegen'
 import { useDefectsUi, targetRun } from './DefectsDialog'
-import { Icon, Spinner } from './icons'
+import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
+import { formatTime } from './TransportBar'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -1907,8 +1908,10 @@ const ClipView = memo(function ClipView({
   // live ×N readout during a Ctrl speed drag; highlighted when snapped
   const [speedBadge, setSpeedBadge] =
     useState<{ x: number; y: number; speed: number; snapped: boolean } | null>(null)
-  // ripple glyph + the length change beside the cursor during a Shift edge drag
-  const [rippleBadge, setRippleBadge] = useState<{ x: number; y: number; dt: number } | null>(null)
+  // a glyph + a readout beside the cursor during a ripple, roll, slip or slide drag
+  const [modeBadge, setModeBadge] =
+    useState<{ x: number; y: number; icon: IconName; text: string } | null>(null)
+  const signed = (dt: number) => `${dt >= 0 ? '+' : '−'}${Math.abs(dt).toFixed(2)}`
 
   const w = clip.duration * zoom
   const speed = clip.speed || 1
@@ -1966,6 +1969,15 @@ const ClipView = memo(function ClipView({
     // a locked A/V twin is left out: the store would refuse to move it, and
     // half a pair that follows the drag is worse than a pair that does not
     const linkedIds = unlocked(st.project, withLinked(st.project, [clip.id]))
+    const zone0 = setting<number>('mouse.edgeZone')
+    const lx0 = e.clientX - e.currentTarget.getBoundingClientRect().left
+    const atEdge = w > 24 && (lx0 < zone0 || lx0 > w - zone0)
+    if (e.ctrlKey && e.shiftKey && atEdge && startRoll(e, lx0 < zone0 ? 'in' : 'out')) return
+    if (e.altKey && !e.ctrlKey && !atEdge) {
+      // Alt on the body: slip; Alt+Shift: slide (Alt near an edge stays speed)
+      startSlipSlide(e, e.shiftKey)
+      return
+    }
     if (e.shiftKey && w > 24) {
       // Shift on an EDGE is ripple trim; Shift on the body stays span select
       const rect = e.currentTarget.getBoundingClientRect()
@@ -2221,8 +2233,74 @@ const ClipView = memo(function ClipView({
         if (cur) s.rippleTrim(clip.id, 'in', cur.start + dt - (cur.inPoint - origIn) / speed)
       }
       const now = findClip(useEditor.getState().project, clip.id)?.clip
-      setRippleBadge({ x: ev.clientX, y: ev.clientY, dt: (now?.duration ?? origDur) - origDur })
-    }, () => setRippleBadge(null))
+      setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'wave', text: signed((now?.duration ?? origDur) - origDur) })
+    }, () => setModeBadge(null))
+  }
+
+  // ------------------------------------------------------------ roll drag
+  // Ctrl+Shift+drag of an edge shared with a butted neighbour: the cut moves,
+  // both clips change length, their sum does not. False when there is no
+  // neighbour (the caller falls through).
+  const startRoll = (e: React.PointerEvent<HTMLDivElement>, edge: 'in' | 'out') => {
+    const st = useEditor.getState()
+    const cut = edge === 'in' ? clip.start : clip.start + clip.duration
+    const other = track.clips.find((o) => o.id !== clip.id &&
+      Math.abs((edge === 'in' ? o.start + o.duration : o.start) - cut) < 1e-6)
+    if (!other) return false
+    e.stopPropagation()
+    e.preventDefault()
+    const [left, right] = edge === 'in' ? [other.id, clip.id] : [clip.id, other.id]
+    st.pushHistory('hRoll')
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id, other.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      s.rollEdit(left, right, snapTime(cut + dx / s.zoom, points, s.zoom))
+      const l = findClip(useEditor.getState().project, left)?.clip
+      setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'junction', text: signed((l ? l.start + l.duration : cut) - cut) })
+    }, () => setModeBadge(null))
+    return true
+  }
+
+  // ------------------------------------------------------ slip/slide drag
+  // Alt+drag of the body: slip — the source moves under a clip that stays put
+  // (the content follows the pointer); Alt+Shift: slide — the clip moves with
+  // its source and the butted neighbours' facing edges follow.
+  const startSlipSlide = (e: React.PointerEvent<HTMLDivElement>, isSlide: boolean) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const st = useEditor.getState()
+    if (!isSlide && (!asset || asset.kind === 'image')) {
+      setModeBadge({ x: e.clientX, y: e.clientY, icon: 'film', text: t('slipStill') })
+      windowDrag(e, () => {}, () => setModeBadge(null))
+      return
+    }
+    if (!selected) st.select(unlocked(st.project, withLinked(st.project, [clip.id])))
+    st.pushHistory(isSlide ? 'hSlide' : 'hSlip')
+    const origStart = clip.start
+    const origIn = clip.inPoint
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      const cur = findClip(s.project, clip.id)?.clip
+      if (!cur) return
+      const fps = s.project.fps
+      if (isSlide) {
+        let ns = origStart + dx / s.zoom
+        const snapped = snapTime(ns, points, s.zoom)
+        const snappedEnd = snapTime(ns + cur.duration, points, s.zoom) - cur.duration
+        ns = snapped !== ns ? snapped : snappedEnd
+        s.slide(clip.id, ns - cur.start)
+        const now = findClip(useEditor.getState().project, clip.id)?.clip ?? cur
+        setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'move', text: signed(now.start - origStart) })
+      } else {
+        // dragging right shows EARLIER source: the picture follows the hand
+        const want = origIn - (dx / s.zoom) * speed
+        s.slip(clip.id, (want - cur.inPoint) / speed)
+        const now = findClip(useEditor.getState().project, clip.id)?.clip ?? cur
+        setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'film',
+          text: `${formatTime(now.inPoint, fps)} – ${formatTime(now.inPoint + now.duration * speed, fps)}` })
+      }
+    }, () => setModeBadge(null))
   }
 
   // ---------------------------------------------------- extend/speed drag
@@ -2234,6 +2312,7 @@ const ClipView = memo(function ClipView({
     if (track.locked || e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
+    if (e.ctrlKey && e.shiftKey && startRoll(e, edge === 'left' ? 'in' : 'out')) return
     const speedMode = speedModifier(e) && !!asset && asset.kind !== 'image'
     if (e.shiftKey && !speedMode) {
       startRippleTrim(e, edge === 'left' ? 'in' : 'out')
@@ -2503,9 +2582,9 @@ const ClipView = memo(function ClipView({
         </div>,
         document.body
       )}
-      {rippleBadge && createPortal(
-        <div className="speed-badge" style={{ left: rippleBadge.x + 14, top: rippleBadge.y - 30 }}>
-          <Icon name="wave" size={13} /> {rippleBadge.dt >= 0 ? '+' : '−'}{Math.abs(rippleBadge.dt).toFixed(2)}
+      {modeBadge && createPortal(
+        <div className="speed-badge" style={{ left: modeBadge.x + 14, top: modeBadge.y - 30 }}>
+          <Icon name={modeBadge.icon} size={13} /> {modeBadge.text}
         </div>,
         document.body
       )}

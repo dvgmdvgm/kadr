@@ -38,6 +38,8 @@ export const ACTIONS = [
   { id: 'edit.copy', labelKey: 'actCopy', context: g, defaultKeys: [k('KeyC', ctrl)] },
   { id: 'edit.paste', labelKey: 'actPaste', context: g, defaultKeys: [k('KeyV', ctrl)] },
   { id: 'edit.pasteInsert', labelKey: 'actPasteInsert', context: g, defaultKeys: [k('KeyV', { ctrl: true, shift: true })] },
+  { id: 'edit.trimStart', labelKey: 'actTrimStart', context: g, defaultKeys: [k('KeyQ')] },
+  { id: 'edit.trimEnd', labelKey: 'actTrimEnd', context: g, defaultKeys: [k('KeyW')] },
   { id: 'edit.link', labelKey: 'actLink', context: g, defaultKeys: [k('KeyU')] },
   { id: 'marker.add', labelKey: 'actMarker', context: g, defaultKeys: [k('KeyM')] },
   { id: 'playhead.prevFrame', labelKey: 'actPrevFrame', context: g, defaultKeys: [k('ArrowLeft')], prevent: true },

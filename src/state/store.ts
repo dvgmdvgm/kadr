@@ -349,6 +349,57 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
   return targets
 }
 
+/** The largest part of `want` that every edge of `apply` can take: it runs on
+    a scratch copy and returns how far each edge really moved (a trim clamps at
+    the source and at one frame); the edit then runs once with that. */
+function settle(p: Project, want: number, apply: (q: Project, d: number) => number[]): number {
+  let d = want
+  for (const g of apply(cloneProject(p), want)) d = want > 0 ? Math.min(d, Math.max(0, g)) : Math.max(d, Math.min(0, g))
+  return Math.abs(d) < 1e-9 ? 0 : d
+}
+
+/** Roll the cut after `leftId` by `d`: left's end and right's start (and their
+    twins') move together; returns how far each actually went. */
+function rollIn(p: Project, leftId: string, rightId: string, d: number): number[] {
+  const L = findClip(p, leftId)?.clip
+  const R = findClip(p, rightId)?.clip
+  if (!L || !R) return [0]
+  const le = L.start + L.duration
+  const rs = R.start
+  if (!trimInPlace(p, leftId, 'out', le + d) || !trimInPlace(p, rightId, 'in', rs + d)) return [0]
+  return [L.start + L.duration - le, R.start - rs]
+}
+
+/** Slide `clipId` (and its twins) by `d` with their source: the butted
+    neighbours' facing edges follow; with no neighbour the gap takes it, down
+    to the next clip or 0. Returns how far each edge could go. */
+function slideIn(p: Project, clipId: string, d: number): number[] {
+  const own = new Set(withLinked(p, [clipId]))
+  const targets = [...own].map((id) => findClip(p, id)).filter((x): x is NonNullable<typeof x> => !!x)
+  if (targets.some((f) => f.track.locked)) return [0]
+  // neighbours are found before anything moves: a trim takes the twins along
+  const plan = targets.map(({ track, clip: c }) => {
+    const a = c.start, b = c.start + c.duration
+    const others = track.clips.filter((o) => !own.has(o.id))
+    return {
+      c, a, b,
+      left: others.find((o) => Math.abs(o.start + o.duration - a) < 1e-6),
+      right: others.find((o) => Math.abs(o.start - b) < 1e-6),
+      floor: Math.max(0, ...others.filter((o) => o.start + o.duration <= a + 1e-6).map((o) => o.start + o.duration)),
+      ceil: Math.min(Infinity, ...others.filter((o) => o.start >= b - 1e-6).map((o) => o.start))
+    }
+  })
+  const got: number[] = []
+  for (const { c, a, b, left, right, floor, ceil } of plan) {
+    if (left) { trimInPlace(p, left.id, 'out', a + d); got.push(left.start + left.duration - a) }
+    else got.push(Math.max(d, floor - a))
+    if (right) { trimInPlace(p, right.id, 'in', b + d); got.push(right.start - b) }
+    else got.push(Math.min(d, ceil - b))
+    c.start = a + d
+  }
+  return got
+}
+
 /** Cut `c` at `t` in place and push the right half onto `track`; halves of a
     linked pair stay linked pairwise through `rightLinks` (linkId → new one). */
 function splitClipAt(track: Track, c: Clip, t: number, rightLinks: Map<string, string>): Clip {
@@ -893,6 +944,20 @@ interface EditorState {
       and its twins' tracks moves by the length change. No history (the gesture
       pushes once, like trimClip). */
   rippleTrim(clipId: string, edge: 'in' | 'out', time: number): void
+  /** Roll: the cut between `leftId` and the clip after it moves to `t` —
+      left's end and right's start together, with their twins; the sum of
+      both lengths stays. Stops where EITHER side hits a limit. No history. */
+  rollEdit(leftId: string, rightId: string, t: number): void
+  /** Slip: the clip shows its source `dt` timeline seconds later (earlier if
+      negative), start and length kept, twins along; a still is a no-op. No history. */
+  slip(clipId: string, dt: number): void
+  /** Slide: the clip moves by `dt` with its source; the butted neighbours'
+      facing edges follow, their outer edges stay. No history. */
+  slide(clipId: string, dt: number): void
+  /** Q ('in') / W ('out'): ripple-trim the clip under the playhead to it — the
+      selected one, else the top track's — one undo step. Q parks the playhead
+      at the clip's start, where the cut now is. */
+  trimToPlayhead(edge: 'in' | 'out'): void
   splitAtPlayhead(): void
   deleteSelection(): void
   /** Delete clips (default: the selection) with their linked twins and close
@@ -1852,6 +1917,58 @@ export const useEditor = create<EditorState>((set, get) => ({
         new Set(targets.map((f) => f.clip.id)))
       return { project: p }
     }),
+
+  rollEdit: (leftId, rightId, t) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const L = findClip(p, leftId)?.clip
+      if (!L) return s
+      const d = settle(p, toFrame(t, p.fps) - (L.start + L.duration), (q, d) => rollIn(q, leftId, rightId, d))
+      if (!d) return s
+      rollIn(p, leftId, rightId, d)
+      return { project: p }
+    }),
+
+  slip: (clipId, dt) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const d = toFrame(dt, p.fps)
+      let changed = false
+      for (const id of withLinked(p, [clipId])) {
+        const f = findClip(p, id)
+        const asset = f?.clip.assetId ? p.assets.find((a) => a.id === f.clip.assetId) : undefined
+        if (!f || f.track.locked || !asset || asset.kind === 'image') continue
+        const c = f.clip
+        const speed = c.speed || 1
+        // a clip already longer than its source (looping) keeps what it has
+        const hi = Math.max(asset.duration - c.duration * speed, c.inPoint)
+        const ni = Math.min(hi, Math.max(0, c.inPoint + d * speed))
+        if (ni !== c.inPoint) changed = true
+        c.inPoint = ni
+      }
+      return changed ? { project: p } : s
+    }),
+
+  slide: (clipId, dt) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const d = settle(p, toFrame(dt, p.fps), (q, d) => slideIn(q, clipId, d))
+      if (!d) return s
+      slideIn(p, clipId, d)
+      return { project: p }
+    }),
+
+  trimToPlayhead: (edge) => {
+    const s = get()
+    const t = toFrame(s.playhead, s.project.fps)
+    const under = s.project.tracks.flatMap((tr) =>
+      tr.locked ? [] : tr.clips.filter((c) => c.start < t - 1e-6 && c.start + c.duration > t + 1e-6))
+    const c = under.find((x) => s.selection.includes(x.id)) ?? under[0]
+    if (!c) return
+    s.pushHistory('hRippleTrim')
+    s.rippleTrim(c.id, edge, t)
+    if (edge === 'in') s.setPlayhead(c.start)
+  },
 
   splitAtPlayhead: () => {
     const s = get()

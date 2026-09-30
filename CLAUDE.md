@@ -503,6 +503,12 @@ mixes audio and muxes/transcodes per preset.
   of what follows. A range cut (`liftRange`) splits through `splitClipAt`,
   so both right halves of a pair stay linked. Test:
   `node scripts/check-ripple-trim.mjs`.
+  TRIM MODES (`rollEdit`, `slip`, `slide`, `trimToPlayhead` = Q/W) are built
+  on `trimInPlace`, whose clamps (source edges, one frame) apply per edge — so
+  `settle` first runs the edit on a scratch `cloneProject`, takes the smallest
+  distance EVERY edge could go, and only then edits: a roll or slide that hit
+  a limit on one side would otherwise open a gap or an overlap at the cut.
+  Test: `node scripts/check-trim-modes.mjs`.
   COPYING THE PROJECT IS THE HOT PATH. A project is deep-copied TWICE per
   edit — once by `pushHistory`, once by the mutation itself (33
   `cloneProject` call sites) — so a drag copies it on every pointermove and
