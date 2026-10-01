@@ -116,6 +116,27 @@ check('«make compound» leaves one clip of kind timeline over the selection', h
   const mute = structuredClone(nested)
   mute.tracks.flatMap((t) => t.clips).find((c) => c.id === cid).muted = true
   check('a muted compound is silent and still drawn', collectRangeAudio(mute, 0, 12).every((x) => x.start === 0) && videoLayersAt(flattenProject(mute), 4).length === 4)
+  // K6's Inspector offers a compound clip a pan row: it moves the contents as the same pan on each would
+  const panned = structuredClone(nested)
+  panned.tracks.flatMap((t) => t.clips).find((c) => c.id === cid).pan = { value: 0.4 }
+  const refPan = flat()
+  for (const c of refPan.tracks.flatMap((t) => t.clips)) if (['b1', 'a1', 'a2', 'm1'].includes(c.id)) c.pan = { value: 0.4 }
+  check('the compound\'s pan pans its sound', mix(panned) === mix(refPan), `${mix(panned).slice(0, 300)}\n vs\n${mix(refPan).slice(0, 300)}`)
+  // K9: a compound of sound on an audio track with effects is heard through them, as its clips were
+  const eq = [{ id: 'q', type: 'eq', enabled: true, params: { lowGain: 6 } }]
+  const fxFlat = () => {
+    const p = newProject()
+    p.assets = [A('m', 'audio')]
+    p.tracks = [track('V1', 'video', []), { ...track('A1', 'audio', [clip('m1', 'm', 0.5, 6, 1)]), audioFx: eq }]
+    return p
+  }
+  s().setProject(fxFlat())
+  const fxRef = s().project
+  s().nestClips(['m1'])
+  const busOf = (p) => collectRangeAudio(p, 0, 12).map((x) => JSON.stringify(x.bus?.fx ?? null))
+  check('a compound on a track with effects is heard through them', busOf(s().project).join() === busOf(fxRef).join(),
+    `${busOf(s().project)} vs ${busOf(fxRef)}`)
+  s().setProject(nested)
 
   // ---- a second timeline, edited and exported on its own
   const sub = comp[0].timelineId

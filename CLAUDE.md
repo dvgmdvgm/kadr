@@ -250,7 +250,9 @@ mixes audio and muxes/transcodes per preset.
   mixdown (`collectRangeAudio`, whose clip/track filters take a compound's
   contents along), the fragment pages, the snapshot and the scrub; cached
   per project object. So a nest of untouched clips exports frame-identical
-  to them laid out flat. Its own gain and mute reach the contents; its
+  to them laid out flat. Its own gain, pan (K6: added to each clip's) and
+  mute reach the contents, and an audio host track's effects (K9) its sound
+  tracks that have none of their own; its
   transform, effects, fades, edge tips and speed would need the nest drawn
   into a texture first, so the Inspector and the clip view do not offer them.
   Loops are refused where they would be made (`nestsInto`) and a hand-written
@@ -1584,8 +1586,8 @@ mixes audio and muxes/transcodes per preset.
   wrong file. Projects are keyed BY PATH, never by name. `storage:prune`
   FAILS CLOSED: without an explicit `confirm: true` it only counts, so a
   caller newer than the handler errs towards keeping the files.
-- `src/engine/popout.ts` — the preview (and, K12, the mixer) in an OS
-  window of its own, one `popout()` each. NOTHING
+- `src/engine/popout.ts` — the preview (and, J8, the scopes; K12, the
+  mixer) in an OS window of its own, one `makePopout()` each. NOTHING
   IS REBUILT ON THE WAY OVER: the preview always lives in ONE host div
   that a React portal renders into, and popping out only moves that div
   into the popup's document — re-creating it would mean a fresh GL context

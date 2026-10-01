@@ -9,7 +9,8 @@
 // EXACT FOR A CONTAINER, which is what «Сделать составной клип» makes: the
 // export of a nest is frame-identical to the same clips laid out flat
 // (scripts/check-nesting.mjs). The compound's own gain and mute reach its
-// contents; its picture controls are not offered (Inspector) — a transform,
+// contents (and its pan, K6), and an audio host track's effects reach its
+// sound tracks (K9); its picture controls are not offered (Inspector) — a transform,
 // effect or opacity on the WHOLE nest needs the nest drawn into a texture of
 // its own first.
 // ponytail: expansion, not a nested render pass — the upgrade is an offscreen
@@ -55,6 +56,7 @@ function expand(p: Project, tracks: Track[], stack: string[]): Track[] {
       const soloed = flat.some((t) => t.solo)
       const off = C.start - C.inPoint
       const gain = C.gain?.value ?? 1 // ponytail: a keyed nest gain applies its base value
+      const pan = C.pan?.value ?? 0 // ponytail: so does a keyed nest pan
       for (const nt of flat) {
         const clips = nt.clips.flatMap((c): Clip[] => {
           const piece = clipIntersection(c, C.inPoint, C.inPoint + C.duration)
@@ -67,6 +69,11 @@ function expand(p: Project, tracks: Track[], stack: string[]): Track[] {
           if (gain !== 1) {
             piece.gain = { ...piece.gain, value: piece.gain.value * gain,
               ...(piece.gain.keyframes && { keyframes: piece.gain.keyframes.map((k) => ({ ...k, value: k.value * gain })) }) }
+          }
+          // K6: a clip's pan is ADDED to its track's (shared/pan.ts), so the nest's adds to each of its clips'
+          if (pan) {
+            const a = piece.pan ?? { value: 0 }
+            piece.pan = { ...a, value: a.value + pan, ...(a.keyframes && { keyframes: a.keyframes.map((k) => ({ ...k, value: k.value + pan })) }) }
           }
           return [piece]
         })
@@ -82,7 +89,10 @@ function expand(p: Project, tracks: Track[], stack: string[]): Track[] {
           solo: T.solo,
           gain: nt.gain * (picture || T.kind === 'audio' ? T.gain : 1),
           ...(nt.pan ? { pan: shifted(nt.pan, off) } : T.pan ? { pan: T.pan } : {}),
-          ...(nt.motion ? { motion: shiftedMotion(nt.motion, off) } : T.motion ? { motion: T.motion } : {})
+          ...(nt.motion ? { motion: shiftedMotion(nt.motion, off) } : T.motion ? { motion: T.motion } : {}),
+          // K9: the host sound track's effects, as its pan — per nested track, not on their sum
+          // (ponytail: exact for one sound track in the nest; a nest bus is the upgrade)
+          ...(nt.audioFx?.length ? {} : T.kind === 'audio' && T.audioFx?.length ? { audioFx: T.audioFx } : {})
         }
         if (!x.solo) delete x.solo
         ;(picture ? out : sound).push(x)
