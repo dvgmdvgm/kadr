@@ -1545,6 +1545,39 @@ div.tr-error {
   font-variant-numeric: tabular-nums;
   font-size: var(--fz-sm);
 }
+/* J6: the Inspector's «Цвет» section, landed from canvas J (design-source/canvas/J,
+   RULES 4–14): disclosure groups with a summary and a reset, parameter rows of
+   label · range · value · keyframe diamond */
+.cg-group { margin-bottom: var(--s2); }
+.cg-head { display: flex; align-items: center; gap: var(--s1); margin: var(--s3) 0 var(--s2); }
+.cg-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--s2); min-height: 26px; padding: 0 var(--s2) 0 0; background: none; border: none; color: var(--c-text); font-size: var(--fz-sm); font-weight: 600; text-align: left; cursor: pointer; }
+.cg-toggle:hover { color: var(--c-accent-hi); }
+.cg-sum { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-size: var(--fz-label); color: var(--c-text-3); }
+.cg-mod { width: 6px; height: 6px; flex-shrink: 0; border-radius: var(--r-full); background: var(--c-accent); }
+.cg-sub { margin: var(--s4) 0 var(--s2); font-size: var(--fz-label); color: var(--c-text-3); }
+.cg-row { display: grid; grid-template-columns: 86px minmax(0, 1fr) 40px 20px; align-items: center; column-gap: var(--s3); min-height: 24px; margin-bottom: var(--s2); }
+.cg-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fz-sm); color: var(--c-text-2); }
+.cg-row > span.cg-set { color: var(--c-text); }
+.cg-row input[type='range'] { min-width: 0; }
+.cg-kf { width: 20px; min-width: 20px; height: 20px; min-height: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--c-text-off); cursor: pointer; }
+.cg-kf:hover:not(:disabled) { color: var(--c-text); }
+.cg-kf.cg-animated { color: var(--c-sel); }
+.cg-kf.on { color: var(--c-sel); }
+.cg-kf.on svg { fill: currentColor; }
+.cg-kf:disabled { cursor: default; opacity: 0.4; }
+.cg-file { flex: 1; min-width: 0; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fz-sm); }
+.cg-seg { display: flex; gap: var(--s1); padding: var(--s1); margin-bottom: var(--s3); background: var(--c-bg-2); border: 1px solid var(--c-line-ctl); border-radius: var(--r2); }
+.cg-seg > button { flex: 1; min-width: 0; min-height: 24px; padding: 0 var(--s2); font-size: var(--fz-sm); }
+.cg-hex { flex: 1; font-family: var(--font-mono); font-size: var(--fz-sm); color: var(--c-text-2); }
+.cg-hint { display: flex; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--fz-label); line-height: 1.45; color: var(--c-text-3); }
+.cg-hint > svg { flex-shrink: 0; margin-top: 1px; }
+/* «До и после» over the preview (RULES 17): the GL draws both halves; this is
+   the divider, its knob and the labels, over the canvas rect */
+.ba-wrap { position: absolute; z-index: 8; overflow: hidden; pointer-events: none; box-shadow: 0 0 0 1px var(--c-line); }
+.ba-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--c-guide); }
+.ba-knob { position: absolute; top: 50%; width: 26px; height: 26px; min-height: 26px; margin: -13px 0 0 -13px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-full); background: var(--c-float); border: 1px solid var(--c-line-2); color: var(--c-text); cursor: ew-resize; pointer-events: auto; }
+.ba-knob:hover { background: var(--c-bg-4); }
+.ba-label { position: absolute; top: var(--s4); padding: 1px var(--s3); border-radius: var(--r1); background: var(--c-float); font-size: var(--fz-label); color: var(--c-text); }
 
 /* ===========================================================================
    Timeline

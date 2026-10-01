@@ -23,6 +23,8 @@ import { useTextUi } from '../components/TextTools'
 import { useSettingsUi } from '../components/SettingsDialog'
 import { startCollect } from '../components/CollectDialog'
 import { usePasteAttrsUi } from '../components/PasteAttrsMenu'
+import { useColourUi, colourTarget } from './colourUi'
+import { resetColour, hasColour } from './colourEdit'
 import { modalsOpen } from '../components/Modal'
 import { logError, logWarn } from './log'
 import { saveUserStore } from './userStore'
@@ -175,6 +177,15 @@ const HANDLERS: Record<ActionId, Handler> = {
     })
   },
   'preview.popout': { run: () => void togglePreviewWindow() },
+  // J6: the colour section's two head buttons
+  'colour.compare': {
+    enabled: () => !!colourTarget(), why: 'whyNoVisualClip',
+    run: () => useColourUi.setState({ compare: !useColourUi.getState().compare })
+  },
+  'colour.reset': {
+    enabled: () => { const c = colourTarget(); return !!c && hasColour(c) }, why: 'whyNoVisualClip',
+    run: () => { const c = colourTarget(); if (c) resetColour(c.id) }
+  },
   'agent.context': { enabled: contextTargetOpen, why: 'whyNoAgent', run: () => void sendContext() }
 }
 

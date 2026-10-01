@@ -447,6 +447,30 @@ export class Compositor {
     this.gl.viewport(0, 0, pw, ph)
   }
 
+  /** J6 before/after (preview only): everything drawn while set lands only in
+      the left `frac` of the frame — smaller effect buffers get a wider strip,
+      never a narrower one; null turns it off */
+  clipLeft(frac: number | null) {
+    const gl = this.gl
+    if (frac === null) { gl.disable(gl.SCISSOR_TEST); return }
+    gl.enable(gl.SCISSOR_TEST)
+    gl.scissor(0, 0, Math.round(this.pw * Math.min(1, Math.max(0, frac))), 1 << 15)
+  }
+
+  /** J6 pipette: the mean RGB (0…255) of an n×n square of the finished frame
+      around (fx, fy), fractions of the frame from its top-left */
+  meanAt(fx: number, fy: number, n = 5): [number, number, number] {
+    const gl = this.gl
+    const x = Math.min(this.pw - n, Math.max(0, Math.round(fx * this.pw - n / 2)))
+    const y = Math.min(this.ph - n, Math.max(0, Math.round((1 - fy) * this.ph - n / 2)))
+    const px = new Uint8Array(n * n * 4)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.readPixels(x, y, n, n, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    const sum = [0, 0, 0]
+    for (let i = 0; i < px.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += px[i + c]
+    return sum.map((v) => v / (n * n)) as [number, number, number]
+  }
+
   /** Copy the finished frame out of the default framebuffer (bottom-up rows). */
   readPixels(out: Uint8Array) {
     const gl = this.gl

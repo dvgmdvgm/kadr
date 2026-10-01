@@ -24,6 +24,7 @@ import { runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi } from '
 import { importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, wireModels, prepareForFragment } from './engine/models'
 import { useFragmentParams, setParam, resetParams, flushParamSaves } from './engine/fragmentParams'
 import { useOnion, setOnion, toggleOnion, wireOnion } from './engine/onion'
+import { useColourUi } from './engine/colourUi'
 import { audioStats, silencePreview, wirePreviewLimiter } from './engine/audio'
 import limiterUrl from './engine/limiter.worklet.ts?worker&url'
 import { previewPoolStats } from './engine/player'
@@ -110,7 +111,7 @@ wireFonts()
   reverseClip, importFiles, useImportUi, useImportSummary, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,
-  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,
+  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion, useColourUi,
   audioStats, silencePreview, previewPoolStats,
   usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow,
   neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS,

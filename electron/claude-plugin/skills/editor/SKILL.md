@@ -1,6 +1,6 @@
 ---
 name: editor
-description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_marker, kadr_undo, kadr_silences, kadr_propose, kadr_scenes, kadr_duck, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
+description: Editing the LIVE project inside the Kadr video editor through its kadr_* MCP tools (kadr_state, kadr_snapshot, kadr_sheet, kadr_cut, kadr_move, kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume, kadr_grade, kadr_marker, kadr_undo, kadr_silences, kadr_propose, kadr_scenes, kadr_duck, kadr_eval, kadr_check, kadr_export, kadr_transcribe, kadr_fragment_create, kadr_typecheck, kadr_fragment_media, kadr_model_import, kadr_models, kadr_beats, kadr_audio_react, kadr_sounds, kadr_sound_add, kadr_sound_label, kadr_neon_wave, kadr_voice_*). The base skill — use it whenever those tools are available and the task concerns the open timeline, its clips, audio, captions, titles or motion graphics; it says which of kadr:music, kadr:motion and kadr:3d to add. Not for standalone Remotion authoring — a dedicated remotion skill, if installed, owns composition internals.
 ---
 
 # Editing in Kadr
@@ -108,6 +108,19 @@ rhythm, readability or physical sense — not a technical failure. So:
   the music (−12 dB default) wherever the other tracks speak, with attack
   and release; it MULTIPLIES the clip's existing gain, so run it once (or
   `kadr_undo(1)` first). Never draw the dips by hand with kadr_volume.
+- Colour of a picture clip: `kadr_grade` (the Inspector's «Цвет» section) —
+  primaries (`exposure` in stops, the rest −1…1, 0 = neutral), a `.cube`
+  `lut` with `intensity`, a `blend` mode, a chroma/luma `key`. Grading rules:
+  LOOK first (kadr_snapshot) and grade from what you see, not by numbers;
+  balance (temperature/tint) before tone, tone (exposure, contrast,
+  highlights, shadows) before saturation — the Lumetri «Basic» order. Small
+  moves: exposure ±0.3, the rest ±0.2 are already visible; past ±0.5 is a
+  look, say so. Match shots by grading the odd one to its neighbours, never
+  all of them to a new look nobody asked for. A LUT is a creative look AFTER
+  the grade (normalise first). Key first, then grade the keyed plate; spill
+  takes the key colour off the WHOLE clip (a green shirt goes grey) — keep it
+  as low as the fringe allows. A blend mode does nothing inside a transition.
+  Then VERIFY with a snapshot. One kadr_grade call = one undo step.
 - `kadr_eval` for everything else. Discipline there: `pushHistory(label)`
   once before a batch of low-level edits (updateClip etc.) — that's one undo
   step for the user. High-level actions (insertClipsFromAssets,

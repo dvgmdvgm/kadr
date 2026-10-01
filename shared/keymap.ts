@@ -53,6 +53,8 @@ export const ACTIONS = [
   { id: 'edit.snap', labelKey: 'actSnap', context: g, defaultKeys: [k('KeyN')] },
   { id: 'clip.toggleEnable', labelKey: 'actToggleEnable', context: g, defaultKeys: [k('KeyE', { shift: true })] },
   { id: 'clip.rename', labelKey: 'actRename', context: g, defaultKeys: [k('F2')], prevent: true },
+  { id: 'colour.compare', labelKey: 'actColourCompare', context: g, defaultKeys: [k('Backslash', { shift: true })], prevent: true },
+  { id: 'colour.reset', labelKey: 'actColourReset', context: g, defaultKeys: [] },
   { id: 'view.zoomFit', labelKey: 'actZoomFit', context: g, defaultKeys: [k('KeyZ', { shift: true })], prevent: true },
   { id: 'view.zoomSel', labelKey: 'actZoomSel', context: g, defaultKeys: [k('KeyZ', { alt: true })], prevent: true },
   { id: 'view.zoomIn', labelKey: 'actZoomIn', context: g, defaultKeys: [k('Equal')], prevent: true },

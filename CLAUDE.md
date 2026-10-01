@@ -142,6 +142,11 @@ mixes audio and muxes/transcodes per preset.
   within 1/255 of `shared/key.ts`'s reference — chroma with and without
   spill, luma, the key before the grade, × a mask, × an alpha-packed matte;
   the backing keys to alpha 0, the edge is soft, spill 1 leaves no green);
+  `check-colour-ui.mjs` (J6: every control of the Inspector's «Цвет»
+  section writes through `src/engine/colourEdit.ts` ONCE per gesture — a
+  slider drag of many values is one undo step, a gesture that wrote nothing
+  none, every diamond/reset/mode/LUT click one; «Вставить атрибуты» carries
+  the colour);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -380,7 +385,8 @@ mixes audio and muxes/transcodes per preset.
 - `electron/mcp-bridge.cjs` — MCP stdio server (SDK) that claude receives
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
   the semantic edits kadr_cut / kadr_move / kadr_trim / kadr_ripple_delete /
-  kadr_keyframe / kadr_text_add / kadr_volume / kadr_marker / kadr_undo
+  kadr_keyframe / kadr_text_add / kadr_volume / kadr_grade (J6: the colour
+  section — grade, LUT, blend, key) / kadr_marker / kadr_undo
   (`electron/mcp-edit-tools.cjs` → `kadrEditor.agentEdit`,
   `src/engine/agentEdits.ts`: zod-checked before the page, one store action
   and EXACTLY one undo step each — an edit that changes nothing leaves no
@@ -900,6 +906,12 @@ mixes audio and muxes/transcodes per preset.
   through pixel capture. 4:2:0 footage carries chroma at half resolution, so
   its key edge is two pixels wide and blocky on hard edges: raise softness,
   or key a 4:4:4 source.
+  «ДО И ПОСЛЕ» (J6, the colour section's head, Shift+\) is PREVIEW ONLY: the
+  player draws the frame, then draws it again with the selected clip's colour
+  stripped under a scissor over the left of the divider (`clipLeft`), so
+  `drawFrame`, snapshots (`drawNow`) and the export never see it. The key's
+  pipette draws that clip ALONE without its colour, reads the 5×5 mean
+  (`meanAt`) and draws the preview again in the same task.
   `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.

@@ -9,6 +9,7 @@ import { gradeAt } from '@shared/colour'
 import { blendOf } from '@shared/blend'
 import { keyAt } from '@shared/key'
 import { lutFor } from './lut'
+import { compareProject, useColourUi } from './colourUi'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -752,6 +753,7 @@ export class Player {
   private wasLoading = false
   private lastDrawnProject: Project | null = null
   private lastDrawnT = -1
+  private lastUi: unknown = null
   private stableTicks = 0
   /** playback clock anchor — see tick() */
   private anchor: ClockAnchor | null = null
@@ -780,6 +782,24 @@ export class Player {
     drawFrame(this.comp, project, playhead, this.pool)
     this.lastDrawnProject = project
     this.lastDrawnT = playhead
+  }
+
+  /** J6 pipette: the mean colour (0…255) of 5×5 px of clip `clipId` ALONE, with
+      its colour off, at (fx, fy) of the frame — what its key should take out.
+      The preview is drawn again right after, so nothing of it is ever seen. */
+  sampleSource(clipId: string, fx: number, fy: number): [number, number, number] | null {
+    if (!this.comp) return null
+    const { project, playhead } = this.hooks.getState()
+    const track = project.tracks.find((tr) => tr.clips.some((c) => c.id === clipId))
+    const clip = track?.clips.find((c) => c.id === clipId)
+    if (!track || !clip) return null
+    const { grade: _g, lut: _l, blend: _b, key: _k, ...bare } = clip
+    const solo: Project = { ...project, background: '#000000', tracks: [{ ...track, muted: false, gain: 1, clips: [bare] }] }
+    this.comp.scale = this.renderScale()
+    drawFrame(this.comp, solo, playhead, this.pool)
+    const rgb = this.comp.meanAt(fx, fy)
+    this.drawNow()
+    return rgb
   }
 
   attach(canvas: HTMLCanvasElement) {
@@ -905,13 +925,22 @@ export class Player {
     // composite (texture re-uploads of every visible video are not free) —
     // late-arriving seeks still show up within a quarter second
     const scale = this.renderScale()
-    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale
+    const ui = useColourUi.getState()
+    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale ||
+      ui !== this.lastUi
     if (dirty) this.stableTicks = 0
     else this.stableTicks++
     const skipDraw = !dirty && this.stableTicks > 20 && this.stableTicks % 15 !== 0
     if (this.comp && !skipDraw) {
       this.comp.scale = scale
       drawFrame(this.comp, project, t, this.pool)
+      // J6 «До и после»: the left of the divider again, the selected clip without its colour
+      const before = compareProject(project)
+      if (before) {
+        this.comp.clipLeft(ui.split)
+        try { drawFrame(this.comp, before, t, this.pool) } finally { this.comp.clipLeft(null) }
+      }
+      this.lastUi = ui
       if (playing) frameMeter.draw(ts, project.fps || 30)
       this.lastDrawnProject = project
       this.lastDrawnT = t

@@ -32,6 +32,7 @@ const MAP = {
   again: 'rotate-cw', reload: 'rotate-ccw', loop: 'repeat', rewind: 'rewind',
   eye: 'eye', eyeOff: 'eye-off', broom: 'brush-cleaning',
   diamond: 'diamond', diamondMinus: 'diamond-minus',
+  pipette: 'pipette', compare: 'square-split-horizontal',
   square: 'square', circle: 'circle', triangle: 'triangle',
   image: 'image', film: 'film',
   arrowRight: 'arrow-right', download: 'download', save: 'save',

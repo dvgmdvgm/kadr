@@ -85,6 +85,26 @@ const TOOLS = [
     check: (a) => { if ((a.value === undefined) === (a.keys === undefined)) return 'pass either value or keys' }
   },
   {
+    name: 'kadr_grade',
+    fn: 'grade',
+    description: 'Colour of a picture clip (the Inspector\'s «Цвет»), static values; a parameter you set loses its keyframes (key them with kadr_eval + Anim keyframes). grade: any of exposure (stops, -8..8), contrast, saturation, temperature (+ warm), tint (+ magenta), highlights, shadows (-1..1; 0 = neutral). lut: {path of a .cube, intensity 0..1} or null to remove. blend: normal|screen|multiply|add|overlay|softLight|difference (does nothing inside a transition). key: {mode chroma|luma|off, colour #rrggbb, tolerance, softness, spill 0..1 (chroma only; takes the key hue off the WHOLE clip)}. Order in the shader: key → grade → LUT → blend. One undo step.',
+    input: {
+      clipId: id,
+      grade: z.object(Object.fromEntries(['exposure', 'contrast', 'saturation', 'temperature', 'tint', 'highlights', 'shadows']
+        .map((k) => [k, z.number().finite().min(k === 'exposure' ? -8 : -1).max(k === 'exposure' ? 8 : 1)]))).partial().strict().optional(),
+      lut: z.object({ path: z.string().regex(/\.cube$/i), intensity: z.number().min(0).max(1).optional() }).strict().nullable().optional(),
+      blend: z.enum(['normal', 'screen', 'multiply', 'add', 'overlay', 'softLight', 'difference']).optional(),
+      key: z.object({
+        mode: z.enum(['chroma', 'luma', 'off']), colour: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+        tolerance: z.number().min(0).max(1).optional(), softness: z.number().min(0).max(1).optional(), spill: z.number().min(0).max(1).optional()
+      }).strict().optional()
+    },
+    check: (a) => {
+      if (a.grade === undefined && a.lut === undefined && a.blend === undefined && a.key === undefined) return 'pass grade, lut, blend or key'
+      if (a.grade && !Object.keys(a.grade).length) return 'grade needs at least one control'
+    }
+  },
+  {
     name: 'kadr_marker',
     fn: 'marker',
     description: 'Add a timeline marker at t (project s) with a label (default: the next number). kind is for analysis markers only (beat|section|pause from the music map, section and pause need end; scene = a picture cut) — leave it out for an anchor. One undo step.',

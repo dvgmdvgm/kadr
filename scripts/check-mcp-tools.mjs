@@ -87,7 +87,8 @@ const valid = {
   kadr_keyframe: { clipId: 'v1', param: 'opacity', t: 1.5, value: 0.25, easing: 'easeOut' },
   kadr_text_add: { at: 2.2, text: 'Hello', style: { fontSize: 48, color: '#ff0000' } },
   kadr_volume: { clipId: 'a3c', keys: [{ t: 6, value: 1 }, { t: 8, value: 0.3, easing: 'easeIn' }] },
-  kadr_marker: { t: 5.5, label: 'drop' }
+  kadr_marker: { t: 5.5, label: 'drop' },
+  kadr_grade: { clipId: 'v1', grade: { exposure: 1, saturation: -0.5 }, blend: 'screen', key: { mode: 'chroma', spill: 0.4 } }
 }
 const edits = TOOLS.filter((t) => t.name !== 'kadr_undo' && !t.helper) // helpers (kadr_silences) have their own check
 check('every edit tool has a sample here', edits.every((t) => valid[t.name]),
@@ -132,6 +133,18 @@ fresh()
 await call('kadr_volume', { clipId: 'a3c', value: 0.5 })
 check('kadr_volume: the twin too', clip('a3c').gain.value === 0.5 && clip('v3').gain.value === 0.5)
 fresh()
+{
+  const g = await call('kadr_grade', { clipId: 'v1', grade: { exposure: 1.5 }, lut: { path: '/l/look.cube', intensity: 0.6 }, key: { mode: 'luma' } })
+  check('kadr_grade: a grade with all seven controls, the LUT, a luma key with the sanitizer\'s defaults',
+    clip('v1').grade.exposure.value === 1.5 && clip('v1').grade.tint.value === 0 && clip('v1').lut.intensity.value === 0.6 &&
+    clip('v1').key.mode === 'luma' && clip('v1').key.colour === '#000000' && g.blend === 'normal')
+  await call('kadr_grade', { clipId: 'v1', lut: null, key: { mode: 'off' }, blend: 'normal' })
+  check('kadr_grade: null / off / normal remove', clip('v1').lut === undefined && clip('v1').key === undefined && clip('v1').grade.exposure.value === 1.5)
+  let err
+  try { await call('kadr_grade', { clipId: 'a1c', grade: { exposure: 1 } }) } catch (e) { err = e }
+  check('kadr_grade refuses a clip with no picture', /no picture/.test(err?.message), err?.message)
+}
+fresh()
 await call('kadr_undo', { steps: 1 }).then((r) => check('kadr_undo with nothing to undo says so', r.undone === 0))
 fresh()
 const before3 = snap()
@@ -169,7 +182,9 @@ const invalid = {
   kadr_silences: [{ start: 1 }, { apply: 'some' }, { thresholdDb: 0 }],
   kadr_propose: [{}, { kind: 'retake', ranges: [] }, { kind: 'silence', ranges: [{ start: 0, end: 1, reason: 'x' }] }, { apply: 'all' }],
   kadr_scenes: [{ start: 1 }, { threshold: 0 }, { clipId: 'x', start: 0, end: 1 }],
-  kadr_duck: [{}, { musicClipIds: [] }, { musicClipIds: ['m'], depthDb: 0 }, { musicClipIds: ['m'], speechTrackIds: ['a'], speechClipIds: ['v'] }]
+  kadr_duck: [{}, { musicClipIds: [] }, { musicClipIds: ['m'], depthDb: 0 }, { musicClipIds: ['m'], speechTrackIds: ['a'], speechClipIds: ['v'] }],
+  kadr_grade: [{ clipId: 'v1' }, { clipId: 'v1', grade: {} }, { clipId: 'v1', grade: { exposure: 9 } }, { clipId: 'v1', grade: { gamma: 1 } },
+    { clipId: 'v1', blend: 'hue' }, { clipId: 'v1', lut: { path: 'x.png' } }, { clipId: 'v1', key: { mode: 'chroma', colour: 'green' } }]
 }
 check('every tool has invalid samples here', TOOLS.every((t) => invalid[t.name]?.length))
 fresh()

@@ -15,6 +15,9 @@ import { upsertKf } from '@/components/animUtils'
 import { applySilences, findSilences, proposeRanges, type FindSilencesArgs } from './silences'
 import { findScenes, type FindScenesArgs } from './scenes'
 import { autoDuck, type AutoDuckArgs } from './duck'
+import { GRADE_KEYS, clampGrade, type ClipGrade, type GradeKey } from '@shared/colour'
+import type { BlendMode } from '@shared/blend'
+import { isVisualClip } from './colourUi'
 
 const st = () => useEditor.getState()
 
@@ -127,6 +130,38 @@ export function volume(a: { clipId: string; value?: number; keys?: { t: number; 
     }
   })
   return { clipIds: ids }
+}
+
+type KeyArgs = { mode: 'chroma' | 'luma' | 'off'; colour?: string; tolerance?: number; softness?: number; spill?: number }
+/** kadr_grade (J6): the colour section in one call — static values (a parameter
+    it sets loses its keys), null / 'off' / 'normal' removes. One undo step. */
+export function grade(a: {
+  clipId: string; grade?: Partial<Record<GradeKey, number>>; lut?: { path: string; intensity?: number } | null
+  blend?: BlendMode; key?: KeyArgs
+}) {
+  const c = clipOr(a.clipId)
+  if (!isVisualClip(st().project, c)) throw new Error(`clip ${a.clipId} has no picture to grade`)
+  const patch: Partial<Clip> = {}
+  if (a.grade) {
+    const g = { ...(c.grade ?? Object.fromEntries(GRADE_KEYS.map((k) => [k, { value: 0 }]))) } as ClipGrade
+    for (const [k, v] of Object.entries(a.grade) as [GradeKey, number][]) g[k] = { value: clampGrade(k, v) }
+    patch.grade = g
+  }
+  if (a.lut !== undefined) patch.lut = a.lut ? { path: a.lut.path, intensity: a.lut.intensity !== undefined ? { value: a.lut.intensity } : c.lut?.intensity ?? { value: 1 } } : undefined
+  if (a.blend !== undefined) patch.blend = a.blend === 'normal' ? undefined : a.blend
+  if (a.key) {
+    const k = a.key
+    patch.key = k.mode === 'off' ? undefined : {
+      mode: k.mode,
+      colour: (k.colour ?? c.key?.colour ?? (k.mode === 'chroma' ? '#00ff00' : '#000000')).toLowerCase(),
+      tolerance: k.tolerance !== undefined ? { value: k.tolerance } : c.key?.tolerance ?? { value: 0.1 },
+      softness: k.softness !== undefined ? { value: k.softness } : c.key?.softness ?? { value: 0.1 },
+      spill: k.spill !== undefined ? { value: k.spill } : c.key?.spill ?? { value: 0 }
+    }
+  }
+  once('grade', () => { st().pushHistory('hColour'); st().updateClip(a.clipId, patch) })
+  const after = findClip(st().project, a.clipId)!.clip
+  return { clipId: a.clipId, grade: after.grade ?? null, lut: after.lut ?? null, blend: after.blend ?? 'normal', key: after.key ?? null }
 }
 
 export function marker(a: { t: number; label?: string; kind?: TimelineMarker['kind']; end?: number }) {

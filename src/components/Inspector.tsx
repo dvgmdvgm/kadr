@@ -7,6 +7,8 @@ import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
 import { audibleTracksInRange } from '@/engine/subtitles'
 import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
 import { CtxMenu } from './CtxMenu'
+import { ColourSection } from './ColourSection'
+import { isVisualClip } from '@/engine/colourUi'
 import { Icon, Spinner } from './icons'
 import { fontChoices } from '@/engine/fonts'
 import { audioTwin } from '@/engine/timelineSelect'
@@ -335,6 +337,7 @@ function ClipProps({ clip }: { clip: Clip }) {
           ))}
         </>
       )}
+      {isVisualClip(project, clip) && <ColourSection clip={clip} />}
       <div className="insp-section">{t('volume')}</div>
       {twin && clip.muted ? (
         // an AV import: the picture's own sound is off because it plays from the audio clip

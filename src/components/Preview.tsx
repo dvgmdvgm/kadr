@@ -8,6 +8,7 @@ import { AudioMeter } from './AudioMeter'
 import { FragmentOverlays } from './FragmentOverlays'
 import { ClipGizmo } from './ClipGizmo'
 import { OnionSkin } from './OnionSkin'
+import { ColourOverlay } from './ColourOverlay'
 
 export function Preview() {
   const t = useT()
@@ -76,6 +77,8 @@ export function Preview() {
         <FragmentOverlays canvas={canvasRef} />
         <OnionSkin canvas={canvasRef} />
         <ClipGizmo canvas={canvasRef} />
+        <ColourOverlay canvas={canvasRef}
+          sample={(id, fx, fy) => playerRef.current?.sampleSource(id, fx, fy) ?? null} />
         {loading && !gpuLost && (
           <div className="preview-loading">
             <div className="spinner" />

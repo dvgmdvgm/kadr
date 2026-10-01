@@ -1358,6 +1358,8 @@ export interface KadrApi {
   libFonts(projectPath: string): Promise<string[]>
   /** J2: copy a .cube into `<dir of projectPath>/kadr-lib/luts` (an equal file there is reused, another of the name gets `-2`); the path to put on `Clip.lut` */
   lutImport(src: string, projectPath: string): Promise<string>
+  /** J6: pick one .cube file; null when cancelled */
+  openLutDialog(): Promise<string | null>
   /** Native directory picker; null when the user cancels. */
   pickDirectory(title?: string): Promise<string | null>
   /** Write a frame snapshot PNG into dir (Downloads when null) under a

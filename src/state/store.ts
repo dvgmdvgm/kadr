@@ -872,8 +872,8 @@ export interface TimeRange {
 }
 
 /** what «Вставить атрибуты» (Ctrl+Alt+V) can carry over */
-export type AttrPart = 'transform' | 'effects' | 'volume' | 'speed' | 'masks'
-export const ATTR_PARTS: AttrPart[] = ['transform', 'effects', 'volume', 'speed', 'masks']
+export type AttrPart = 'transform' | 'effects' | 'volume' | 'speed' | 'masks' | 'colour'
+export const ATTR_PARTS: AttrPart[] = ['transform', 'effects', 'volume', 'speed', 'masks', 'colour']
 
 interface ClipboardItem {
   kind: TrackKind
@@ -2515,6 +2515,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         if (has('transform')) c.transform = clone(src.transform)
         if (has('effects')) c.effects = clone(src.effects ?? [])
         if (has('volume')) c.gain = clone(src.gain)
+        // J6: the colour section (grade, LUT, blend, key) as one part
+        if (has('colour')) {
+          for (const k of ['grade', 'lut', 'blend', 'key'] as const) {
+            if (src[k] === undefined) delete c[k]
+            else (c as unknown as Record<string, unknown>)[k] = clone(src[k])
+          }
+        }
         if (has('masks')) {
           for (const k of ['mask', 'maskShape', 'maskShapes'] as const) {
             if (src[k] === undefined) delete c[k]

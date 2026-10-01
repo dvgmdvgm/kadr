@@ -167,6 +167,7 @@ const api: KadrApi = {
   requestDecoded: (path, duration, opts) => ipcRenderer.invoke('media:decoded', path, duration, opts),
   libFonts: (projectPath) => ipcRenderer.invoke('fonts:lib', projectPath),
   lutImport: (src, projectPath) => ipcRenderer.invoke('lut:import', src, projectPath),
+  openLutDialog: () => ipcRenderer.invoke('lut:open-dialog'),
   pickDirectory: (title) => ipcRenderer.invoke('dialog:pick-dir', title),
   saveSnapshot: (dir, baseName, png) => ipcRenderer.invoke('snapshot:save', dir, baseName, png),
   measureLoudness: (path, start, duration) => ipcRenderer.invoke('media:loudness', path, start, duration),

@@ -954,6 +954,16 @@ function registerIpc() {
       if (!had) { await fs.writeFile(out, data); return out }
     }
   })
+  ipcMain.handle('lut:open-dialog', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      properties: ['openFile'],
+      defaultPath: await lastDir('lut'),
+      filters: [{ name: 'LUT (.cube)', extensions: ['cube'] }]
+    })
+    if (r.canceled || !r.filePaths[0]) return null
+    void rememberDir('lut', r.filePaths[0])
+    return r.filePaths[0]
+  })
   ipcMain.handle('dialog:pick-dir', async (_e, title?: string) => {
     const r = await dialog.showOpenDialog(win!, {
       title: title || undefined,
