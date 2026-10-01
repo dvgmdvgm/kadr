@@ -353,7 +353,9 @@ export class Compositor {
   private uLut: Record<'on' | 'min' | 'scale' | 'size' | 'mix', WebGLUniformLocation>
   /** J2: one texture per parsed LUT — a reload of the file is a new object, hence a new texture */
   private luts = new Map<CubeLut, WebGLTexture>()
-  /** J7: baked wheel/curve tables — a drag makes one per step, so the oldest go */
+  /** J14: the frame each table texture was last bound in — `begin` frees the stale ones */
+  private tableUse = new Map<WebGLTexture, number>()
+  /** J7: baked wheel/curve tables — a drag makes one per step; `begin` frees the unused (J14) */
   private curveTex = new Map<CubeLut, WebGLTexture>()
   private uCurve!: Record<'on' | 'size', WebGLUniformLocation>
   private textures = new Map<string, TexEntry>()
@@ -578,6 +580,12 @@ export class Compositor {
   begin(background: string) {
     const gl = this.gl
     this.frame++
+    // J14: a reloaded LUT or a dragged curve is a new table; a texture no layer
+    // bound for 8 frames (two passes a frame under «До и после») goes
+    for (const cache of [this.luts, this.curveTex]) for (const [t, tex] of cache) {
+      if ((this.tableUse.get(tex) ?? 0) >= this.frame - 8) continue
+      gl.deleteTexture(tex); cache.delete(t); this.tableUse.delete(tex)
+    }
     this.curFbo = this.target
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target)
     // 'transparent' (G6; H2 makes it selectable): the layers build their own coverage
@@ -645,11 +653,6 @@ export class Compositor {
     this.bindLut(l.lut)
     gl.uniform1i(this.uCurve.on, l.curve ? 1 : 0)
     if (l.curve) {
-      if (!this.curveTex.has(l.curve) && this.curveTex.size >= 32) {
-        const [old, tex] = this.curveTex.entries().next().value!
-        gl.deleteTexture(tex)
-        this.curveTex.delete(old)
-      }
       this.lutTexture(l.curve, CURVE_UNIT, this.curveTex)
       gl.uniform1f(this.uCurve.size, l.curve.size)
     }
@@ -1168,6 +1171,7 @@ export class Compositor {
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
       cache.set(t, tex)
     }
+    this.tableUse.set(tex, this.frame)
     gl.activeTexture(gl.TEXTURE0)
   }
 
@@ -1244,6 +1248,7 @@ export class Compositor {
     this.textures.clear()
     this.luts.clear()
     this.curveTex.clear()
+    this.tableUse.clear()
     this.transProgs.clear()
     this.overlays = []
     this.overlaySize = 0

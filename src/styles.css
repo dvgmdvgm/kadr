@@ -1585,6 +1585,8 @@ div.tr-error {
 .cg-curve [data-ch='r'] { color: var(--c-danger); }
 .cg-curve [data-ch='g'] { color: var(--c-ok); }
 .cg-curve [data-ch='b'] { color: var(--c-accent); }
+.cg-curve circle { cursor: grab; }
+.cg-curve circle:focus-visible { outline-offset: 2px; border-radius: 50%; }
 /* «До и после» over the preview (RULES 17): the GL draws both halves; this is
    the divider, its knob and the labels, over the canvas rect */
 .ba-wrap { position: absolute; z-index: 8; overflow: hidden; pointer-events: none; box-shadow: 0 0 0 1px var(--c-line); }

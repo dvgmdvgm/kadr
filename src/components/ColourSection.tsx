@@ -15,7 +15,7 @@ import { useT, type TKey } from '@/i18n'
 import {
   colourGesture, colourKey, setParam, setKeyColour, toggleKf, resetParam, resetGroup, resetColour, setBlend,
   setKeyMode, setLut, removeLut, paramAnim, paramValue, paramDefault, clipRel, kfState, hasColour,
-  setWheel, resetWheel, addCurvePoint, moveCurvePoint, removeCurvePoint,
+  setWheel, resetWheel, addCurvePoint, moveCurvePoint, removeCurvePoint, colourDouble,
   type ColourParam, type ColourGroup
 } from '@/engine/colourEdit'
 import { useColourUi } from '@/engine/colourUi'
@@ -77,6 +77,7 @@ function WheelControl({ id, k, w }: { id: string; k: WheelKey; w: Wheel }) {
   const t = useT()
   const ref = useRef<HTMLDivElement>(null)
   const last = useRef<[number, number] | null>(null)
+  const pressAt = useRef(-1e9)
   const label = t(WHEEL_LABEL[k])
   const at = (e: React.PointerEvent): [number, number] => {
     const r = ref.current!.getBoundingClientRect()
@@ -96,8 +97,11 @@ function WheelControl({ id, k, w }: { id: string; k: WheelKey; w: Wheel }) {
           colourGesture()
           const p = at(e)
           last.current = p
-          // Shift starts a fine drag where the puck is; a plain press puts it under the cursor
-          if (!e.shiftKey) setWheel(id, k, { x: p[0], y: p[1] })
+          // Shift starts a fine drag where the puck is; a plain press puts it under the cursor —
+          // but not the second press of a double-click, whose reset folds into the first (J14)
+          const second = e.timeStamp - pressAt.current < 500
+          pressAt.current = e.timeStamp
+          if (!e.shiftKey && !second) setWheel(id, k, { x: p[0], y: p[1] })
         }}
         onPointerMove={(e) => {
           const l = last.current
@@ -108,7 +112,7 @@ function WheelControl({ id, k, w }: { id: string; k: WheelKey; w: Wheel }) {
         }}
         onPointerUp={() => { last.current = null }}
         onPointerCancel={() => { last.current = null }}
-        onDoubleClick={() => resetWheel(id, k)}
+        onDoubleClick={() => { colourDouble(); resetWheel(id, k) }}
         onKeyDown={(e) => {
           const d = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key]
           if (!d) return
@@ -151,7 +155,7 @@ function CurveGraph({ clip }: { clip: Clip }) {
   }
   const line = 'M' + Array.from({ length: 101 }, (_, i) => `${i} ${(100 - f(i / 100) * 100).toFixed(2)}`).join('L')
   return (
-    <svg ref={ref} className="cg-curve" viewBox="0 0 100 100" role="img" data-act="cg-curve"
+    <svg ref={ref} className="cg-curve" viewBox="0 0 100 100" role="group" data-act="cg-curve"
       aria-label={t('cgCurveLabel').replace('{ch}', ch.toUpperCase())}
       onPointerDown={(e) => {
         if (e.button !== 0) return
@@ -165,14 +169,33 @@ function CurveGraph({ clip }: { clip: Clip }) {
       onPointerMove={(e) => { if (drag.current >= 0) moveCurvePoint(id, ch, drag.current, ...at(e)) }}
       onPointerUp={() => { drag.current = -1 }}
       onPointerCancel={() => { drag.current = -1 }}
-      onDoubleClick={(e) => { const i = hit(...at(e)); if (i >= 0) removeCurvePoint(id, ch, i) }}>
+      onDoubleClick={(e) => { const i = hit(...at(e)); if (i >= 0) { colourDouble(); removeCurvePoint(id, ch, i) } }}>
       <g className="cg-grid">
         {[25, 50, 75].map((v) => <path key={v} stroke="currentColor" strokeWidth={1} vectorEffect="non-scaling-stroke" d={`M${v} 0V100M0 ${v}H100`} />)}
         <path stroke="currentColor" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" d="M0 100L100 0" />
       </g>
       <g data-ch={ch}>
         <path fill="none" stroke="currentColor" strokeWidth={1.5} vectorEffect="non-scaling-stroke" d={line} />
-        {pts.map(([x, y], i) => <circle key={i} cx={x * 100} cy={100 - y * 100} r={2.2} fill="currentColor" />)}
+        {pts.map(([x, y], i) => <circle key={i} cx={x * 100} cy={100 - y * 100} r={2.2} fill="currentColor"
+          tabIndex={0} role="slider" data-act={`cg-point-${i}`}
+          aria-label={t('cgCurvePoint').replace('{n}', String(i + 1))}
+          aria-valuetext={`${Math.round(x * 255)} → ${Math.round(y * 255)}`}
+          onPointerDown={(e) => e.currentTarget.focus()}
+          onKeyDown={(e) => {
+            // J14: the wheel's steps — arrows move the point, Shift finer, Delete takes it out
+            if (e.key === 'Delete' || e.key === 'Backspace') {
+              e.preventDefault()
+              if (removeCurvePoint(id, ch, i)) requestAnimationFrame(() => ref.current?.querySelectorAll('circle')[Math.max(0, i - 1)]?.focus())
+              return
+            }
+            const d = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] } as Record<string, number[]>)[e.key]
+            if (!d) return
+            e.preventDefault()
+            colourKey(`curves.${ch}`)
+            const s = e.shiftKey ? 0.005 : 0.02
+            const p = findClip(useEditor.getState().project, id)?.clip.curves?.[ch]?.[i]
+            if (p) moveCurvePoint(id, ch, i, p[0] + d[0] * s, p[1] + d[1] * s)
+          }} />)}
       </g>
     </svg>
   )

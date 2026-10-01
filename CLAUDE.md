@@ -146,7 +146,9 @@ mixes audio and muxes/transcodes per preset.
   section writes through `src/engine/colourEdit.ts` ONCE per gesture — a
   slider drag of many values is one undo step, a gesture that wrote nothing
   none, every diamond/reset/mode/LUT click one; a wheel or curve-point drag
-  one, a point's delete one; «Вставить атрибуты» carries the colour);
+  one, a point's delete one; J14: a double-click is one step of its net
+  change — the puck jump or point its first press made folds into the reset or
+  delete, so a no-op leaves none; «Вставить атрибуты» carries the colour);
   `check-curves.mjs` wants the installed electron (J7: a curve passes
   through its points with no overshoot, neutral wheels and curves bake
   nothing, the baked table follows the exact function, and the REAL
@@ -918,14 +920,16 @@ mixes audio and muxes/transcodes per preset.
   functions of the encoded colour after the grade, so together they BAKE into
   one 1024-entry 1D half-float table per clip (`curveTable`, cached by
   content — the same settings are the same object, uploaded once; a drag
-  makes one per step, so the compositor keeps the newest 32) that the shader
+  makes one per step; `begin` frees any table texture — curve or LUT — no layer
+  bound for 8 frames, so a drag or a replaced LUT leaves nothing behind) that the shader
   samples between the grade and the LUT. They are NOT Anims: a keyframed
   wheel would mean a bake per frame. Wheel: out = (gain·(x + lift·(1 − x)))
   ^(2^−gamma), the puck a zero-sum shift along its hue (screen coordinates,
   red at 0°, clockwise). Curve: monotone cubic (Fritsch–Carlson tangents) —
   through every point, no overshoot; (0,0)/(1,1) implied unless a point sits
   at that end; Y first, then the channel. Neutral bakes nothing and the
-  shader skips the pass. The table serialises as its key (`toJSON`):
+  shader skips the pass. The table serialises as its key (`toJSON`), a
+  parsed .cube as `lut#<n>` (J14):
   `frameSignature` stringifies every layer per motion-blur sub-sample.
   «ДО И ПОСЛЕ» (J6, the colour section's head, Shift+\) is PREVIEW ONLY: the
   player draws the frame, then draws it again with the selected clip's colour

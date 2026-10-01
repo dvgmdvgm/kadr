@@ -112,6 +112,17 @@ const grid = Array.from({ length: 1001 }, (_, i) => i / 1000)
   check('curves: nothing left = absent', C.sanitizeCurves({ r: [] }) === undefined && C.sanitizeCurves('x') === undefined)
 }
 
+// ---- J14: a LUT table in frameSignature is a short identity, not 33³×3 numbers --------
+{
+  const L = await import('data:text/javascript;base64,' + Buffer.from(await bundle(`export * from './shared/lut'`, 'node')).toString('base64'))
+  const cube = (n) => `LUT_3D_SIZE ${n}\n` + Array.from({ length: n ** 3 }, (_, i) =>
+    [i % n, ((i / n) | 0) % n, (i / n / n) | 0].map((v) => (v / (n - 1)).toFixed(4)).join(' ')).join('\n')
+  const small = L.parseCube(cube(2)), big = L.parseCube(cube(33)), again = L.parseCube(cube(33))
+  const len = (t) => JSON.stringify({ lut: { table: t, mix: 1 } }).length
+  check('a LUT layer serialises the same length whatever the table size', Math.abs(len(big) - len(small)) <= 2 && len(big) < 80, `${len(small)} / ${len(big)}`)
+  check('a re-read table is another identity (a reload is a new signature)', JSON.stringify(big) !== JSON.stringify(again))
+}
+
 // ---- the shader, through the real Compositor -----------------------------------------
 const W = 256, H = 8
 const img = new Uint8Array(W * H * 3); { let s = 4321
@@ -157,6 +168,18 @@ for (const [name, [w, c]] of Object.entries(CASES)) {
     rgb[(y * W + x) * 3 + k] = out[((H - 1 - y) * W + x) * 4 + k]
   res[name] = rgb
 }
+// J14: a reloaded LUT and a dragged curve leave ONE texture each, not one per table ever drawn
+import { parseCube } from './shared/lut'
+const layer = { source: src, cacheKey: 'ramp', dynamic: false, srcWidth: W, srcHeight: H, x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 }
+const cube = 'LUT_3D_SIZE 2\\n' + [0, 1, 2, 3, 4, 5, 6, 7].map((i) => [i & 1, (i >> 1) & 1, i >> 2].join(' ')).join('\\n')
+for (let r = 0; r < 6; r++) {
+  const table = parseCube(cube)
+  for (let f = 0; f < 12; f++) { comp.begin('#000000'); comp.drawLayer({ ...layer, lut: { table, mix: 1 } }) }
+}
+const lutTextures = comp.luts.size
+for (let i = 0; i < 20; i++) { comp.begin('#000000'); comp.drawLayer({ ...layer, curve: curveTable(undefined, { y: [[0.5, 0.3 + i * 0.01]] }) }) }
+for (let f = 0; f < 12; f++) { comp.begin('#000000'); comp.drawLayer({ ...layer, curve: curveTable(undefined, { y: [[0.5, 0.49]] }) }) }
+res.textures = [lutTextures, comp.curveTex.size]
 console.log('RESULT ' + JSON.stringify(res))
 `, 'browser')
   writeFileSync(join(dir, 'page.js'), page)
@@ -186,6 +209,8 @@ app.whenReady().then(() => {
     }
     // the curve's own points on the grey ramp: input 64 → round(0.2·255)… exactly
     const pt = [[64, C.curveFn([[0.25, 0.2], [0.72, 0.8]])(64 / 255)]]
+    check('six LUT reloads leave one LUT texture, a 20-step curve drag one curve texture',
+      got.textures[0] === 1 && got.textures[1] === 1, JSON.stringify(got.textures))
     check('on the grey ramp a level near a point lands where the curve says (exact)',
       pt.every(([x, y]) => got.curve[x * 3] === Math.round(y * 255)), `${got.curve[64 * 3]} vs ${Math.round(pt[0][1] * 255)}`)
   }

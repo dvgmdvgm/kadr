@@ -223,6 +223,32 @@ n = steps()
 M.resetColour('c1')
 check('reset all colour takes the wheels and curves too', steps() === n + 1 && clip().wheels === undefined && clip().curves === undefined)
 
+// ── J14: a double-click is ONE step of its net change — the press that opened it
+// (puck jump / point added) folds into the reset / delete the double-click makes
+check('colourEdit exports colourDouble', typeof M.colourDouble === 'function')
+const dbl = (press, act) => { M.colourGesture(); press(); M.colourGesture(); M.colourDouble(); act() }
+fresh(); M.colourGesture(); M.setWheel('c1', 'lift', { x: 0.3, y: 0 })
+dbl(() => M.setWheel('c1', 'lift', { x: -0.5, y: 0.2 }), () => M.resetWheel('c1', 'lift'))
+check('double-click on a graded disc: one step, neutral; Ctrl+Z gives the grade back',
+  steps() === 2 && clip().wheels === undefined && (s().undo(), clip().wheels?.lift.x === 0.3), `${steps()} steps`)
+fresh()
+dbl(() => M.setWheel('c1', 'gain', { x: 0.4, y: 0 }), () => M.resetWheel('c1', 'gain'))
+check('double-click on a neutral disc: no step at all', steps() === 0 && clip().wheels === undefined, `${steps()} steps`)
+fresh()
+let k = -1
+dbl(() => { k = M.addCurvePoint('c1', 'y', 0.4, 0.4) }, () => M.removeCurvePoint('c1', 'y', k))
+check('double-click on the empty graph: no step, no point', steps() === 0 && clip().curves === undefined, `${steps()} steps`)
+fresh({ curves: { y: [[0.3, 0.4], [0.6, 0.7]] } })
+dbl(() => {}, () => M.removeCurvePoint('c1', 'y', 0))
+check('double-click on a point: one step', steps() === 1 && same(clip().curves, { y: [[0.6, 0.7]] }), `${steps()} steps`)
+fresh(); M.colourGesture(); M.setWheel('c1', 'gain', { x: 0.4, y: 0 })
+await new Promise((r) => setTimeout(r, 700))
+M.colourGesture(); M.colourGesture(); M.colourDouble(); M.resetWheel('c1', 'gain')
+check('a press long before the double-click keeps its own step', steps() === 2, `${steps()} steps`)
+fresh(); M.colourGesture(); M.setWheel('c1', 'gain', { x: 0.4, y: 0 })
+dbl(() => {}, () => M.resetWheel('c1', 'gain'))
+check('a drag right before a double-click that wrote nothing keeps its step', steps() === 2 && clip().wheels === undefined, `${steps()} steps`)
+
 // before/after draws the clip with its colour stripped — and nothing else changed
 fresh({ blend: 'add', grade: clip()?.grade, wheels: clip()?.wheels, curves: { g: [[0.4, 0.5]] } })
 const bare = M.stripColour(clip())

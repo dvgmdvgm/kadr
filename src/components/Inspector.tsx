@@ -263,7 +263,8 @@ function ClipProps({ clip }: { clip: Clip }) {
   const t = useT()
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
   const named = useRef(false)
-  const visual = useEditor((s) => clip.kind !== 'media' || s.project.assets.some((a) => a.id === clip.assetId && a.kind !== 'audio'))
+  // J14: by the track, as the colour section — an A/V import's audio twin is no picture
+  const visual = useEditor((s) => isVisualClip(s.project, clip))
   const project = useEditor((s) => s.project)
   const twin = useMemo(() => audioTwin(project, clip), [project, clip])
   const setAnim = (key: keyof Clip['transform'], v: number) =>

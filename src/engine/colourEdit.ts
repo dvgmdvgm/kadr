@@ -9,7 +9,7 @@
 // resets, mode, LUT) are one step each, and a reset of nothing is none.
 // Keyframes follow the clip's ordinary Anim rules: a parameter with keys takes
 // a key at the playhead (clip-local) when moved — the Lumetri behaviour.
-import type { Anim, Clip } from '@shared/types'
+import type { Anim, Clip, Project } from '@shared/types'
 import { GRADE_KEYS, type ClipGrade, type GradeKey } from '@shared/colour'
 import type { BlendMode } from '@shared/blend'
 import type { ClipKey } from '@shared/key'
@@ -69,10 +69,10 @@ let armed = false
 /** the keyboard run in progress: its parameter and the project it left behind */
 let keyRun: { p: string; project: unknown } | null = null
 /** a continuous control's gesture starts: its first write will be one undo step */
-export const colourGesture = () => { armed = true; keyRun = null }
+export const colourGesture = () => { armed = true; keyRun = null; gestures++ }
 /** a key on a range: presses on the same control in a row, with nothing else
     edited between them, are one gesture (one step); anything else starts one */
-export function colourKey(p: ColourParam | `wheels.${WheelKey}`) {
+export function colourKey(p: ColourParam | `wheels.${WheelKey}` | `curves.${CurveCh}`) {
   if (keyRun?.p === p && keyRun.project === st().project) return
   armed = true
   keyRun = { p, project: null }
@@ -84,16 +84,43 @@ function clipOf(id: string): Clip | null {
 }
 function write(id: string, patch: Partial<Clip>) {
   if (!Object.keys(patch).length) return
+  const push = armed
   if (armed) { st().pushHistory('hColour'); armed = false }
   st().updateClip(id, patch)
   if (keyRun) keyRun.project = st().project
+  if (push) pressed = { id, entry: st().past.at(-1), project: st().project, g: gestures }
+  else if (pressed?.id === id && pressed.entry === st().past.at(-1)) pressed.project = st().project
+}
+
+/** J14: the step the last press pushed — a double-click right after folds into it */
+type Press = { id: string; entry: unknown; project: unknown; g: number }
+let pressed: Press | null = null
+let fold: Press | null = null
+/** pointer gestures begun so far: a double-click's two presses are the last two */
+let gestures = 0
+/** a double-click arrives: the reset/delete it makes joins the step its FIRST
+    press pushed (puck jump, point added) — nothing else edited since — and a net
+    no-change leaves no step */
+export function colourDouble() {
+  const p = pressed
+  fold = p && p.g === gestures - 1 && st().past.at(-1) === p.entry && st().project === p.project ? p : null
 }
 /** a discrete edit: one step, or none when it changes nothing */
 function step(id: string, patch: Partial<Clip>): boolean {
   const c = clipOf(id)
+  const f = fold?.id === id ? fold : null
+  fold = null
   if (!c || Object.entries(patch).every(([k, v]) => JSON.stringify((c as unknown as Record<string, unknown>)[k]) === JSON.stringify(v))) return false
   armed = false
   keyRun = null
+  pressed = null
+  if (f) {
+    st().updateClip(id, patch)
+    const before = findClip((f.entry as { project: Project }).project, id)?.clip
+    // back where the press started: the step had nothing left to undo
+    if (JSON.stringify(before) === JSON.stringify(clipOf(id))) useEditor.setState((s) => ({ past: s.past.slice(0, -1) }))
+    return true
+  }
   st().pushHistory('hColour')
   // an `undefined` field stays as a key until the next copy; JSON drops it like absent
   st().updateClip(id, patch)
