@@ -1599,6 +1599,71 @@ div.tr-error {
   font-variant-numeric: tabular-nums;
   font-size: var(--fz-sm);
 }
+/* J6: the Inspector's «Цвет» section, landed from canvas J (design-source/canvas/J,
+   RULES 4–14): disclosure groups with a summary and a reset, parameter rows of
+   label · range · value · keyframe diamond */
+.cg-group { margin-bottom: var(--s2); }
+.cg-head { display: flex; align-items: center; gap: var(--s1); margin: var(--s3) 0 var(--s2); }
+.cg-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--s2); min-height: 26px; padding: 0 var(--s2) 0 0; background: none; border: none; color: var(--c-text); font-size: var(--fz-sm); font-weight: 600; text-align: left; cursor: pointer; }
+.cg-toggle:hover { color: var(--c-accent-hi); }
+.cg-sum { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400; font-size: var(--fz-label); color: var(--c-text-3); }
+.cg-mod { width: 6px; height: 6px; flex-shrink: 0; border-radius: var(--r-full); background: var(--c-accent); }
+.cg-sub { margin: var(--s4) 0 var(--s2); font-size: var(--fz-label); color: var(--c-text-3); }
+.cg-row { display: grid; grid-template-columns: 86px minmax(0, 1fr) 40px 20px; align-items: center; column-gap: var(--s3); min-height: 24px; margin-bottom: var(--s2); }
+.cg-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fz-sm); color: var(--c-text-2); }
+.cg-row > span.cg-set { color: var(--c-text); }
+.cg-row input[type='range'] { min-width: 0; }
+.cg-kf { width: 20px; min-width: 20px; height: 20px; min-height: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--c-text-off); cursor: pointer; }
+.cg-kf:hover:not(:disabled) { color: var(--c-text); }
+.cg-kf.cg-animated { color: var(--c-sel); }
+.cg-kf.on { color: var(--c-sel); }
+.cg-kf.on svg { fill: currentColor; }
+.cg-kf:disabled { cursor: default; opacity: 0.4; }
+.cg-file { flex: 1; min-width: 0; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--fz-sm); }
+.cg-seg { display: flex; gap: var(--s1); padding: var(--s1); margin-bottom: var(--s3); background: var(--c-bg-2); border: 1px solid var(--c-line-ctl); border-radius: var(--r2); }
+.cg-seg > button { flex: 1; min-width: 0; min-height: 24px; padding: 0 var(--s2); font-size: var(--fz-sm); }
+.cg-hex { flex: 1; font-family: var(--font-mono); font-size: var(--fz-sm); color: var(--c-text-2); }
+.cg-hint { display: flex; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--fz-label); line-height: 1.45; color: var(--c-text-3); }
+.cg-hint > svg { flex-shrink: 0; margin-top: 1px; }
+/* J7: Колёса (RULES 15) and Кривые (RULES 16) */
+.cg-wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); margin-bottom: var(--s3); }
+.cg-wheel { display: flex; flex-direction: column; align-items: center; gap: var(--s2); font-size: var(--fz-label); color: var(--c-text-2); }
+.cg-wheel input[type='range'] { width: 100%; }
+.cg-wheel .fx-val { width: auto; }
+.cg-disc { position: relative; width: 68px; height: 68px; border-radius: var(--r-full); box-shadow: inset 0 0 0 1px var(--c-line-2); touch-action: none; cursor: crosshair; }
+.cg-disc > img { width: 100%; height: 100%; display: block; pointer-events: none; }
+.cg-puck { position: absolute; width: 8px; height: 8px; margin: -5px 0 0 -5px; border: 1px solid var(--c-black); border-radius: var(--r-full); background: var(--c-text); box-shadow: var(--sh-1); pointer-events: none; }
+.cg-curve { display: block; width: 100%; aspect-ratio: 1; margin-bottom: var(--s3); background: var(--c-meter-bg); border: 1px solid var(--c-line); border-radius: var(--r1); touch-action: none; cursor: crosshair; }
+.cg-curve .cg-grid { color: var(--c-line-2); }
+.cg-curve [data-ch='y'] { color: var(--c-text); }
+.cg-curve [data-ch='r'] { color: var(--c-danger); }
+.cg-curve [data-ch='g'] { color: var(--c-ok); }
+.cg-curve [data-ch='b'] { color: var(--c-accent); }
+.cg-curve circle { cursor: grab; }
+.cg-curve circle:focus-visible { outline-offset: 2px; border-radius: 50%; }
+/* «До и после» over the preview (RULES 17): the GL draws both halves; this is
+   the divider, its knob and the labels, over the canvas rect */
+.ba-wrap { position: absolute; z-index: 8; overflow: hidden; pointer-events: none; box-shadow: 0 0 0 1px var(--c-line); }
+.ba-split { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid var(--c-guide); }
+.ba-knob { position: absolute; top: 50%; width: 26px; height: 26px; min-height: 26px; margin: -13px 0 0 -13px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-full); background: var(--c-float); border: 1px solid var(--c-line-2); color: var(--c-text); cursor: ew-resize; pointer-events: auto; }
+.ba-knob:hover { background: var(--c-bg-4); }
+.ba-label { position: absolute; top: var(--s4); padding: 1px var(--s3); border-radius: var(--r1); background: var(--c-float); font-size: var(--fz-label); color: var(--c-text); }
+/* J8: the scopes (RULES 2–3, 18–22) — a tab of the side panel or a window of
+   their own; one host moves between the two (src/engine/popout.ts) */
+.sc-slot, .sc-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sc-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--c-bg-1); }
+.sc-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--c-line); }
+.sc-tools > button { min-height: 24px; padding: 0 var(--s3); font-size: var(--fz-sm); }
+.sc-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s4); container-type: size; }
+/* below ~200 px only the first chosen scope (RULES 22, the Min board) */
+@container (max-height: 200px) { .sc-stack > .sc-box + .sc-box { display: none; } }
+.sc-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: var(--s3); padding: var(--s3) var(--s4); }
+.sc-box { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--c-meter-bg); border: 1px solid var(--c-line); border-radius: var(--r1); }
+.sc-box > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sc-label { position: absolute; top: var(--s2); left: var(--s3); font-size: var(--fz-micro); color: var(--c-text-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.sc-tick { position: absolute; font-family: var(--font-mono); font-size: var(--fz-micro); line-height: 1; color: var(--c-text-3); }
+.sc-foot { padding: var(--s2) var(--s4); border-top: 1px solid var(--c-line); font-size: var(--fz-label); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.sc-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); padding: var(--s7) var(--s6); font-size: var(--fz-sm); line-height: 1.5; color: var(--c-text-2); }
 
 /* ===========================================================================
    Timeline

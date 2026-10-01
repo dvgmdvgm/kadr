@@ -4,6 +4,7 @@
 import type { ClipGrade } from './colour'
 import type { BlendMode } from './blend'
 import type { ClipKey } from './key'
+import type { ClipWheels, ClipCurves } from './curves'
 import type { RelinkWanted } from './relinkMatch'
 import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
@@ -242,6 +243,10 @@ export interface Clip {
   blend?: BlendMode
   /** J4: chroma or luma key (shared/key.ts), before the grade; absent = none */
   key?: ClipKey
+  /** J7: lift/gamma/gain wheels (shared/curves.ts), after the grade; absent = none */
+  wheels?: ClipWheels
+  /** J7: Y/R/G/B curves, after the wheels, before the LUT; absent = none */
+  curves?: ClipCurves
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string
@@ -1421,6 +1426,8 @@ export interface KadrApi {
   libFonts(projectPath: string): Promise<string[]>
   /** J2: copy a .cube into `<dir of projectPath>/kadr-lib/luts` (an equal file there is reused, another of the name gets `-2`); the path to put on `Clip.lut` */
   lutImport(src: string, projectPath: string): Promise<string>
+  /** J6: pick one .cube file; null when cancelled */
+  openLutDialog(): Promise<string | null>
   /** Native directory picker; null when the user cancels. */
   pickDirectory(title?: string): Promise<string | null>
   /** Write a frame snapshot PNG into dir (Downloads when null) under a

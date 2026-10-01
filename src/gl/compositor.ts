@@ -10,6 +10,8 @@ import { GRADE_GLSL } from '@shared/colour'
 import { LUT_GLSL, type CubeLut } from '@shared/lut'
 import { BLEND_FS, blendIndex, type BlendMode } from '@shared/blend'
 import { KEY_GLSL, type KeyDraw } from '@shared/key'
+import { CURVE_GLSL } from '@shared/curves'
+import { scopeSize } from '@shared/scopes'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -42,6 +44,7 @@ uniform float uAspect;                 // layer width/height (aspect-correct dis
 out vec4 outColor;
 ${KEY_GLSL}
 ${GRADE_GLSL}
+${CURVE_GLSL}
 ${LUT_GLSL}
 
 float edgeDist(vec2 a, vec2 b, vec2 p) {
@@ -75,6 +78,8 @@ void main() {
   if (uKeyOn != 0) { highp vec4 k = kadrKey(c.rgb); c = vec4(k.rgb, c.a * k.a); }
   // J1: the primary grade, on straight colour before opacity (highp inside)
   if (uGradeOn == 1) c.rgb = kadrGrade(c.rgb);
+  // J7: wheels and curves, one baked 1D table, between the grade and the LUT
+  if (uCurveOn == 1) c.rgb = kadrCurve(c.rgb);
   // J2: the clip's LUT, after the grade, on straight colour
   if (uLutOn != 0) c.rgb = kadrLut(c.rgb);
   float alpha = c.a * uOpacity;
@@ -254,6 +259,8 @@ export interface LayerDraw {
   lut?: { table: CubeLut; mix: number }
   /** J4: the clip's key (shared/key.ts `keyAt`); absent = none */
   key?: KeyDraw
+  /** J7: the wheels and curves baked (shared/curves.ts `curveTable`); absent = none */
+  curve?: CubeLut
 }
 
 export interface ShapeUniform {
@@ -269,7 +276,7 @@ export interface ShapeUniform {
 
 export const MAX_SHAPES = 8
 /** J2: texture units of the LUTs (0 is the layer, 1 a transition's second input) */
-const LUT3_UNIT = 2, LUT1_UNIT = 3
+const LUT3_UNIT = 2, LUT1_UNIT = 3, CURVE_UNIT = 4
 
 interface TexEntry {
   tex: WebGLTexture
@@ -346,6 +353,11 @@ export class Compositor {
   private uLut: Record<'on' | 'min' | 'scale' | 'size' | 'mix', WebGLUniformLocation>
   /** J2: one texture per parsed LUT — a reload of the file is a new object, hence a new texture */
   private luts = new Map<CubeLut, WebGLTexture>()
+  /** J14: the frame each table texture was last bound in — `begin` frees the stale ones */
+  private tableUse = new Map<WebGLTexture, number>()
+  /** J7: baked wheel/curve tables — a drag makes one per step; `begin` frees the unused (J14) */
+  private curveTex = new Map<CubeLut, WebGLTexture>()
+  private uCurve!: Record<'on' | 'size', WebGLUniformLocation>
   private textures = new Map<string, TexEntry>()
   private frame = 0
   /** the frame in PROJECT pixels — all geometry, masks and effect radii */
@@ -394,6 +406,7 @@ export class Compositor {
     const u = (n: string) => gl.getUniformLocation(prog, n)!
     this.uKey = { on: u('uKeyOn'), rgb: u('uKeyRgb'), params: u('uKeyParams') }
     this.uLut = { on: u('uLutOn'), min: u('uLutMin'), scale: u('uLutScale'), size: u('uLutSize'), mix: u('uLutMix') }
+    this.uCurve = { on: u('uCurveOn'), size: u('uCurveSize') }
 
     this.vbo = gl.createBuffer()!
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
@@ -411,6 +424,7 @@ export class Compositor {
     gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0)
     gl.uniform1i(gl.getUniformLocation(prog, 'uLut3'), LUT3_UNIT)
     gl.uniform1i(gl.getUniformLocation(prog, 'uLut1'), LUT1_UNIT)
+    gl.uniform1i(gl.getUniformLocation(prog, 'uCurve'), CURVE_UNIT)
   }
 
   private buildProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -445,6 +459,30 @@ export class Compositor {
     this.canvas.width = pw
     this.canvas.height = ph
     this.gl.viewport(0, 0, pw, ph)
+  }
+
+  /** J6 before/after (preview only): everything drawn while set lands only in
+      the left `frac` of the frame — smaller effect buffers get a wider strip,
+      never a narrower one; null turns it off */
+  clipLeft(frac: number | null) {
+    const gl = this.gl
+    if (frac === null) { gl.disable(gl.SCISSOR_TEST); return }
+    gl.enable(gl.SCISSOR_TEST)
+    gl.scissor(0, 0, Math.round(this.pw * Math.min(1, Math.max(0, frac))), 1 << 15)
+  }
+
+  /** J6 pipette: the mean RGB (0…255) of an n×n square of the finished frame
+      around (fx, fy), fractions of the frame from its top-left */
+  meanAt(fx: number, fy: number, n = 5): [number, number, number] {
+    const gl = this.gl
+    const x = Math.min(this.pw - n, Math.max(0, Math.round(fx * this.pw - n / 2)))
+    const y = Math.min(this.ph - n, Math.max(0, Math.round((1 - fy) * this.ph - n / 2)))
+    const px = new Uint8Array(n * n * 4)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.readPixels(x, y, n, n, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    const sum = [0, 0, 0]
+    for (let i = 0; i < px.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += px[i + c]
+    return sum.map((v) => v / (n * n)) as [number, number, number]
   }
 
   /** Copy the finished frame out of the default framebuffer (bottom-up rows). */
@@ -489,9 +527,65 @@ export class Compositor {
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
   }
 
+  // J8 scopes: the finished frame downscaled by a blit into a small FBO and read
+  // into a PBO without waiting; scopeFetch() takes it once the GPU is done (a
+  // fence), a tick or more later — the preview never stalls on the readback.
+  private scope: { fbo: WebGLFramebuffer; rb: WebGLRenderbuffer; pbo: WebGLBuffer; w: number; h: number; fence: WebGLSync | null } | null = null
+
+  /** false while the previous read is still on its way */
+  scopeRead(): boolean {
+    const gl = this.gl
+    const [w, h] = scopeSize(this.pw, this.ph)
+    let s = this.scope
+    if (s?.fence) return false
+    if (!s || s.w !== w || s.h !== h) {
+      if (s) { gl.deleteFramebuffer(s.fbo); gl.deleteRenderbuffer(s.rb); gl.deleteBuffer(s.pbo) }
+      const rb = gl.createRenderbuffer()!, fbo = gl.createFramebuffer()!, pbo = gl.createBuffer()!
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb)
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo)
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, w * h * 4, gl.STREAM_READ)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+      s = this.scope = { fbo, rb, pbo, w, h, fence: null }
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.fbo)
+    gl.blitFramebuffer(0, 0, this.pw, this.ph, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.LINEAR)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, s.fbo)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    s.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    gl.flush()
+    return true
+  }
+
+  /** the pixels of the last scopeRead once they have arrived, else null */
+  scopeFetch(): { px: Uint8Array; w: number; h: number } | null {
+    const gl = this.gl, s = this.scope
+    if (!s?.fence) return null
+    if (gl.clientWaitSync(s.fence, 0, 0) === gl.TIMEOUT_EXPIRED) return null
+    gl.deleteSync(s.fence)
+    s.fence = null
+    const px = new Uint8Array(s.w * s.h * 4)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    return { px, w: s.w, h: s.h }
+  }
+
   begin(background: string) {
     const gl = this.gl
     this.frame++
+    // J14: a reloaded LUT or a dragged curve is a new table; a texture no layer
+    // bound for 8 frames (two passes a frame under «До и после») goes
+    for (const cache of [this.luts, this.curveTex]) for (const [t, tex] of cache) {
+      if ((this.tableUse.get(tex) ?? 0) >= this.frame - 8) continue
+      gl.deleteTexture(tex); cache.delete(t); this.tableUse.delete(tex)
+    }
     this.curFbo = this.target
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target)
     // 'transparent' (G6; H2 makes it selectable): the layers build their own coverage
@@ -557,6 +651,11 @@ export class Compositor {
       gl.uniform3f(this.uKey.params, l.key.tolerance, l.key.softness, l.key.spill)
     }
     this.bindLut(l.lut)
+    gl.uniform1i(this.uCurve.on, l.curve ? 1 : 0)
+    if (l.curve) {
+      this.lutTexture(l.curve, CURVE_UNIT, this.curveTex)
+      gl.uniform1f(this.uCurve.size, l.curve.size)
+    }
     const c = l.crop ?? [0, 0, 0, 0]
     gl.uniform4f(this.uCrop, c[0], c[1], c[2], c[3])
     const shapes = (l.shapes ?? []).slice(0, MAX_SHAPES)
@@ -1045,9 +1144,19 @@ export class Compositor {
     const t = lut && lut.mix > 0 ? lut.table : undefined
     gl.uniform1i(this.uLut.on, t ? t.dim : 0)
     if (!t) return
+    this.lutTexture(t, t.dim === 3 ? LUT3_UNIT : LUT1_UNIT, this.luts)
+    gl.uniform3f(this.uLut.min, t.domainMin[0], t.domainMin[1], t.domainMin[2])
+    gl.uniform3f(this.uLut.scale, 1 / (t.domainMax[0] - t.domainMin[0]), 1 / (t.domainMax[1] - t.domainMin[1]), 1 / (t.domainMax[2] - t.domainMin[2]))
+    gl.uniform1f(this.uLut.size, t.size)
+    gl.uniform1f(this.uLut.mix, Math.min(1, lut!.mix))
+  }
+
+  /** bind table `t` on texture unit `unit`, uploading it once into `cache` */
+  private lutTexture(t: CubeLut, unit: number, cache: Map<CubeLut, WebGLTexture>) {
+    const gl = this.gl
     const target = t.dim === 3 ? gl.TEXTURE_3D : gl.TEXTURE_2D
-    gl.activeTexture(gl.TEXTURE0 + (t.dim === 3 ? LUT3_UNIT : LUT1_UNIT))
-    let tex = this.luts.get(t)
+    gl.activeTexture(gl.TEXTURE0 + unit)
+    let tex = cache.get(t)
     if (tex) gl.bindTexture(target, tex)
     else {
       tex = gl.createTexture()!
@@ -1060,13 +1169,10 @@ export class Compositor {
       if (t.dim === 3) gl.texImage3D(target, 0, gl.RGB16F, t.size, t.size, t.size, 0, gl.RGB, gl.FLOAT, t.data)
       else gl.texImage2D(target, 0, gl.RGB16F, t.size, 1, 0, gl.RGB, gl.FLOAT, t.data)
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
-      this.luts.set(t, tex)
+      cache.set(t, tex)
     }
+    this.tableUse.set(tex, this.frame)
     gl.activeTexture(gl.TEXTURE0)
-    gl.uniform3f(this.uLut.min, t.domainMin[0], t.domainMin[1], t.domainMin[2])
-    gl.uniform3f(this.uLut.scale, 1 / (t.domainMax[0] - t.domainMin[0]), 1 / (t.domainMax[1] - t.domainMin[1]), 1 / (t.domainMax[2] - t.domainMin[2]))
-    gl.uniform1f(this.uLut.size, t.size)
-    gl.uniform1f(this.uLut.mix, Math.min(1, lut!.mix))
   }
 
   private getTexture(key: string): TexEntry {
@@ -1112,7 +1218,7 @@ export class Compositor {
     const gl = this.gl
     if (!gl.isContextLost()) {
       for (const entry of this.textures.values()) gl.deleteTexture(entry.tex)
-      for (const tex of this.luts.values()) gl.deleteTexture(tex)
+      for (const tex of [...this.luts.values(), ...this.curveTex.values()]) gl.deleteTexture(tex)
       for (const o of this.overlays) {
         gl.deleteFramebuffer(o.fbo)
         gl.deleteTexture(o.tex)
@@ -1141,6 +1247,8 @@ export class Compositor {
     }
     this.textures.clear()
     this.luts.clear()
+    this.curveTex.clear()
+    this.tableUse.clear()
     this.transProgs.clear()
     this.overlays = []
     this.overlaySize = 0

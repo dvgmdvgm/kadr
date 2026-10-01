@@ -6,7 +6,7 @@ import { CtxMenu } from './CtxMenu'
 import { Icon } from './icons'
 
 const LABELS: Record<AttrPart, TKey> = {
-  transform: 'attrTransform', effects: 'attrEffects', volume: 'attrVolume', speed: 'attrSpeed', masks: 'attrMasks'
+  transform: 'attrTransform', effects: 'attrEffects', volume: 'attrVolume', speed: 'attrSpeed', masks: 'attrMasks', colour: 'attrColour'
 }
 
 /** Ctrl+Alt+V: which parts of the copied clip go onto the selection. */

@@ -155,6 +155,7 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   if (clip.lut) return true // J2
   if (blendOf(clip.blend)) return true // J3: mixes with the GL picture under it
   if (clip.key) return true // J4: shader-only
+  if (clip.wheels || clip.curves) return true // J7: shader-only
   if (clip.transitionIn && clip.transitionIn.type !== 'none') return true
   if (clip.transitionOut && clip.transitionOut.type !== 'none') return true
   const end = clip.start + clip.duration

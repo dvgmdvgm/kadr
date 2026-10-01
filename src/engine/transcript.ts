@@ -155,4 +155,4 @@ export function fmtT(t: number): string {
 }
 
 /** The left side panel's tab — here so the palette's «Открыть транскрипт» can switch it. */
-export const useSideTab = create<{ tab: 'media' | 'markers' | 'transcript' | 'anim' | 'motion' }>(() => ({ tab: 'media' }))
+export const useSideTab = create<{ tab: 'media' | 'markers' | 'transcript' | 'scopes' | 'anim' | 'motion' }>(() => ({ tab: 'media' }))

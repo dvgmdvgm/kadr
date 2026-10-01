@@ -168,6 +168,20 @@ mixes audio and muxes/transcodes per preset.
   within 1/255 of `shared/key.ts`'s reference — chroma with and without
   spill, luma, the key before the grade, × a mask, × an alpha-packed matte;
   the backing keys to alpha 0, the edge is soft, spill 1 leaves no green);
+  `check-colour-ui.mjs` (J6: every control of the Inspector's «Цвет»
+  section writes through `src/engine/colourEdit.ts` ONCE per gesture — a
+  slider drag of many values is one undo step, a gesture that wrote nothing
+  none, every diamond/reset/mode/LUT click one; a wheel or curve-point drag
+  one, a point's delete one; J14: a double-click is one step of its net
+  change — the puck jump or point its first press made folds into the reset or
+  delete, so a no-op leaves none; «Вставить атрибуты» carries the colour);
+  `check-curves.mjs` wants the installed electron (J7: a curve passes
+  through its points with no overshoot, neutral wheels and curves bake
+  nothing, the baked table follows the exact function, and the REAL
+  Compositor matches the reference within 1/255);
+  `check-scope-bins.mjs` (J8: the scopes' counting in `shared/scopes.ts` on
+  75 % colour bars — histogram spikes at 0 and 191 with the bars' shares,
+  every bar on its BT.709 luma level and on its vectorscope target);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -469,7 +483,8 @@ mixes audio and muxes/transcodes per preset.
 - `electron/mcp-bridge.cjs` — MCP stdio server (SDK) that claude receives
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
   the semantic edits kadr_cut / kadr_move / kadr_trim / kadr_ripple_delete /
-  kadr_keyframe / kadr_text_add / kadr_volume / kadr_marker / kadr_undo
+  kadr_keyframe / kadr_text_add / kadr_volume / kadr_grade (J6: the colour
+  section — grade, LUT, blend, key; J7 wheels, curves) / kadr_marker / kadr_undo
   (`electron/mcp-edit-tools.cjs` → `kadrEditor.agentEdit`,
   `src/engine/agentEdits.ts`: zod-checked before the page, one store action
   and EXACTLY one undo step each — an edit that changes nothing leaves no
@@ -1052,6 +1067,39 @@ mixes audio and muxes/transcodes per preset.
   through pixel capture. 4:2:0 footage carries chroma at half resolution, so
   its key edge is two pixels wide and blocky on hard edges: raise softness,
   or key a 4:4:4 source.
+  WHEELS AND CURVES (J7, `Clip.wheels` {lift, gamma, gain: {x, y, level}},
+  `Clip.curves` {y|r|g|b: [x, y][]}, `shared/curves.ts`) are per-channel
+  functions of the encoded colour after the grade, so together they BAKE into
+  one 1024-entry 1D half-float table per clip (`curveTable`, cached by
+  content — the same settings are the same object, uploaded once; a drag
+  makes one per step; `begin` frees any table texture — curve or LUT — no layer
+  bound for 8 frames, so a drag or a replaced LUT leaves nothing behind) that the shader
+  samples between the grade and the LUT. They are NOT Anims: a keyframed
+  wheel would mean a bake per frame. Wheel: out = (gain·(x + lift·(1 − x)))
+  ^(2^−gamma), the puck a zero-sum shift along its hue (screen coordinates,
+  red at 0°, clockwise). Curve: monotone cubic (Fritsch–Carlson tangents) —
+  through every point, no overshoot; (0,0)/(1,1) implied unless a point sits
+  at that end; Y first, then the channel. Neutral bakes nothing and the
+  shader skips the pass. The table serialises as its key (`toJSON`), a
+  parsed .cube as `lut#<n>` (J14):
+  `frameSignature` stringifies every layer per motion-blur sub-sample.
+  «ДО И ПОСЛЕ» (J6, the colour section's head, Shift+\) is PREVIEW ONLY: the
+  player draws the frame, then draws it again with the selected clip's colour
+  stripped under a scissor over the left of the divider (`clipLeft`), so
+  `drawFrame`, snapshots (`drawNow`) and the export never see it. The key's
+  pipette draws that clip ALONE without its colour, reads the 5×5 mean
+  (`meanAt`) and draws the preview again in the same task.
+  SCOPES (J8, `src/components/ScopesPanel.tsx`, the side panel's «Скопы» tab
+  or a window of their own — `scopesPopout`, the same `makePopout` as the
+  preview's, one host moved, nothing rebuilt): while a panel is shown
+  (`subscribeScopes`) the Player blits each finished frame — BEFORE the «До и
+  после» pass, so they show the result — into a 320-wide FBO and reads it into
+  a PBO with a fence (`scopeRead`/`scopeFetch`): no stall, fetched a tick
+  later. Every draw while paused, ≤ 15 a second while playing; measured on a
+  1080p60 clip: no fps change, no dropped frame. `shared/scopes.ts` counts
+  them (BT.709 full range: luma 0–255 = 0–100 %, full Cb/Cr at 90 % of the
+  radius). They read the GL frame only: a fragment shown as an iframe is not in
+  it, and the panel says so.
   `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.

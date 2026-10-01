@@ -24,6 +24,7 @@ import { runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi } from '
 import { importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, wireModels, prepareForFragment } from './engine/models'
 import { useFragmentParams, setParam, resetParams, flushParamSaves } from './engine/fragmentParams'
 import { useOnion, setOnion, toggleOnion, wireOnion } from './engine/onion'
+import { useColourUi } from './engine/colourUi'
 import { audioStats, silencePreview, wirePreviewLimiter, loudness, resetLoudness } from './engine/audio'
 import { scrubStats } from './engine/scrubAudio'
 import limiterUrl from './engine/limiter.worklet.ts?worker&url'
@@ -118,7 +119,7 @@ wireFonts()
   reverseClip, importFiles, useImportUi, useImportSummary, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,
-  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,
+  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion, useColourUi,
   audioStats, silencePreview, previewPoolStats, loudness, resetLoudness, scrubStats,
   usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow,
   // L5: the source viewer (view state) and its three-point edit

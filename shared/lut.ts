@@ -50,8 +50,14 @@ export function parseCube(text: string): CubeLut {
   const want = (dim === 3 ? size ** 3 : size) * 3
   if (vals.length !== want) throw new Error(`the LUT has ${vals.length / 3} rows, its size says ${want / 3}`)
   if ([0, 1, 2].some((i) => !(max[i] > min[i]))) throw new Error('DOMAIN_MAX must exceed DOMAIN_MIN')
-  return { dim, size, domainMin: min, domainMax: max, data: Float32Array.from(vals) }
+  const t: CubeLut = { dim, size, domainMin: min, domainMax: max, data: Float32Array.from(vals) }
+  // J14: frameSignature stringifies every layer per motion-blur sub-sample — a
+  // 33³ table is 108k numbers each time; a parse is its identity (a re-read is a new one)
+  const id = `lut#${++parsed}`
+  Object.defineProperty(t, 'toJSON', { value: () => id })
+  return t
 }
+let parsed = 0
 
 /** the input on the LUT's grid: 0…size−1 per channel */
 const gridPos = (lut: CubeLut, v: number, i: number) =>

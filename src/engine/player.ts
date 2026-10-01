@@ -8,7 +8,10 @@ import { packSourceHeight } from '@shared/streamColour'
 import { gradeAt } from '@shared/colour'
 import { blendOf } from '@shared/blend'
 import { keyAt } from '@shared/key'
+import { curveTable } from '@shared/curves'
 import { lutFor } from './lut'
+import { compareProject, useColourUi } from './colourUi'
+import { stripColour } from './colourEdit'
 import { evalAnim } from './anim'
 import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
@@ -253,6 +256,25 @@ export type PreviewQuality = keyof typeof PREVIEW_SCALE
 /** «Прокси при воспроизведении» (proxy.ts keeps it in step with the setting);
     `scale` — the preview's quality (Preview.tsx keeps it in step) */
 export const previewPrefs = { proxies: true, scale: 1 as number }
+
+/** J8: the scopes' feed. A shown scopes panel holds `want` up; the player then
+    reads a small downscale of each finished frame (before «До и после» draws
+    over it, so the scopes follow the result) — every draw while paused, at most
+    15 a second while playing — and hands it to the listeners when it arrives. */
+export const scopeTap = {
+  want: 0,
+  /** a new subscriber or a read that could not start: redraw and read again */
+  stale: true,
+  frame: null as { px: Uint8Array; w: number; h: number; t: number } | null,
+  listeners: new Set<() => void>()
+}
+export function subscribeScopes(fn: () => void): () => void {
+  scopeTap.want++
+  scopeTap.stale = true
+  scopeTap.listeners.add(fn)
+  return () => { scopeTap.want--; scopeTap.listeners.delete(fn) }
+}
+const SCOPE_MS = 1000 / 15
 
 export class MediaPool {
   private items = new Map<string, HTMLVideoElement | HTMLImageElement>()
@@ -631,7 +653,8 @@ function drawClipLayer(
         : undefined,
       key: keyAt(clip.key, rel, evalAnim),
       grade: gradeAt(clip.grade, rel, evalAnim),
-      lut: lutAt(clip, rel)
+      lut: lutAt(clip, rel),
+      curve: curveTable(clip.wheels, clip.curves)
     }
     if (common.opacity <= 0.001) return
     // enabled outer glows render the layer through the effect pass; smoke is
@@ -776,6 +799,9 @@ export class Player {
   private wasLoading = false
   private lastDrawnProject: Project | null = null
   private lastDrawnT = -1
+  private lastUi: unknown = null
+  private scopeAt = -Infinity
+  private scopeT = 0
   private stableTicks = 0
   /** playback clock anchor — see tick() */
   private anchor: ClockAnchor | null = null
@@ -804,6 +830,24 @@ export class Player {
     drawFrame(this.comp, project, playhead, this.pool)
     this.lastDrawnProject = project
     this.lastDrawnT = playhead
+  }
+
+  /** J6 pipette: the mean colour (0…255) of 5×5 px of clip `clipId` ALONE, with
+      its colour off, at (fx, fy) of the frame — what its key should take out.
+      The preview is drawn again right after, so nothing of it is ever seen. */
+  sampleSource(clipId: string, fx: number, fy: number): [number, number, number] | null {
+    if (!this.comp) return null
+    const { project, playhead } = this.hooks.getState()
+    const track = project.tracks.find((tr) => tr.clips.some((c) => c.id === clipId))
+    const clip = track?.clips.find((c) => c.id === clipId)
+    if (!track || !clip) return null
+    const bare = stripColour(clip)
+    const solo: Project = { ...project, background: '#000000', tracks: [{ ...track, muted: false, gain: 1, clips: [bare] }] }
+    this.comp.scale = this.renderScale()
+    drawFrame(this.comp, solo, playhead, this.pool)
+    const rgb = this.comp.meanAt(fx, fy)
+    this.drawNow()
+    return rgb
   }
 
   attach(canvas: HTMLCanvasElement) {
@@ -930,13 +974,35 @@ export class Player {
     // composite (texture re-uploads of every visible video are not free) —
     // late-arriving seeks still show up within a quarter second
     const scale = this.renderScale()
-    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale
+    const ui = useColourUi.getState()
+    const scopes = scopeTap.want > 0
+    if (scopes && this.comp) {
+      const f = this.comp.scopeFetch()
+      if (f) {
+        scopeTap.frame = { ...f, t: this.scopeT }
+        for (const fn of scopeTap.listeners) fn()
+      }
+    }
+    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale ||
+      ui !== this.lastUi || (scopes && scopeTap.stale)
     if (dirty) this.stableTicks = 0
     else this.stableTicks++
     const skipDraw = !dirty && this.stableTicks > 20 && this.stableTicks % 15 !== 0
     if (this.comp && !skipDraw) {
       this.comp.scale = scale
       drawFrame(this.comp, project, t, this.pool)
+      if (scopes && (!playing || ts - this.scopeAt >= SCOPE_MS)) {
+        const started = this.comp.scopeRead()
+        scopeTap.stale = !started
+        if (started) { this.scopeAt = ts; this.scopeT = t }
+      }
+      // J6 «До и после»: the left of the divider again, the selected clip without its colour
+      const before = compareProject(project)
+      if (before) {
+        this.comp.clipLeft(ui.split)
+        try { drawFrame(this.comp, before, t, this.pool) } finally { this.comp.clipLeft(null) }
+      }
+      this.lastUi = ui
       if (playing) frameMeter.draw(ts, project.fps || 30)
       this.lastDrawnProject = project
       this.lastDrawnT = t
