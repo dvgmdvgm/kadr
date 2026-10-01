@@ -6,12 +6,12 @@
 // the timeline's frames part by one frame every ~9 hours; stored as a rounded
 // number anywhere else, much sooner.
 // Run: node scripts/check-fps-rational.mjs
-import { readFileSync, mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
-import { transformSync } from 'esbuild'
+import { buildSync } from 'esbuild'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 let fails = 0
@@ -21,7 +21,9 @@ const check = (name, ok, detail = '') => {
 }
 const load = async (...p) => {
   try {
-    const js = transformSync(readFileSync(join(root, ...p), 'utf8'), { loader: 'ts', format: 'esm', platform: 'node' }).code
+    // bundled like check-timeline: timelineMath imports '@shared/…' (L3)
+    const js = buildSync({ entryPoints: [join(root, ...p)], bundle: true, format: 'esm', platform: 'neutral',
+      write: false, logLevel: 'error', alias: { '@shared': join(root, 'shared'), '@': join(root, 'src') } }).outputFiles[0].text
     return await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
   } catch (err) {
     check(`${p.join('/')} loads`, false, String(err).split('\n')[0])
