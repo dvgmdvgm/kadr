@@ -48,6 +48,8 @@ mixes audio and muxes/transcodes per preset.
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
   `check-scrub-grains.mjs` (K7: scrub grains at most every 60 ms, none after
   the drag ends — not even a seek landing late — and each stops by itself);
+  `check-mixer-binding.mjs` (K6: the fader and the header slider are one
+  value, the taper table, one undo step per gesture, keyed edits as keys);
   `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
@@ -603,6 +605,23 @@ mixes audio and muxes/transcodes per preset.
   landing, a seek that lands after the drag is dropped, and every grain stops
   itself, so a lost pointerup cannot leave a sound running.
   `kadrEditor.scrubStats`. Test: `node scripts/check-scrub-grains.mjs`.
+  THE MIXER (K6, `src/components/Mixer.tsx`, writes in `src/engine/mixer.ts`):
+  a dock right of the timeline's lanes («Микшер» in its toolbar, open state in
+  localStorage), one strip per AUDIO track plus the master. The fader IS
+  `Track.gain` / `project.masterGain` through ONE taper table
+  (`shared/fader.ts`: +6 → 1, 0 → 0.8 … −40 → 0.14, −60 → 0) that the
+  Inspector's gain range shares; the strip and the track header write through
+  the same functions, and mute now pushes an undo step like solo. A track's
+  gain stays in each element's gain (the sound did not change); what a strip
+  meters is a per-track BUS GainNode at unity between the elements' pan and
+  the master, tapped by a splitter into two analysers (`trackPeaks`,
+  `masterPeaks` after the limiter). The limiter worklet posts its gain
+  reduction 10×/s (`limiterInfo`). The loudness worklet takes 'pause'/'run':
+  while stopped nothing is fed (the filter's tail drifted the integrated value
+  −18.60 → −18.67 in 3 s) and M/S read −∞; playback that starts where the
+  playhead was MOVED to since the stop resets the measurement, a resume does
+  not. Keyed pan or clip gain take an edit as a key under the playhead, never
+  `.value`. Test: `node scripts/check-mixer-binding.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings

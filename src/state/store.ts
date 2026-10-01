@@ -1018,6 +1018,8 @@ interface EditorState {
   removeTrack(trackId: string): void
   moveTrack(trackId: string, toIndex: number): void
   updateTrack(trackId: string, patch: Partial<Track>): void
+  /** K4/K6: the master fader, linear (no history: callers push once per gesture) */
+  setMasterGain(gain: number): void
 
   insertClipFromAsset(assetId: string, trackId: string | null, at: number, ripple?: boolean): void
   /** Place several assets back-to-back starting at `at` (one undo entry);
@@ -1929,6 +1931,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (t) Object.assign(t, patch)
       return { project: p }
     }),
+
+  setMasterGain: (gain) => set((s) => ({ project: { ...s.project, masterGain: gain } })),
 
   insertClipFromAsset: (assetId, trackId, at, ripple) =>
     get().insertClipsFromAssets([assetId], trackId, at, ripple),

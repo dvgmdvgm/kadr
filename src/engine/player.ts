@@ -13,7 +13,7 @@ import { evalAnim } from './anim'
 import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
-import { attachAudio, detachAudio, setElementGain, setElementPan, setMasterGain, isRouted, resumeAudio } from './audio'
+import { attachAudio, detachAudio, setElementGain, setElementPan, setElementTrack, setMasterGain, isRouted, resumeAudio } from './audio'
 import { clampPan } from '@shared/pan'
 import { logError } from './log'
 import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
@@ -968,6 +968,7 @@ export class Player {
       el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
       this.pool.setVolume(el, audioLevelAt(clip, track, rel))
       setElementPan(el, panAt(clip, track, t))
+      setElementTrack(el, track.kind === 'audio' ? track.id : '')
       // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
       // is muted (shared/audioSpeed.ts), the element free-runs at the clamped
       // rate and the resync below keeps it on the master clock with seeks

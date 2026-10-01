@@ -47,6 +47,9 @@ import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
 import { scrub } from '@/engine/scrubAudio'
+import { toggleTrack, useMixerUi } from '@/engine/mixer'
+import { MixerDock } from './Mixer'
+import { dbText, gainToDb } from '@shared/fader'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -559,6 +562,7 @@ export function Timeline({ height }: { height: number }) {
     }
   }
 
+  const mixerOpen = useMixerUi((s) => s.open)
   return (
     <div className="timeline" style={{ height }}>
       <div className="tl-toolbar">
@@ -591,6 +595,7 @@ export function Timeline({ height }: { height: number }) {
         <DefectButtons />
         <SilenceButtons />
         <TimelineHelp />
+        <MixerToggle />
         <span className="flex1" />
         <label className="zoom-ctl">
           {t('trackHeight')}
@@ -630,6 +635,7 @@ export function Timeline({ height }: { height: number }) {
           />
         </label>
       </div>
+      <div className="mx-row">
       <div className="tl-scroll" ref={scrollRef} onDragOver={onAnyDragOver} onDrop={onAnyDrop}>
         <div className="tl-content" style={{ width: HEADER_W + contentW, ['--z' as string]: zoom, ['--hw' as string]: `${HEADER_W}px` }}>
           <RulerRow contentW={contentW} view={view} />
@@ -657,9 +663,23 @@ export function Timeline({ height }: { height: number }) {
           </div>
         </div>
       </div>
+      {mixerOpen && <MixerDock />}
+      </div>
       {menu && <TrackMenu menu={menu} onClose={() => setMenu(null)} />}
       <TimelineAsks />
     </div>
+  )
+}
+
+/** K6: «Микшер» in the timeline toolbar opens the dock right of the lanes */
+function MixerToggle() {
+  const t = useT()
+  const open = useMixerUi((s) => s.open)
+  return (
+    <button className={open ? 'toggled' : ''} data-act="mixer" aria-pressed={open} title={t('mxToggleTitle')}
+            onClick={() => useMixerUi.getState().setOpen(!open)}>
+      <Icon name="sliders" size={13} /> {t('mxToggle')}
+    </button>
   )
 }
 
@@ -1710,7 +1730,7 @@ function TrackRow({
             title={t('mute')}
             aria-label={t('mute')}
             aria-pressed={track.muted}
-            onClick={() => useEditor.getState().updateTrack(track.id, { muted: !track.muted })}
+            onClick={() => toggleTrack(track.id, 'muted')}
           >
             <Icon name={track.muted ? 'mute' : 'volume'} size={13} />
           </button>
@@ -1720,11 +1740,7 @@ function TrackRow({
             title={t('solo')}
             aria-label={t('solo')}
             aria-pressed={!!track.solo}
-            onClick={() => {
-              const st = useEditor.getState()
-              st.pushHistory('hTrack')
-              st.updateTrack(track.id, { solo: !track.solo })
-            }}
+            onClick={() => toggleTrack(track.id, 'solo')}
           >
             <Icon name="solo" size={13} />
           </button>
@@ -1759,7 +1775,9 @@ function TrackRow({
                 useEditor.getState().updateTrack(track.id, { gain: Number(e.target.value) })
               }
             />
-            <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>
+            {track.kind === 'audio'
+              ? <span className="gain-pct dim" title={t('thGainDb')}>{dbText(gainToDb(track.gain))}</span>
+              : <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>}
           </div>
         )}
       </div>
