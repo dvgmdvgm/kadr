@@ -14,6 +14,8 @@ import { Modal } from './Modal'
 interface TextUiState {
   transcribeTarget: TranscribeFlowOpts['target'] | null
   openDocId: string | null
+  /** a transcription in flight: the dialog's progress, also shown by the transcript panel */
+  run: { progress: number; live: string } | null
   openTranscribe(target: TranscribeFlowOpts['target']): void
   closeTranscribe(): void
   openDoc(id: string | null): void
@@ -22,6 +24,7 @@ interface TextUiState {
 export const useTextUi = create<TextUiState>((set) => ({
   transcribeTarget: null,
   openDocId: null,
+  run: null,
   openTranscribe: (target) => set({ transcribeTarget: target }),
   closeTranscribe: () => set({ transcribeTarget: null }),
   openDoc: (id) => set({ openDocId: id })
@@ -36,9 +39,13 @@ export function TranscribeDialog() {
   const [language, setLanguage] = useState('auto')
   const [timecodes, setTimecodes] = useState<'absolute' | 'relative'>('absolute')
   const [maxWords, setMaxWords] = useState(3)
-  const [running, setRunning] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [liveText, setLiveText] = useState('')
+  const run_ = useTextUi((s) => s.run)
+  const running = !!run_
+  const progress = run_?.progress ?? 0
+  const liveText = run_?.live ?? ''
+  const setRunning = (on: boolean) => useTextUi.setState({ run: on ? { progress: 0, live: '' } : null })
+  const setProgress = (progress: number) => useTextUi.setState((u) => ({ run: u.run && { ...u.run, progress } }))
+  const setLiveText = (live: string) => useTextUi.setState((u) => ({ run: u.run && { ...u.run, live } }))
   const [error, setError] = useState('')
   // «Распознавание речи» settings: each opening starts from them
   useEffect(() => {

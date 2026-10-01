@@ -115,6 +115,12 @@ mixes audio and muxes/transcodes per preset.
   reason; only what the user confirmed is cut, in ONE undo step, overlapping
   ranges merged in `extractRanges`; apply by ids is refused, and
   kadr_silences never cuts another kind);
+  `check-word-cut.mjs` (I10: the transcript panel's word deletion —
+  `cutWords` in `src/engine/transcript.ts` — cuts inside the silence around
+  the words, never through a phoneme: each edge is the middle of the longest
+  quiet run of the `audio:envelope` in the gap (kadr_phrases' `cut_point`
+  rule), on frames, ONE undo step; the proposals are shifted across that
+  cut, not dropped; paragraphs, the word under the playhead, search);
   `check-batch-ranges.mjs` (I11: confirmed `short` proposals export once
   each, one at a time, named from the reason without overwriting a file or
   each other; a failure or a cancel stops the batch; a short is never cut);
