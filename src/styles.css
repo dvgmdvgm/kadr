@@ -617,6 +617,11 @@ progress::-webkit-progress-value {
   border-radius: var(--r-full) var(--r-full) 0 0;
   background: var(--c-accent);
 }
+/* L6: the timelines over the tracks — the side panel's tabs, a notch tighter */
+.tl-tabs { padding: var(--s2) var(--s3) 0; flex-shrink: 0; }
+.tl-tabs > button { padding: 3px var(--s5) 5px; }
+.tl-tabs > button.tl-tab-add { padding: 3px var(--s3) 5px; }
+.tl-tab-name { width: 14ch; margin-bottom: 2px; }
 .tab-close {
   display: inline-flex;
   align-items: center;
@@ -1111,6 +1116,7 @@ body.kadr-popout .preview {
 .insp-field input[type='number'] { width: 92px; font-variant-numeric: tabular-nums; }
 .insp-field.tall { flex-direction: column; align-items: stretch; gap: var(--s2); }
 .insp-inline { display: flex; align-items: center; gap: var(--s2); }
+.insp-note { color: var(--c-text-2); font-size: var(--fz-sm); margin-bottom: var(--s4); }
 .insp-field textarea { resize: vertical; min-height: 56px; }
 
 /* ===========================================================================

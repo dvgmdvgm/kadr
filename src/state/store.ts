@@ -2229,7 +2229,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         // linked partners change tempo together
         for (const f of withLinked(p, [id])
           .map((cid) => findClip(p, cid))
-          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
+          // L6: a compound plays its timeline at 1× (the expansion has no speed)
+          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked && !isCompound(x.clip))) {
           const c = f.clip
           const oldSpeed = c.speed || 1
           rescaleClipAnims(c, oldSpeed / speed)

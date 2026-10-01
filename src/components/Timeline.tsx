@@ -49,6 +49,8 @@ import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
 import { scrub } from '@/engine/scrubAudio'
 import { clipMarkerTime } from '@shared/markers'
+import { isCompound } from '@shared/timelines'
+import { TimelineTabs, openCompound } from './TimelineTabs'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -634,6 +636,7 @@ export function Timeline({ height }: { height: number }) {
           />
         </label>
       </div>
+      <TimelineTabs />
       <div className="tl-scroll" ref={scrollRef} onDragOver={onAnyDragOver} onDrop={onAnyDrop}>
         <div className="tl-content" style={{ width: HEADER_W + contentW, ['--z' as string]: zoom, ['--hw' as string]: `${HEADER_W}px` }}>
           <RulerRow contentW={contentW} view={view} />
@@ -1021,6 +1024,23 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
             }}
           >
             {findClip(useEditor.getState().project, menu.clipId!)?.clip.disabled ? t('clipEnable') : t('clipDisable')}
+          </button>
+          {(() => {
+            // L6: a compound opens; any selection nests
+            const f = findClip(useEditor.getState().project, menu.clipId!)
+            return f && isCompound(f.clip) ? (
+              <button data-act="clip-open-compound" onClick={() => { openCompound(f.clip); onClose() }}>{t('tlOpen')}</button>
+            ) : null
+          })()}
+          <button
+            data-act="clip-nest"
+            onClick={() => {
+              const st = useEditor.getState()
+              st.nestClips(st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+              onClose()
+            }}
+          >
+            {t('actNest')}
           </button>
           {menu.at !== undefined && (
             <button
@@ -2914,9 +2934,12 @@ const ClipView = memo(function ClipView({
   })()
 
   const isText = clip.kind === 'text'
+  // L6: a compound clip is drawn like any clip with a nest glyph; what its expansion
+  // does not honour (fades, edge tips, opacity keys) is not offered on it
+  const compound = clip.kind === 'timeline'
   const fadeIn = clip.fadeIn ?? 0
   const fadeOut = clip.fadeOut ?? 0
-  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}${offline ? ' offline' : ''}${clip.disabled ? ' disabled' : ''}`
+  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}${compound ? ' compound-clip' : ''}${offline ? ' offline' : ''}${clip.disabled ? ' disabled' : ''}`
   // a colour label (E9): the clip's own, else its track's
   const label = clip.color ?? track.color
   const tint = label ? { background: `var(--label-${label})` } : {}
@@ -2951,7 +2974,8 @@ const ClipView = memo(function ClipView({
 
   const onDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    useEditor.getState().setAnimClip(clip.id)
+    if (compound) openCompound(clip)
+    else useEditor.getState().setAnimClip(clip.id)
   }
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -3003,7 +3027,7 @@ const ClipView = memo(function ClipView({
       {track.kind === 'audio' && visW > 0 && (
         <canvas ref={waveRef} className="clip-wave" style={{ left: zpx(vis0 / zoom), width: zpx(visW / zoom) }} />
       )}
-      {levelPath ? (
+      {compound ? null : levelPath ? (
         <svg className="level-curve" style={{ height: levelUsable + levelPad * 2 }}
           viewBox={`0 0 ${clip.duration} ${levelUsable + levelPad * 2}`} preserveAspectRatio="none">
           <polyline className="level-curve-hit" points={levelPath} onPointerDown={startLevelDrag}>
@@ -3021,7 +3045,7 @@ const ClipView = memo(function ClipView({
           <div className="level-line" />
         </div>
       )}
-      {w > 30 && sortedKfs(levelAnim ?? { value: 1 }).map((k, i) => (
+      {w > 30 && !compound && sortedKfs(levelAnim ?? { value: 1 }).map((k, i) => (
         <div
           key={i}
           className="level-point"
@@ -3063,6 +3087,7 @@ const ClipView = memo(function ClipView({
       <span className="clip-label">
         {offline && <span className="clip-offline" title={t('offlineClip')}><Icon name="unlink" size={11} /></span>}
         {clip.kind === 'remotion' && <Icon name="atom" size={11} />}
+        {compound && <Icon name="layers" size={11} />}
         {clip.linkId && <Icon name="link" size={11} />}
         <span>
           {isText ? `T: ${clip.text}` : clip.label}
@@ -3080,7 +3105,7 @@ const ClipView = memo(function ClipView({
       )}
       {tipIn && <div className="tip-strip left" style={{ width: zpx(tipIn.duration) }} />}
       {tipOut && <div className="tip-strip right" style={{ width: zpx(tipOut.duration) }} />}
-      {track.kind === 'video' && w > 40 && (
+      {track.kind === 'video' && w > 40 && !compound && (
         <>
           <div
             className={`clip-tip left ${tipIn ? 'set' : ''}`}
@@ -3102,7 +3127,7 @@ const ClipView = memo(function ClipView({
       )}
       <div className="trim-handle left" />
       <div className="trim-handle right" />
-      {w > 30 && (
+      {w > 30 && !compound && (
         <>
           <div
             className="fade-handle left"

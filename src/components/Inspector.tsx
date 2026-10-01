@@ -10,6 +10,7 @@ import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
 import { fontChoices } from '@/engine/fonts'
 import { audioTwin } from '@/engine/timelineSelect'
+import { openCompound } from './TimelineTabs'
 import { RESOLUTION_PRESETS, FPS_PRESETS, exactFps, fpsLabel } from '@shared/projectFormat'
 
 function Num({
@@ -301,6 +302,15 @@ function ClipProps({ clip }: { clip: Clip }) {
           <TextStyleRows style={clip.textStyle} set={setStyle} />
         </>
       )}
+      {clip.kind === 'timeline' && (
+        // L6: a nest is played through its contents; its picture is edited inside it
+        <>
+          <div className="insp-section"><Icon name="layers" size={13} /> {t('tlCompoundSec')}</div>
+          <div className="insp-note">{t('tlCompoundNote')}</div>
+          <button data-act="insp-open-compound" onClick={() => openCompound(clip)}>{t('tlOpen')}</button>
+        </>
+      )}
+      {clip.kind !== 'timeline' && <>
       <div className="insp-section">{t('position')}</div>
       <Num label="X" value={clip.transform.x.value} onChange={(v) => setAnim('x', v)} />
       <Num label="Y" value={clip.transform.y.value} onChange={(v) => setAnim('y', v)} />
@@ -335,6 +345,7 @@ function ClipProps({ clip }: { clip: Clip }) {
           ))}
         </>
       )}
+      </>}
       <div className="insp-section">{t('volume')}</div>
       {twin && clip.muted ? (
         // an AV import: the picture's own sound is off because it plays from the audio clip
@@ -357,7 +368,7 @@ function ClipProps({ clip }: { clip: Clip }) {
       )}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
-      <EffectsSection clip={clip} />
+      {clip.kind !== 'timeline' && <EffectsSection clip={clip} />}
     </>
   )
 }

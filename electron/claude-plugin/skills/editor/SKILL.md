@@ -112,6 +112,15 @@ rhythm, readability or physical sense — not a technical failure. So:
   once before a batch of low-level edits (updateClip etc.) — that's one undo
   step for the user. High-level actions (insertClipsFromAssets,
   splitAtPlayhead, removeAssets…) push their own.
+- SEVERAL TIMELINES: `project.tracks` is the OPEN timeline only; the others
+  live in `project.timelines[i].tracks` (the open one's entry has none) and
+  `kadr_state` lists them under `timelines`. A clip of `kind: "timeline"`
+  (a compound clip, `timelineId`) plays another timeline — its `inPoint` is a
+  second of THAT timeline. Open one with `setActiveTimeline(id)` before
+  editing its clips; nest clips with `nestClips(ids)`, lay a timeline in with
+  `insertTimelineClip(id, trackId|null, at)` (refused when it would contain
+  itself), `addTimeline(name?)`. A compound has no picture controls: its
+  transform, effects, fades and speed do nothing — edit inside it.
 - Animatable scalars (gain, transform.x/y/scale/rotation/opacity) are Anim
   objects — write `{ value: 0.5 }`, never a bare number.
 - Re-read `getState()` after every action; the store is immutable snapshots.

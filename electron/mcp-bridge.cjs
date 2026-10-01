@@ -107,8 +107,9 @@ server.registerTool('kadr_state', {
     'meta (id, name, size, fps, background…), tracks, assets (with tracks/range: only those the sliced ' +
     'clips use), bins, texts, markers, voiceRuns, defects, claudeChats, selection, voiceDefects, ' +
     'exportPresets, words. A reply is NEVER cut: one over 100 KB is refused with a narrower slice to ask ' +
-    'for. All times are in seconds. tracks[0] is the topmost ' +
-    'video track (drawn last). Clip: {id, kind: media|text, assetId, start, duration, inPoint, ' +
+    'for. All times are in seconds. tracks are those of the OPEN timeline (summary: timelines [{id, name, active, clips}]; ' +
+    'the others are in project.timelines[i].tracks); tracks[0] is the topmost ' +
+    'video track (drawn last). Clip: {id, kind: media|text|remotion|timeline (a compound clip: timelineId, inPoint in that timeline), assetId, start, duration, inPoint, ' +
     'speed, gain, muted, transform, fit? (contain|cover|stretch; absent = contain), flipX?, flipY?, mask?, maskShapes?, effects[], transitionIn/Out?, fadeIn/Out?, fadeInCurve/fadeOutCurve? (lin|qsin|log|exp — the audio fade shape, also over an overlap crossfade; absent = lin, qsin = equal power), ' +
     'label?, color? (label 1..8), disabled? (switched off: not drawn, not heard, not exported), freezeAt? (freeze frame: this source second held for the whole clip, silent)}. ' +
     'Track: {id, kind, name, muted, locked, solo? (while any track is soloed only soloed tracks are ' +

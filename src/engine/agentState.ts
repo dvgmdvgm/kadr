@@ -5,6 +5,7 @@
 // still too big is refused with a narrower one to ask for.
 import type { Clip, Project, TimelineMarker, Track } from '@shared/types'
 import { projectDuration } from '../state/store'
+import { activeTimelineId, timelinesOf } from '@shared/timelines'
 import { placeWords } from './words'
 
 /** a reply larger than this is refused, not cut (chars of compact JSON) */
@@ -53,6 +54,11 @@ function summary(src: StateSource) {
     range: src.range,
     selection: src.selection.slice(0, SUMMARY_SELECTION),
     selectionCount: src.selection.length,
+    // L6: present once a project has more than one; `tracks` below are the open one's
+    ...(p.timelines ? { timelines: timelinesOf(p).map((tl) => ({
+      id: tl.id, name: tl.name, active: tl.id === activeTimelineId(p),
+      clips: (tl.id === activeTimelineId(p) ? p.tracks : tl.tracks ?? []).reduce((n, t) => n + t.clips.length, 0)
+    })) } : {}),
     tracks: p.tracks.map((t) => ({
       id: t.id, kind: t.kind, name: t.name, clips: t.clips.length,
       from: t.clips.length ? Math.min(...t.clips.map((c) => c.start)) : null,

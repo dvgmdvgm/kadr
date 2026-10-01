@@ -46,6 +46,8 @@ mixes audio and muxes/transcodes per preset.
   chain against the one pan law — static, keyframed, mono (K10: at its own
   level on each channel, preview = export, premix too), hard left silent
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
+  `check-nesting.mjs` (L6: a compound clip draws and mixes like its contents
+  laid out flat, loops are refused, an old project loads with every clip);
   `check-speed-ramp.mjs` (L3: source time is the integral of a speed ramp in
   every consumer — preview/export frames, frame blending, export audio chunks
   within a frame of the picture, markers, splits, trims, speed changes);
@@ -196,7 +198,28 @@ mixes audio and muxes/transcodes per preset.
   Keyframe, TextDoc, FragmentSpec, ExportPreset/ExportJob, the `KadrApi`
   IPC surface). All times in seconds. `Anim` is a scalar that may carry
   keyframes; `evalAnim` interpolates. `tracks[0]` is the top video track
-  (drawn last).
+  (drawn last) of the OPEN timeline.
+  SEVERAL TIMELINES AND COMPOUND CLIPS (L6, `shared/timelines.ts`,
+  `src/engine/nesting.ts`): `project.timelines` lists every timeline; the
+  open one's tracks stay in `project.tracks` (its entry carries none), so
+  every editing and render path reads that field as before, and what is
+  project-wide — paths, collect, storage, the bin's «in use», removing a
+  source — goes through `allTracks`. Absent = one timeline: an old project
+  loads unchanged. A clip of kind 'timeline' (`timelineId`; `inPoint` is a
+  second of that timeline) plays another one. THE RENDERERS NEVER SEE IT:
+  `flattenProject` replaces it by its contents cut to its window, their
+  tracks stacked where its track is (sound tracks after the rest), ids
+  `<compound>/<clip>` — the preview's Player, the export, every audio
+  mixdown (`collectRangeAudio`, whose clip/track filters take a compound's
+  contents along), the fragment pages, the snapshot and the scrub; cached
+  per project object. So a nest of untouched clips exports frame-identical
+  to them laid out flat. Its own gain and mute reach the contents; its
+  transform, effects, fades, edge tips and speed would need the nest drawn
+  into a texture first, so the Inspector and the clip view do not offer them.
+  Loops are refused where they would be made (`nestsInto`) and a hand-written
+  one, or a nest deeper than 8, draws nothing. Tabs over the tracks once
+  there are two (`TimelineTabs.tsx`); double click opens a compound.
+  Test: `node scripts/check-nesting.mjs`.
 - `electron/main.ts` — window, `kadr://` streaming protocol with manual
   Range support, IPC: dialogs, project IO, export, user stores, proxy queue, reversed-media cache, media intake
   (`media:download` — browser-URL drops fetched into `userData/imported`,

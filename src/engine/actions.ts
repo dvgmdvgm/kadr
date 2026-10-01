@@ -130,6 +130,8 @@ const HANDLERS: Record<ActionId, Handler> = {
   },
   'clip.duplicate': { enabled: hasClips, why: 'whyNoSel', run: (s) => s.duplicateSelection() },
   'clip.freeze': { run: (s) => s.freezeFrame() },
+  'clip.nest': { enabled: hasClips, why: 'whyNoSel', run: (s) => { s.nestClips(s.selection) } },
+  'timeline.new': { run: (s) => { s.addTimeline() } },
   'edit.trimStart': { run: (s) => s.trimToPlayhead('in') },
   'edit.trimEnd': { run: (s) => s.trimToPlayhead('out') },
   'edit.link': { enabled: (s) => s.selection.length > 0, why: 'whyNoClips', run: (s) => s.toggleLinkSelection() },

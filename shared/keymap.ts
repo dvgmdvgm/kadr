@@ -47,6 +47,8 @@ export const ACTIONS = [
   { id: 'edit.pasteAttributes', labelKey: 'actPasteAttrs', context: g, defaultKeys: [k('KeyV', { ctrl: true, alt: true })], prevent: true },
   { id: 'clip.duplicate', labelKey: 'actDuplicate', context: g, defaultKeys: [] },
   { id: 'clip.freeze', labelKey: 'actFreeze', context: g, defaultKeys: [k('KeyF', { shift: true })] },
+  { id: 'clip.nest', labelKey: 'actNest', context: g, defaultKeys: [] },
+  { id: 'timeline.new', labelKey: 'actTimelineNew', context: g, defaultKeys: [] },
   { id: 'edit.trimStart', labelKey: 'actTrimStart', context: g, defaultKeys: [k('KeyQ')] },
   { id: 'edit.trimEnd', labelKey: 'actTrimEnd', context: g, defaultKeys: [k('KeyW')] },
   { id: 'edit.link', labelKey: 'actLink', context: g, defaultKeys: [k('KeyU')] },
