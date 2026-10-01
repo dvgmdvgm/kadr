@@ -310,8 +310,13 @@ mixes audio and muxes/transcodes per preset.
   held whole in main: 48 kHz stereo f32 is ~23 MB per minute of timeline.
   The other limit is argv: Linux caps ONE argument at 128 KB (MAX_ARG_STRLEN),
   and that many clips build a `-filter_complex` past it — spawn failed with
-  E2BIG. The graph is written to a file and passed as `-filter_complex_script`,
-  on every export rather than only the big ones.
+  E2BIG. The graph is written to a file and passed by file, on every export
+  rather than only the big ones. THE OPTION DEPENDS ON THE BUILD (K11):
+  `-filter_complex_script` was deprecated in 7.1 and REMOVED in 8 («Option not
+  found» — every export with sound failed), while 4.3 knows no other spelling
+  than it; `filterGraphFileOption` runs a one-line graph through
+  `-/filter_complex <file>` once per binary path and falls back to the old
+  option when that fails. Test: `node scripts/check-mixdown.mjs`.
   EXTRAS (`ExportJob.extras`, shared/exportExtras.ts) arrive in EXPORT time —
   the renderer maps the transcript to the timeline and cuts cues and chapters
   to the range; the muxer adds an `-f ffmetadata` input (title, chapters,
@@ -1033,7 +1038,11 @@ mixes audio and muxes/transcodes per preset.
   PREMULTIPLIED (the blend is SRC_ALPHA over the clear), so the raw args
   unpremultiply in planar RGB (`format=gbrap,unpremultiply=inplace=1`) before
   `yuva444p10le` / `yuva420p` / `rgba` — fed as straight alpha, every
-  antialiased edge would go grey. VP9's alpha is a lossy stream of its own:
+  antialiased edge would go grey. ffmpeg 8+ tags frames with an alpha mode and
+  its unpremultiply passes an untagged frame (rawvideo is one) through
+  UNTOUCHED, so the chain names `setparams=alpha_mode=premultiplied` first —
+  only where `-h filter=setparams` lists that option (K11: older builds refuse
+  it), asked once per binary by the preload and by `RawVideoEncoder`. VP9's alpha is a lossy stream of its own:
   expect a faint black halo at alpha < 25 % (≤ 7/255 over mid-grey
   measured); ProRes 4444 and PNG are clean. A size other than the project's is fit (bars), fill
   (crop) or stretch (`ExportPreset.fit`, `outputRect` for the fast

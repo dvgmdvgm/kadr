@@ -22,6 +22,8 @@ export interface RawEncodeOpts {
   videoCodec?: VideoCodec
   /** keep the framebuffer's alpha (a transparent background on an alpha codec) */
   alpha?: boolean
+  /** this ffmpeg tags frames with an alpha mode (8+) — see `knowsAlphaMode` */
+  alphaMode?: boolean
   bitrate: number
   /** x264 and hardware: 'abr' (default, the built-in presets) or constant quality */
   rateControl?: 'abr' | 'crf'
@@ -69,6 +71,13 @@ export function parseEncoders(text: string): string[] {
   const listed = new Set(text.split('\n').map((l) => /^\s*V\S{5}\s+(\S+)/.exec(l)?.[1]).filter(Boolean))
   return [...HW_ENCODERS, ...OPTIONAL_ENCODERS].filter((n) => listed.has(n))
 }
+
+/** K11: ffmpeg 8 tags every frame with an alpha mode and unpremultiply passes
+    anything not tagged premultiplied through UNTOUCHED — rawvideo is untagged,
+    so every transparent export got a dark fringe. Older builds have no such
+    option on setparams (naming it fails the encode), so ask the help once. */
+export const ALPHA_MODE_HELP = ['-hide_banner', '-h', 'filter=setparams']
+export const knowsAlphaMode = (help: string): boolean => /\balpha_mode\b/.test(help)
 
 /** one black frame through the encoder, output discarded — exit 0 = it opens here */
 export const probeEncodeArgs = (name: string): string[] => [
@@ -175,7 +184,9 @@ export function rawEncodeArgs(o: RawEncodeOpts): string[] {
   const oh = o.outHeight ?? o.height
   const abr = ['-b:v', String(b), '-maxrate', String(Math.round(b * 1.6)), '-bufsize', String(b * 3)]
   // straight alpha for the encoder, divided in planar RGB (in YUV it would shift the chroma)
-  const flip = alpha ? 'vflip,format=gbrap,unpremultiply=inplace=1' : 'vflip'
+  const flip = alpha
+    ? `vflip,${o.alphaMode ? 'setparams=alpha_mode=premultiplied,' : ''}format=gbrap,unpremultiply=inplace=1`
+    : 'vflip'
   const scale = `${flip},scale=${ow}:${oh}:out_color_matrix=bt709:out_range=tv`
   const vf = ow === o.width && oh === o.height
     ? `${flip},scale=out_color_matrix=bt709:out_range=tv`

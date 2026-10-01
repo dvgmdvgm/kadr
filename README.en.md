@@ -203,7 +203,7 @@ captions to this part”, watch it happen live in the preview.
 | Component | Needed for | Notes |
 |---|---|---|
 | Node.js ≥ 20 | everything | |
-| ffmpeg + ffprobe | import, audio mix, export | any recent build in PATH |
+| ffmpeg + ffprobe | import, audio mix, export | any build from 4.3 on (8 and 9 included) in PATH |
 | python3 + [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | speech-to-text, auto-captions | `pip install faster-whisper`; models download on first use |
 | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) | the “Claude” panel | optional; uses your existing login |
 | network (one-time) | Remotion fragments workspace | `~/kadr-fragments`, ~150 MB |

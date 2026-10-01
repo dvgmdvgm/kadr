@@ -3,7 +3,7 @@
 // (e.g. gyan.dev git 2025-01-08) give adelay's padding frames broken pts, and
 // the atrim after it then drops the delay — every clip collapsed onto t=0.
 // Needs ffmpeg (PATH or KADR_FFMPEG).  Run: node scripts/check-mixdown.mjs
-import { readFileSync, mkdtempSync, rmSync } from 'fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
@@ -16,7 +16,7 @@ const js = buildSync({
   bundle: true, platform: 'node', format: 'esm', write: false,
   alias: { '@shared': join(root, 'shared') }
 }).outputFiles[0].text
-const { mixdownWav, FFMPEG } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
+const { mixdownWav, FFMPEG, filterGraphFileOption } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -26,6 +26,20 @@ const check = (name, ok, detail = '') => {
 
 const dir = mkdtempSync(join(tmpdir(), 'kadr-mix-'))
 try {
+  // K11: ffmpeg 8 removed -filter_complex_script; 7.1+ reads a graph file as
+  // -/filter_complex, 4.3 knows only the old spelling. The option picked must
+  // be one THIS ffmpeg runs a graph file with.
+  const opt = typeof filterGraphFileOption === 'function' ? await filterGraphFileOption() : null
+  const graph = join(dir, 'graph.txt')
+  writeFileSync(graph, 'anullsrc=d=0.1[a]')
+  let runs = false
+  if (opt) try { execFileSync(FFMPEG, ['-v', 'error', opt, graph, '-map', '[a]', '-f', 'null', '-']); runs = true } catch { /* reported below */ }
+  const version = execFileSync(FFMPEG, ['-version']).toString().split('\n')[0]
+  check('the filter graph file option matches the ffmpeg in use', runs, `${opt} on ${version}`)
+  // a binary that cannot run the new spelling gets the old one (ffmpeg 4.3–7.0)
+  const old = typeof filterGraphFileOption === 'function' ? await filterGraphFileOption(join(dir, 'no-such-ffmpeg')) : null
+  check('a build without -/filter_complex keeps -filter_complex_script', old === '-filter_complex_script', String(old))
+
   // a video stream next to the audio matters: a plain audio file does not
   // trigger the bad pts, an OBS-style mp4 seeked with -ss does
   const src = join(dir, 'av.mp4')

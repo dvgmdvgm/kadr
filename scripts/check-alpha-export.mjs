@@ -22,7 +22,7 @@ const load = (entry) => import('data:text/javascript;base64,' + Buffer.from(buil
   entryPoints: [join(root, ...entry)], bundle: true, platform: 'node', format: 'esm', write: false,
   alias: { '@shared': join(root, 'shared') }
 }).outputFiles[0].text).toString('base64'))
-const { rawEncodeArgs, withCodec, pickEncoder, seqPattern, videoCodecOf } = await load(['shared', 'rawEncode.ts'])
+const { rawEncodeArgs, withCodec, pickEncoder, seqPattern, videoCodecOf, ALPHA_MODE_HELP, knowsAlphaMode } = await load(['shared', 'rawEncode.ts'])
 const { ExportMuxer, configureFfmpeg, makeDecoded } = await load(['electron', 'ffmpeg.ts'])
 
 let fails = 0
@@ -93,7 +93,9 @@ if (spawnSync(ff, ['-version']).status !== 0) {
     frame.fill(a, (y * W + x) * 4, (y * W + x) * 4 + 4) // white premultiplied = (a, a, a, a)
   }
   const dir = mkdtempSync(join(tmpdir(), 'kadr-alpha-'))
-  const encode = (o) => spawnSync(ff, rawEncodeArgs({ ...base, ...o }), { input: Buffer.concat([frame, frame, frame]) })
+  // K11: ffmpeg 8+ unpremultiplies only a frame tagged premultiplied — asked the way the preload asks
+  const alphaMode = knowsAlphaMode(spawnSync(ff, ALPHA_MODE_HELP, { encoding: 'utf8' }).stdout ?? '')
+  const encode = (o) => spawnSync(ff, rawEncodeArgs({ ...base, alphaMode, ...o }), { input: Buffer.concat([frame, frame, frame]) })
   // decoded straight RGBA, top-down; libvpx-vp9 is the decoder that reads the alpha side data
   const decode = (file, vp9) => execFileSync(ff, ['-v', 'error', ...(vp9 ? ['-c:v', 'libvpx-vp9'] : []), '-i', file,
     '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-'], { maxBuffer: 64 << 20 })

@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
-import { spawn, type ChildProcess } from 'child_process'
+import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { readdirSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, dirname } from 'path'
 import type { KadrApi, ExportProgress } from '@shared/types'
-import { rawEncodeArgs, rawTempExt, isSeqFrame } from '@shared/rawEncode'
+import { rawEncodeArgs, rawTempExt, isSeqFrame, ALPHA_MODE_HELP, knowsAlphaMode } from '@shared/rawEncode'
 import { running, type SettingsSnapshot } from '@shared/settings'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
@@ -29,13 +29,21 @@ function dropSequence(pattern: string) {
   } catch { /* the folder went */ }
 }
 
+// K11: asked once per ffmpeg path, on the first transparent export (~1 s, sync)
+const alphaModeOf = new Map<string, boolean>()
+const alphaMode = (bin: string) => {
+  if (!alphaModeOf.has(bin)) alphaModeOf.set(bin, knowsAlphaMode(spawnSync(bin, ALPHA_MODE_HELP, { encoding: 'utf8' }).stdout ?? ''))
+  return alphaModeOf.get(bin)!
+}
+
 const api: KadrApi = {
   rawEncodeStart: (o) => {
     // the settings' ffmpeg (as at launch, env first) and export temp folder
     const snap: SettingsSnapshot = ipcRenderer.sendSync('settings:get')
     // a container that holds the codec; a PNG sequence brings its own numbered path
     const out = o.out ?? join(String(running('storage.tempDir', snap) || tmpdir()), `kadr-export-raw-${Date.now()}.${rawTempExt(o.codec)}`)
-    const child = spawn(String(running('tools.ffmpeg', snap)), rawEncodeArgs({ ...o, out }), {
+    const bin = String(running('tools.ffmpeg', snap))
+    const child = spawn(bin, rawEncodeArgs({ ...o, out, alphaMode: !!o.alpha && alphaMode(bin) }), {
       stdio: ['pipe', 'ignore', 'pipe']
     })
     rawEnc = child

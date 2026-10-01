@@ -1,13 +1,13 @@
 // ffmpeg/ffprobe helpers running in the main process.
 import { masterLimiterChain, MASTER_LIMIT, TP_AIM, TP_CEILING } from '@shared/audioMaster'
 import { panFilter, panEvalFilter } from '@shared/pan'
-import { execFile, spawn, ChildProcess } from 'child_process'
+import { execFile, spawn, spawnSync, ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import { promises as fsp } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment } from '@shared/types'
-import { rawEncodeArgs, parseEncoders, probeEncodeArgs, type RawEncodeOpts } from '@shared/rawEncode'
+import { rawEncodeArgs, parseEncoders, probeEncodeArgs, ALPHA_MODE_HELP, knowsAlphaMode, type RawEncodeOpts } from '@shared/rawEncode'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
 import { AFADE_CURVE } from '@shared/fadeCurves'
@@ -41,7 +41,28 @@ export function detectEncoders(): Promise<string[]> {
   })())
 }
 
-const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i
+/** K11: how THIS ffmpeg reads a filter graph from a file. 7.1 deprecated
+    `-filter_complex_script` and 8 removed it; `-/filter_complex <file>` is the
+    new spelling, which 4.3 does not know. Settled by running a one-line graph
+    once per binary path (a spawn costs ~1 s on Windows), never per export. */
+const graphFileOpt = new Map<string, Promise<string>>()
+export function filterGraphFileOption(bin = FFMPEG): Promise<string> {
+  let p = graphFileOpt.get(bin)
+  if (!p) {
+    p = (async () => {
+      const f = join(TMP_DIR || tmpdir(), `kadr-graph-probe-${process.pid}-${Date.now()}.txt`)
+      await fsp.writeFile(f, 'anullsrc=d=0.01[a]')
+      const ok = await execFileP(bin, ['-v', 'error', '-/filter_complex', f, '-map', '[a]', '-f', 'null', '-'], { timeout: 15000 })
+        .then(() => true, () => false)
+      await fsp.unlink(f).catch(() => { /* already gone */ })
+      return ok ? '-/filter_complex' : '-filter_complex_script'
+    })()
+    graphFileOpt.set(bin, p)
+  }
+  return p
+}
+
+const IMAGE_EXT =/\.(png|jpe?g|webp|bmp|gif|tiff?)$/i
 
 export async function probeMedia(path: string): Promise<ProbeResult> {
   const { stdout } = await execFileP(FFPROBE, [
@@ -792,13 +813,20 @@ export function runStream(bin: string, args: string[], onData: (chunk: Buffer) =
  * bitrate (OpenH264 saturates at ~0.7 Mbit/s on real 1080p footage — soft,
  * "мыльный" output); x264 at the preset bitrate matches desktop NLEs.
  */
+/** K11: the fallback encoder asks like the preload's does, once per binary */
+const alphaModeOf = new Map<string, boolean>()
+const alphaMode = (bin: string) => {
+  if (!alphaModeOf.has(bin)) alphaModeOf.set(bin, knowsAlphaMode(spawnSync(bin, ALPHA_MODE_HELP, { encoding: 'utf8' }).stdout ?? ''))
+  return alphaModeOf.get(bin)!
+}
+
 export class RawVideoEncoder {
   private child: ChildProcess | null = null
   private closed: Promise<void> | null = null
   private err = ''
 
   start(opts: RawEncodeOpts) {
-    const child = spawn(FFMPEG, rawEncodeArgs(opts), { stdio: ['pipe', 'ignore', 'pipe'] })
+    const child = spawn(FFMPEG, rawEncodeArgs({ ...opts, alphaMode: !!opts.alpha && alphaMode(FFMPEG) }), { stdio: ['pipe', 'ignore', 'pipe'] })
     this.child = child
     child.stderr!.on('data', (c) => { this.err += c })
     this.closed = new Promise((resolve, reject) => {
@@ -1103,7 +1131,7 @@ export class ExportMuxer {
       }
       filterScript = join(TMP_DIR || tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
       await fsp.writeFile(filterScript, filters.join(';\n'))
-      args.push('-filter_complex_script', filterScript)
+      args.push(await filterGraphFileOption(), filterScript)
       // a target's retry rewrites only the master's ceiling (see below)
       const script = filterScript
       reMaster = (limit, gainDb) => fsp.writeFile(script, filters.join(';\n')
