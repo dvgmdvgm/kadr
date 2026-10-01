@@ -1571,6 +1571,20 @@ div.tr-error {
 .cg-hex { flex: 1; font-family: var(--font-mono); font-size: var(--fz-sm); color: var(--c-text-2); }
 .cg-hint { display: flex; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--fz-label); line-height: 1.45; color: var(--c-text-3); }
 .cg-hint > svg { flex-shrink: 0; margin-top: 1px; }
+/* J7: Колёса (RULES 15) and Кривые (RULES 16) */
+.cg-wheels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); margin-bottom: var(--s3); }
+.cg-wheel { display: flex; flex-direction: column; align-items: center; gap: var(--s2); font-size: var(--fz-label); color: var(--c-text-2); }
+.cg-wheel input[type='range'] { width: 100%; }
+.cg-wheel .fx-val { width: auto; }
+.cg-disc { position: relative; width: 68px; height: 68px; border-radius: var(--r-full); box-shadow: inset 0 0 0 1px var(--c-line-2); touch-action: none; cursor: crosshair; }
+.cg-disc > img { width: 100%; height: 100%; display: block; pointer-events: none; }
+.cg-puck { position: absolute; width: 8px; height: 8px; margin: -5px 0 0 -5px; border: 1px solid var(--c-black); border-radius: var(--r-full); background: var(--c-text); box-shadow: var(--sh-1); pointer-events: none; }
+.cg-curve { display: block; width: 100%; aspect-ratio: 1; margin-bottom: var(--s3); background: var(--c-meter-bg); border: 1px solid var(--c-line); border-radius: var(--r1); touch-action: none; cursor: crosshair; }
+.cg-curve .cg-grid { color: var(--c-line-2); }
+.cg-curve [data-ch='y'] { color: var(--c-text); }
+.cg-curve [data-ch='r'] { color: var(--c-danger); }
+.cg-curve [data-ch='g'] { color: var(--c-ok); }
+.cg-curve [data-ch='b'] { color: var(--c-accent); }
 /* «До и после» over the preview (RULES 17): the GL draws both halves; this is
    the divider, its knob and the labels, over the canvas rect */
 .ba-wrap { position: absolute; z-index: 8; overflow: hidden; pointer-events: none; box-shadow: 0 0 0 1px var(--c-line); }

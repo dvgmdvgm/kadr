@@ -120,7 +120,11 @@ rhythm, readability or physical sense — not a technical failure. So:
   the grade (normalise first). Key first, then grade the keyed plate; spill
   takes the key colour off the WHOLE clip (a green shirt goes grey) — keep it
   as low as the fringe allows. A blend mode does nothing inside a transition.
-  Then VERIFY with a snapshot. One kadr_grade call = one undo step.
+  `wheels` (lift/gamma/gain) and `curves` (Y R G B) are for what the
+  primaries cannot say: a split tone (shadows one hue, highlights another), a
+  black point, an S-curve. Pucks stay small (|x|,|y| ≤ 0.2 is already a
+  cast); a curve wants 1–3 points, and Y moves all channels before R/G/B.
+  They are not animatable. Then VERIFY with a snapshot. One kadr_grade call = one undo step.
 - `kadr_eval` for everything else. Discipline there: `pushHistory(label)`
   once before a batch of low-level edits (updateClip etc.) — that's one undo
   step for the user. High-level actions (insertClipsFromAssets,

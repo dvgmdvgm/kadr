@@ -30,6 +30,7 @@ import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
+import { sanitizeWheels, sanitizeCurves } from '@shared/curves'
 import { blendOf } from '@shared/blend'
 import { hexRgb } from '@shared/key'
 export { defaultTextStyle }
@@ -229,6 +230,9 @@ export function sanitizeProject(p: Project): Project {
         if (!c.lut || typeof c.lut.path !== 'string' || !c.lut.path) delete c.lut
         else c.lut.intensity = anim(c.lut.intensity, 1)
       }
+      // J7: wheels complete and clamped, curves sorted; junk or nothing = absent
+      if (c.wheels !== undefined) { const w = sanitizeWheels(c.wheels); if (w) c.wheels = w; else delete c.wheels }
+      if (c.curves !== undefined) { const v = sanitizeCurves(c.curves); if (v) c.curves = v; else delete c.curves }
       // J3: normal is the implicit default; an unknown mode is dropped
       if (c.blend !== undefined && !blendOf(c.blend)) delete c.blend
       // J4: a key needs a mode; a bad colour falls back to green / black
@@ -2515,9 +2519,9 @@ export const useEditor = create<EditorState>((set, get) => ({
         if (has('transform')) c.transform = clone(src.transform)
         if (has('effects')) c.effects = clone(src.effects ?? [])
         if (has('volume')) c.gain = clone(src.gain)
-        // J6: the colour section (grade, LUT, blend, key) as one part
+        // J6: the colour section (grade, LUT, blend, key; J7 wheels, curves) as one part
         if (has('colour')) {
-          for (const k of ['grade', 'lut', 'blend', 'key'] as const) {
+          for (const k of ['grade', 'lut', 'blend', 'key', 'wheels', 'curves'] as const) {
             if (src[k] === undefined) delete c[k]
             else (c as unknown as Record<string, unknown>)[k] = clone(src[k])
           }

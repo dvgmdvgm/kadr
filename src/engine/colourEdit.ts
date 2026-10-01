@@ -13,6 +13,7 @@ import type { Anim, Clip } from '@shared/types'
 import { GRADE_KEYS, type ClipGrade, type GradeKey } from '@shared/colour'
 import type { BlendMode } from '@shared/blend'
 import type { ClipKey } from '@shared/key'
+import { WHEEL_KEYS, wheelIsNeutral, type ClipWheels, type CurveCh, type CurvePoint, type Wheel, type WheelKey } from '@shared/curves'
 import { useEditor, findClip } from '@/state/store'
 import { applyValue, resetValue, upsertKf, KF_EPS } from '@/components/animUtils'
 import { evalAnim } from './anim'
@@ -25,8 +26,8 @@ export const COLOUR_PARAMS: ColourParam[] = [
 export const paramDefault = (p: ColourParam) =>
   p === 'lut.intensity' ? 1 : p === 'key.tolerance' || p === 'key.softness' ? 0.1 : 0
 
-export type ColourGroup = 'prim' | 'lut' | 'blend' | 'key'
-const GROUP_FIELD = { prim: 'grade', lut: 'lut', blend: 'blend', key: 'key' } as const
+export type ColourGroup = 'prim' | 'lut' | 'blend' | 'key' | 'wheels' | 'curves'
+const GROUP_FIELD = { prim: 'grade', lut: 'lut', blend: 'blend', key: 'key', wheels: 'wheels', curves: 'curves' } as const
 
 const st = () => useEditor.getState()
 
@@ -66,12 +67,12 @@ function withAnim(c: Clip, p: ColourParam, a: Anim): Partial<Clip> {
 
 let armed = false
 /** the keyboard run in progress: its parameter and the project it left behind */
-let keyRun: { p: ColourParam; project: unknown } | null = null
+let keyRun: { p: string; project: unknown } | null = null
 /** a continuous control's gesture starts: its first write will be one undo step */
 export const colourGesture = () => { armed = true; keyRun = null }
 /** a key on a range: presses on the same control in a row, with nothing else
     edited between them, are one gesture (one step); anything else starts one */
-export function colourKey(p: ColourParam) {
+export function colourKey(p: ColourParam | `wheels.${WheelKey}`) {
   if (keyRun?.p === p && keyRun.project === st().project) return
   armed = true
   keyRun = { p, project: null }
@@ -138,7 +139,8 @@ export function resetParam(id: string, p: ColourParam): boolean {
 }
 
 export const resetGroup = (id: string, g: ColourGroup) => step(id, { [GROUP_FIELD[g]]: undefined })
-export const resetColour = (id: string) => step(id, { grade: undefined, lut: undefined, blend: undefined, key: undefined })
+export const resetColour = (id: string) =>
+  step(id, { grade: undefined, lut: undefined, blend: undefined, key: undefined, wheels: undefined, curves: undefined })
 export const setBlend = (id: string, mode: BlendMode) => step(id, { blend: mode === 'normal' ? undefined : mode })
 
 export function setKeyMode(id: string, mode: 'off' | 'chroma' | 'luma'): boolean {
@@ -159,10 +161,75 @@ export function setLut(id: string, path: string): boolean {
 export const removeLut = (id: string) => step(id, { lut: undefined })
 
 /** what the clip carries in colour, for the reset buttons */
-export const hasColour = (c: Clip) => !!(c.grade || c.lut || c.blend || c.key)
+export const hasColour = (c: Clip) => !!(c.grade || c.lut || c.blend || c.key || c.wheels || c.curves)
 
 /** before/after: the same clip with its colour off */
 export function stripColour(c: Clip): Clip {
-  const { grade: _g, lut: _l, blend: _b, key: _k, ...rest } = c
+  const { grade: _g, lut: _l, blend: _b, key: _k, wheels: _w, curves: _c, ...rest } = c
   return rest
+}
+
+// ── J7: the wheels and the curves. Not animatable (they bake into one table per
+// clip), so no diamonds: a drag is a gesture like a range's, a delete or a reset a step.
+const W0: Wheel = { x: 0, y: 0, level: 0 }
+/** the clip's wheels with `k` replaced; all three neutral = absent */
+function withWheel(c: Clip, k: WheelKey, w: Wheel): Partial<Clip> {
+  const ws = { ...(c.wheels ?? { lift: W0, gamma: W0, gain: W0 }), [k]: w } as ClipWheels
+  return { wheels: WHEEL_KEYS.every((x) => wheelIsNeutral(ws[x])) ? undefined : ws }
+}
+/** move wheel `k`: the puck (clamped to the disc) and/or the level (−1…1) */
+export function setWheel(id: string, k: WheelKey, v: Partial<Wheel>) {
+  const c = clipOf(id)
+  if (!c) return
+  const w = { ...(c.wheels?.[k] ?? W0), ...v }
+  if (![w.x, w.y, w.level].every(Number.isFinite)) return
+  const r = Math.hypot(w.x, w.y)
+  if (r > 1) { w.x /= r; w.y /= r }
+  w.level = Math.min(1, Math.max(-1, w.level))
+  const cur = c.wheels?.[k] ?? W0
+  if (w.x === cur.x && w.y === cur.y && w.level === cur.level) return
+  write(id, withWheel(c, k, w))
+}
+/** double-click on a disc: that wheel back to neutral, one step */
+export function resetWheel(id: string, k: WheelKey): boolean {
+  const c = clipOf(id)
+  return !!c && step(id, withWheel(c, k, W0))
+}
+
+/** the clip's curves with channel `ch` replaced; an empty channel goes, and nothing left = absent */
+function withCurve(c: Clip, ch: CurveCh, pts: CurvePoint[]): Partial<Clip> {
+  const cs = { ...c.curves, [ch]: pts }
+  if (!pts.length) delete cs[ch]
+  return { curves: Object.keys(cs).length ? cs : undefined }
+}
+const MIN_GAP = 0.01
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
+/** a click on the graph: a point at (x, y); returns its index for the drag that follows */
+export function addCurvePoint(id: string, ch: CurveCh, x: number, y: number): number {
+  const c = clipOf(id)
+  if (!c || !Number.isFinite(x) || !Number.isFinite(y)) return -1
+  const pts = c.curves?.[ch] ?? []
+  x = clamp01(x)
+  if (pts.some((p) => Math.abs(p[0] - x) < MIN_GAP)) return -1
+  const i = pts.findIndex((p) => p[0] > x)
+  const at = i < 0 ? pts.length : i
+  write(id, withCurve(c, ch, [...pts.slice(0, at), [x, clamp01(y)], ...pts.slice(at)]))
+  return at
+}
+/** drag point `i`: it stays between its neighbours, so its index never changes */
+export function moveCurvePoint(id: string, ch: CurveCh, i: number, x: number, y: number) {
+  const c = clipOf(id)
+  const pts = c?.curves?.[ch]
+  if (!c || !pts?.[i] || !Number.isFinite(x) || !Number.isFinite(y)) return
+  const lo = i > 0 ? pts[i - 1][0] + MIN_GAP : 0
+  const hi = i < pts.length - 1 ? pts[i + 1][0] - MIN_GAP : 1
+  const p: CurvePoint = [Math.min(hi, Math.max(lo, x)), clamp01(y)]
+  if (p[0] === pts[i][0] && p[1] === pts[i][1]) return
+  write(id, withCurve(c, ch, pts.map((q, j) => (j === i ? p : q))))
+}
+/** double-click on a point: it goes, one step */
+export function removeCurvePoint(id: string, ch: CurveCh, i: number): boolean {
+  const c = clipOf(id)
+  const pts = c?.curves?.[ch]
+  return !!c && !!pts?.[i] && step(id, withCurve(c, ch, pts.filter((_, j) => j !== i)))
 }

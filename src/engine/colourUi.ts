@@ -4,6 +4,7 @@
 // and which groups of the section are open (remembered across clips).
 import { create } from 'zustand'
 import type { Clip, Project } from '@shared/types'
+import type { CurveCh } from '@shared/curves'
 import { useEditor, findClip } from '@/state/store'
 import { stripColour, hasColour } from './colourEdit'
 
@@ -19,8 +20,11 @@ export const useColourUi = create<{
   /** the clip whose key colour the next preview click sets */
   picking: string | null
   open: string[]
+  /** J7: the channel the curve graph edits */
+  curveCh: CurveCh
   toggleGroup(g: string): void
 }>((set, get) => ({
+  curveCh: 'y',
   compare: false,
   split: 0.5,
   picking: null,

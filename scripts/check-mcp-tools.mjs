@@ -140,6 +140,12 @@ fresh()
     clip('v1').key.mode === 'luma' && clip('v1').key.colour === '#000000' && g.blend === 'normal')
   await call('kadr_grade', { clipId: 'v1', lut: null, key: { mode: 'off' }, blend: 'normal' })
   check('kadr_grade: null / off / normal remove', clip('v1').lut === undefined && clip('v1').key === undefined && clip('v1').grade.exposure.value === 1.5)
+  await call('kadr_grade', { clipId: 'v1', wheels: { gain: { x: 0.3, level: 0.1 } }, curves: { y: [[0.7, 0.8], [0.25, 0.2]] } })
+  check('kadr_grade: J7 wheels merge into neutral ones, curves sorted',
+    clip('v1').wheels.gain.x === 0.3 && clip('v1').wheels.gain.y === 0 && clip('v1').wheels.lift.level === 0 &&
+    JSON.stringify(clip('v1').curves) === '{"y":[[0.25,0.2],[0.7,0.8]]}')
+  await call('kadr_grade', { clipId: 'v1', wheels: { gain: { x: 0, level: 0 } }, curves: { y: [] } })
+  check('kadr_grade: a neutral wheel set and an empty channel leave nothing', clip('v1').wheels === undefined && clip('v1').curves === undefined)
   let err
   try { await call('kadr_grade', { clipId: 'a1c', grade: { exposure: 1 } }) } catch (e) { err = e }
   check('kadr_grade refuses a clip with no picture', /no picture/.test(err?.message), err?.message)
@@ -184,7 +190,8 @@ const invalid = {
   kadr_scenes: [{ start: 1 }, { threshold: 0 }, { clipId: 'x', start: 0, end: 1 }],
   kadr_duck: [{}, { musicClipIds: [] }, { musicClipIds: ['m'], depthDb: 0 }, { musicClipIds: ['m'], speechTrackIds: ['a'], speechClipIds: ['v'] }],
   kadr_grade: [{ clipId: 'v1' }, { clipId: 'v1', grade: {} }, { clipId: 'v1', grade: { exposure: 9 } }, { clipId: 'v1', grade: { gamma: 1 } },
-    { clipId: 'v1', blend: 'hue' }, { clipId: 'v1', lut: { path: 'x.png' } }, { clipId: 'v1', key: { mode: 'chroma', colour: 'green' } }]
+    { clipId: 'v1', blend: 'hue' }, { clipId: 'v1', lut: { path: 'x.png' } }, { clipId: 'v1', key: { mode: 'chroma', colour: 'green' } },
+    { clipId: 'v1', wheels: { offset: { x: 1 } } }, { clipId: 'v1', wheels: { lift: { level: 2 } } }, { clipId: 'v1', curves: { y: [[0.5, 1.5]] } }]
 }
 check('every tool has invalid samples here', TOOLS.every((t) => invalid[t.name]?.length))
 fresh()

@@ -145,8 +145,12 @@ mixes audio and muxes/transcodes per preset.
   `check-colour-ui.mjs` (J6: every control of the Inspector's «Цвет»
   section writes through `src/engine/colourEdit.ts` ONCE per gesture — a
   slider drag of many values is one undo step, a gesture that wrote nothing
-  none, every diamond/reset/mode/LUT click one; «Вставить атрибуты» carries
-  the colour);
+  none, every diamond/reset/mode/LUT click one; a wheel or curve-point drag
+  one, a point's delete one; «Вставить атрибуты» carries the colour);
+  `check-curves.mjs` wants the installed electron (J7: a curve passes
+  through its points with no overshoot, neutral wheels and curves bake
+  nothing, the baked table follows the exact function, and the REAL
+  Compositor matches the reference within 1/255);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -386,7 +390,7 @@ mixes audio and muxes/transcodes per preset.
   via a generated `--mcp-config`; tools: kadr_state / kadr_eval /
   the semantic edits kadr_cut / kadr_move / kadr_trim / kadr_ripple_delete /
   kadr_keyframe / kadr_text_add / kadr_volume / kadr_grade (J6: the colour
-  section — grade, LUT, blend, key) / kadr_marker / kadr_undo
+  section — grade, LUT, blend, key; J7 wheels, curves) / kadr_marker / kadr_undo
   (`electron/mcp-edit-tools.cjs` → `kadrEditor.agentEdit`,
   `src/engine/agentEdits.ts`: zod-checked before the page, one store action
   and EXACTLY one undo step each — an edit that changes nothing leaves no
@@ -906,6 +910,20 @@ mixes audio and muxes/transcodes per preset.
   through pixel capture. 4:2:0 footage carries chroma at half resolution, so
   its key edge is two pixels wide and blocky on hard edges: raise softness,
   or key a 4:4:4 source.
+  WHEELS AND CURVES (J7, `Clip.wheels` {lift, gamma, gain: {x, y, level}},
+  `Clip.curves` {y|r|g|b: [x, y][]}, `shared/curves.ts`) are per-channel
+  functions of the encoded colour after the grade, so together they BAKE into
+  one 1024-entry 1D half-float table per clip (`curveTable`, cached by
+  content — the same settings are the same object, uploaded once; a drag
+  makes one per step, so the compositor keeps the newest 32) that the shader
+  samples between the grade and the LUT. They are NOT Anims: a keyframed
+  wheel would mean a bake per frame. Wheel: out = (gain·(x + lift·(1 − x)))
+  ^(2^−gamma), the puck a zero-sum shift along its hue (screen coordinates,
+  red at 0°, clockwise). Curve: monotone cubic (Fritsch–Carlson tangents) —
+  through every point, no overshoot; (0,0)/(1,1) implied unless a point sits
+  at that end; Y first, then the channel. Neutral bakes nothing and the
+  shader skips the pass. The table serialises as its key (`toJSON`):
+  `frameSignature` stringifies every layer per motion-blur sub-sample.
   «ДО И ПОСЛЕ» (J6, the colour section's head, Shift+\) is PREVIEW ONLY: the
   player draws the frame, then draws it again with the selected clip's colour
   stripped under a scissor over the left of the divider (`clipLeft`), so

@@ -1,18 +1,21 @@
 // J6: the Inspector's «Цвет» section, landed from canvas J
 // (design-source/canvas/J, RULES 4–14, 17): Коррекция (J1), LUT (J2),
-// Наложение (J3), Ключ (J4) as disclosure groups with a summary and a reset,
-// «До и после» and «Сбросить весь цвет» in the head. Колёса and Кривые are
-// J7's. Every write goes through src/engine/colourEdit.ts (one undo step per
+// Наложение (J3), Ключ (J4), Колёса and Кривые (J7, RULES 15–16) as disclosure
+// groups with a summary and a reset, «До и после» and «Сбросить весь цвет» in
+// the head. Every write goes through src/engine/colourEdit.ts (one undo step per
 // gesture — node scripts/check-colour-ui.mjs).
+import { useRef } from 'react'
 import type { Clip, Project } from '@shared/types'
 import type { GradeKey } from '@shared/colour'
 import { GRADE_RANGE } from '@shared/colour'
+import { CURVE_CHS, WHEEL_KEYS, curveFn, wheelChannel, type CurveCh, type Wheel, type WheelKey } from '@shared/curves'
 import { BLEND_MODES, type BlendMode } from '@shared/blend'
-import { useEditor } from '@/state/store'
+import { useEditor, findClip } from '@/state/store'
 import { useT, type TKey } from '@/i18n'
 import {
   colourGesture, colourKey, setParam, setKeyColour, toggleKf, resetParam, resetGroup, resetColour, setBlend,
   setKeyMode, setLut, removeLut, paramAnim, paramValue, paramDefault, clipRel, kfState, hasColour,
+  setWheel, resetWheel, addCurvePoint, moveCurvePoint, removeCurvePoint,
   type ColourParam, type ColourGroup
 } from '@/engine/colourEdit'
 import { useColourUi } from '@/engine/colourUi'
@@ -37,6 +40,142 @@ const GRADE_LABEL: Record<GradeKey, TKey> = {
 const changed = (c: Clip, p: ColourParam) => {
   const a = paramAnim(c, p)
   return !!a && (!!a.keyframes?.length || a.value !== paramDefault(p))
+}
+
+// ── J7 ────────────────────────────────────────────────────────────────────────
+const WHEEL_LABEL: Record<WheelKey, TKey> = { lift: 'cgLift', gamma: 'cgGamma', gain: 'cgGain' }
+const CH_LABEL: Record<CurveCh, TKey> = { y: 'cgChY', r: 'cgChR', g: 'cgChG', b: 'cgChB' }
+const W0: Wheel = { x: 0, y: 0, level: 0 }
+/** the hue a puck points at, as one of six names; -1 = no shift */
+const hueOf = (w: Wheel) => Math.hypot(w.x, w.y) < 0.02 ? -1
+  : Math.round((((Math.atan2(w.y, w.x) * 180) / Math.PI + 360) % 360) / 60) % 6
+const hueKey = (i: number) => `cgHue${i}` as TKey
+/** Russian plural of «точка» (the English strings are the same for 2 and 5) */
+const ptsKey = (n: number): TKey =>
+  n % 10 === 1 && n % 100 !== 11 ? 'cgPts1' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? 'cgPts2' : 'cgPts5'
+
+/** the disc behind the puck IS the wheel's function: mid-grey pushed by each position's shift */
+let disc: string | null = null
+function discImage() {
+  if (disc) return disc
+  const S = 136, cv = document.createElement('canvas')
+  cv.width = cv.height = S
+  const ctx = cv.getContext('2d')!
+  const img = ctx.createImageData(S, S)
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const dx = (x + 0.5) / (S / 2) - 1, dy = (y + 0.5) / (S / 2) - 1, r = Math.hypot(dx, dy)
+    const w = { x: dx / Math.max(1, r), y: dy / Math.max(1, r), level: 0 }
+    const i = (y * S + x) * 4
+    for (let c = 0; c < 3; c++) img.data[i + c] = Math.round(Math.min(1, Math.max(0, 0.36 + 0.4 * wheelChannel(w, c))) * 255)
+    img.data[i + 3] = Math.round(Math.min(1, Math.max(0, (1 - r) * (S / 2))) * 255)
+  }
+  ctx.putImageData(img, 0, 0)
+  return (disc = cv.toDataURL())
+}
+
+function WheelControl({ id, k, w }: { id: string; k: WheelKey; w: Wheel }) {
+  const t = useT()
+  const ref = useRef<HTMLDivElement>(null)
+  const last = useRef<[number, number] | null>(null)
+  const label = t(WHEEL_LABEL[k])
+  const at = (e: React.PointerEvent): [number, number] => {
+    const r = ref.current!.getBoundingClientRect()
+    return [((e.clientX - r.left) / r.width) * 2 - 1, ((e.clientY - r.top) / r.height) * 2 - 1]
+  }
+  // a drag reads the wheel as the store has it now, not as this render saw it
+  const cur = () => findClip(useEditor.getState().project, id)?.clip.wheels?.[k] ?? W0
+  const hue = hueOf(w)
+  return (
+    <div className="cg-wheel" data-wheel={k}>
+      <div ref={ref} className="cg-disc" role="slider" tabIndex={0} data-act={`cg-disc-${k}`}
+        aria-label={t('cgWheelColour').replace('{label}', label)}
+        aria-valuetext={hue < 0 ? t('cgHueNone') : t(hueKey(hue))}
+        onPointerDown={(e) => {
+          if (e.button !== 0) return
+          e.currentTarget.setPointerCapture(e.pointerId)
+          colourGesture()
+          const p = at(e)
+          last.current = p
+          // Shift starts a fine drag where the puck is; a plain press puts it under the cursor
+          if (!e.shiftKey) setWheel(id, k, { x: p[0], y: p[1] })
+        }}
+        onPointerMove={(e) => {
+          const l = last.current
+          if (!l) return
+          const p = at(e), f = e.shiftKey ? 0.2 : 1, c = cur()
+          last.current = p
+          setWheel(id, k, { x: c.x + (p[0] - l[0]) * f, y: c.y + (p[1] - l[1]) * f })
+        }}
+        onPointerUp={() => { last.current = null }}
+        onPointerCancel={() => { last.current = null }}
+        onDoubleClick={() => resetWheel(id, k)}
+        onKeyDown={(e) => {
+          const d = ({ ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as Record<string, number[]>)[e.key]
+          if (!d) return
+          e.preventDefault()
+          colourKey(`wheels.${k}`)
+          const s = e.shiftKey ? 0.005 : 0.02, c = cur()
+          setWheel(id, k, { x: c.x + d[0] * s, y: c.y + d[1] * s })
+        }}>
+        <img src={discImage()} alt="" draggable={false} />
+        <span className="cg-puck" style={{ left: `${50 + w.x * 50}%`, top: `${50 + w.y * 50}%` }} />
+      </div>
+      <span>{label}</span>
+      <input type="range" min={-1} max={1} step={0.01} value={w.level} data-act={`cg-level-${k}`}
+        aria-label={t('cgWheelLevel').replace('{label}', label)}
+        onPointerDown={colourGesture} onKeyDown={() => colourKey(`wheels.${k}`)}
+        onChange={(e) => setWheel(id, k, { level: Number(e.target.value) })} />
+      <span className="fx-val">{fmt(w.level, true)}</span>
+    </div>
+  )
+}
+
+function CurveGraph({ clip }: { clip: Clip }) {
+  const t = useT()
+  const ch = useColourUi((s) => s.curveCh)
+  const ref = useRef<SVGSVGElement>(null)
+  const drag = useRef(-1)
+  const id = clip.id
+  const pts = clip.curves?.[ch] ?? []
+  const f = curveFn(pts)
+  const at = (e: React.PointerEvent | React.MouseEvent): [number, number] => {
+    const r = ref.current!.getBoundingClientRect()
+    return [(e.clientX - r.left) / r.width, 1 - (e.clientY - r.top) / r.height]
+  }
+  /** the point within ~5 px of the cursor, or -1 */
+  const hit = (x: number, y: number) => {
+    const live = findClip(useEditor.getState().project, id)?.clip.curves?.[ch] ?? []
+    let best = -1, bd = 5 / (ref.current?.getBoundingClientRect().width || 240)
+    live.forEach(([px, py], i) => { const d = Math.hypot(px - x, py - y); if (d <= bd) { bd = d; best = i } })
+    return best
+  }
+  const line = 'M' + Array.from({ length: 101 }, (_, i) => `${i} ${(100 - f(i / 100) * 100).toFixed(2)}`).join('L')
+  return (
+    <svg ref={ref} className="cg-curve" viewBox="0 0 100 100" role="img" data-act="cg-curve"
+      aria-label={t('cgCurveLabel').replace('{ch}', ch.toUpperCase())}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return
+        e.currentTarget.setPointerCapture(e.pointerId)
+        colourGesture()
+        const [x, y] = at(e)
+        const i = hit(x, y)
+        // a click off the points adds one ON the curve; the drag then takes it to the cursor
+        drag.current = i >= 0 ? i : addCurvePoint(id, ch, x, f(Math.min(1, Math.max(0, x))))
+      }}
+      onPointerMove={(e) => { if (drag.current >= 0) moveCurvePoint(id, ch, drag.current, ...at(e)) }}
+      onPointerUp={() => { drag.current = -1 }}
+      onPointerCancel={() => { drag.current = -1 }}
+      onDoubleClick={(e) => { const i = hit(...at(e)); if (i >= 0) removeCurvePoint(id, ch, i) }}>
+      <g className="cg-grid">
+        {[25, 50, 75].map((v) => <path key={v} stroke="currentColor" strokeWidth={1} vectorEffect="non-scaling-stroke" d={`M${v} 0V100M0 ${v}H100`} />)}
+        <path stroke="currentColor" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" d="M0 100L100 0" />
+      </g>
+      <g data-ch={ch}>
+        <path fill="none" stroke="currentColor" strokeWidth={1.5} vectorEffect="non-scaling-stroke" d={line} />
+        {pts.map(([x, y], i) => <circle key={i} cx={x * 100} cy={100 - y * 100} r={2.2} fill="currentColor" />)}
+      </g>
+    </svg>
+  )
 }
 
 /** J3's limit: inside an overlap transition or an edge effect the mode does nothing */
@@ -129,6 +268,17 @@ export function ColourSection({ clip }: { clip: Clip }) {
   // Ключ
   const key = clip.key
   const keyMode = key?.mode ?? 'off'
+
+  // Колёса · Кривые (J7)
+  const curveCh = useColourUi((s) => s.curveCh)
+  const wheelSum = WHEEL_KEYS.map((k) => {
+    const w = clip.wheels?.[k] ?? W0
+    const h = hueOf(w)
+    if (h < 0 && w.level === 0) return ''
+    return [t(WHEEL_LABEL[k]).toLowerCase(), h >= 0 ? t(hueKey(h)) : '', w.level ? fmt(w.level, true) : ''].filter(Boolean).join(' ')
+  }).filter(Boolean).join(', ')
+  const curveSum = CURVE_CHS.filter((ch) => clip.curves?.[ch]?.length)
+    .map((ch) => { const n = clip.curves![ch]!.length; return `${t(CH_LABEL[ch]).toLowerCase()}: ${n} ${t(ptsKey(n))}` }).join(', ')
 
   return (
     <>
@@ -257,6 +407,30 @@ export function ColourSection({ clip }: { clip: Clip }) {
             )}
           </>
         ))}
+
+      {group('wheels', t('cgGroupWheels'), wheelSum || t('cgNeutral'), !!clip.wheels, () => (
+        <>
+          <div className="cg-wheels">
+            {WHEEL_KEYS.map((k) => <WheelControl key={k} id={id} k={k} w={clip.wheels?.[k] ?? W0} />)}
+          </div>
+          <div className="cg-hint">{t('cgWheelHint')}</div>
+        </>
+      ))}
+
+      {group('curves', t('cgGroupCurves'), curveSum || t('cgNeutral'), !!clip.curves, () => (
+        <>
+          <div className="cg-seg" role="group" aria-label={t('cgCurveCh')}>
+            {CURVE_CHS.map((ch) => (
+              <button key={ch} className={`ghost${ch === curveCh ? ' toggled' : ''}`} aria-pressed={ch === curveCh}
+                data-act={`cg-ch-${ch}`} title={t(CH_LABEL[ch])} onClick={() => useColourUi.setState({ curveCh: ch })}>
+                {ch.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          <CurveGraph clip={clip} />
+          <div className="cg-hint">{t('cgCurveHint')}</div>
+        </>
+      ))}
     </>
   )
 }

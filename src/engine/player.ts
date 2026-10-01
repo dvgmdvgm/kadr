@@ -8,8 +8,10 @@ import { packSourceHeight } from '@shared/streamColour'
 import { gradeAt } from '@shared/colour'
 import { blendOf } from '@shared/blend'
 import { keyAt } from '@shared/key'
+import { curveTable } from '@shared/curves'
 import { lutFor } from './lut'
 import { compareProject, useColourUi } from './colourUi'
+import { stripColour } from './colourEdit'
 import { evalAnim } from './anim'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
@@ -608,7 +610,8 @@ function drawClipLayer(
         : undefined,
       key: keyAt(clip.key, rel, evalAnim),
       grade: gradeAt(clip.grade, rel, evalAnim),
-      lut: lutAt(clip, rel)
+      lut: lutAt(clip, rel),
+      curve: curveTable(clip.wheels, clip.curves)
     }
     if (common.opacity <= 0.001) return
     // enabled outer glows render the layer through the effect pass; smoke is
@@ -793,7 +796,7 @@ export class Player {
     const track = project.tracks.find((tr) => tr.clips.some((c) => c.id === clipId))
     const clip = track?.clips.find((c) => c.id === clipId)
     if (!track || !clip) return null
-    const { grade: _g, lut: _l, blend: _b, key: _k, ...bare } = clip
+    const bare = stripColour(clip)
     const solo: Project = { ...project, background: '#000000', tracks: [{ ...track, muted: false, gain: 1, clips: [bare] }] }
     this.comp.scale = this.renderScale()
     drawFrame(this.comp, solo, playhead, this.pool)

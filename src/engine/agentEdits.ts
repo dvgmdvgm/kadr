@@ -17,6 +17,7 @@ import { findScenes, type FindScenesArgs } from './scenes'
 import { autoDuck, type AutoDuckArgs } from './duck'
 import { GRADE_KEYS, clampGrade, type ClipGrade, type GradeKey } from '@shared/colour'
 import type { BlendMode } from '@shared/blend'
+import { WHEEL_KEYS, sanitizeCurves, sanitizeWheels, wheelIsNeutral, type ClipCurves, type Wheel, type WheelKey } from '@shared/curves'
 import { isVisualClip } from './colourUi'
 
 const st = () => useEditor.getState()
@@ -138,6 +139,7 @@ type KeyArgs = { mode: 'chroma' | 'luma' | 'off'; colour?: string; tolerance?: n
 export function grade(a: {
   clipId: string; grade?: Partial<Record<GradeKey, number>>; lut?: { path: string; intensity?: number } | null
   blend?: BlendMode; key?: KeyArgs
+  wheels?: Partial<Record<WheelKey, Partial<Wheel>>> | null; curves?: ClipCurves | null
 }) {
   const c = clipOr(a.clipId)
   if (!isVisualClip(st().project, c)) throw new Error(`clip ${a.clipId} has no picture to grade`)
@@ -159,9 +161,16 @@ export function grade(a: {
       spill: k.spill !== undefined ? { value: k.spill } : c.key?.spill ?? { value: 0 }
     }
   }
+  // J7: named wheels / channels are replaced, the rest kept; all neutral or empty = absent
+  if (a.wheels !== undefined) {
+    const w = a.wheels && sanitizeWheels(Object.fromEntries(WHEEL_KEYS.map((k) => [k, { ...c.wheels?.[k], ...a.wheels![k] }])))
+    patch.wheels = w && !WHEEL_KEYS.every((k) => wheelIsNeutral(w[k])) ? w : undefined
+  }
+  if (a.curves !== undefined) patch.curves = a.curves ? sanitizeCurves({ ...c.curves, ...a.curves }) : undefined
   once('grade', () => { st().pushHistory('hColour'); st().updateClip(a.clipId, patch) })
   const after = findClip(st().project, a.clipId)!.clip
-  return { clipId: a.clipId, grade: after.grade ?? null, lut: after.lut ?? null, blend: after.blend ?? 'normal', key: after.key ?? null }
+  return { clipId: a.clipId, grade: after.grade ?? null, lut: after.lut ?? null, blend: after.blend ?? 'normal', key: after.key ?? null,
+    wheels: after.wheels ?? null, curves: after.curves ?? null }
 }
 
 export function marker(a: { t: number; label?: string; kind?: TimelineMarker['kind']; end?: number }) {
