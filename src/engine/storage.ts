@@ -3,6 +3,7 @@
 // calls that do the actual work in main.
 import type { StorageProject, StoragePruneRequest } from '@shared/types'
 import { useEditor } from '@/state/store'
+import { allTracks } from '@shared/timelines'
 import { logWarn } from './log'
 import { saveUserStore } from './userStore'
 import { tr } from '../i18n'
@@ -61,7 +62,7 @@ export function openProjectInfo(): StorageProject {
     name: p.name || 'Untitled',
     path: s.projectPath,
     assets: p.assets.map((a) => a.path).filter((x): x is string => !!x),
-    fragmentIds: p.tracks.flatMap((t) => t.clips.map((c) => c.fragmentId).filter(Boolean) as string[]),
+    fragmentIds: allTracks(p).flatMap((t) => t.clips.map((c) => c.fragmentId).filter(Boolean) as string[]),
     runDirs: (p.voiceRuns ?? []).map((r) => r.runDir).filter((x): x is string => !!x)
   }
 }

@@ -28,6 +28,7 @@ import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { nextMarkerTime } from '@shared/markers'
+import { activeTimelineId, allTracks, healTimelines, isCompound, nestsInto, timelineDuration, timelineTracks, timelinesOf } from '@shared/timelines'
 import { sourceOffset, relAtOffset, scaleRampValues, rampAnim, rampMean, type RampPreset } from '@shared/speedRamp'
 import { layoutSpeeds, type SpeedItem } from '../engine/speedLayout'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
@@ -79,9 +80,6 @@ const audioFade = () => {
 }
 
 export function newProject(): Project {
-  const nv = setting<number>('newProject.videoTracks')
-  const na = setting<number>('newProject.audioTracks')
-  const track = (kind: TrackKind, name: string): Track => ({ id: uid(), kind, name, muted: false, locked: false, gain: 1, clips: [] })
   return {
     version: 1,
     id: uid(),
@@ -91,13 +89,25 @@ export function newProject(): Project {
     // D's settings list 29.97 as a decimal; the project stores 30000/1001 (H2)
     fps: exactFps(setting<number>('newProject.fps')),
     background: setting<string>('newProject.background'),
-    // V2, V1 over A1: tracks[0] is the top video track
-    tracks: [
-      ...Array.from({ length: nv }, (_, i) => track('video', `V${nv - i}`)),
-      ...Array.from({ length: na }, (_, i) => track('audio', `A${i + 1}`))
-    ],
+    tracks: defaultTracks(),
     assets: []
   }
+}
+
+/** L6: the timelines list as it is saved once there are several — every one named */
+function namedTimelines(p: Project): import('@shared/types').Timeline[] {
+  return timelinesOf(p).map((t, i) => (t.name ? t : { ...t, name: trf('tlNth', { n: i + 1 }) }))
+}
+
+/** the «Новые проекты» track layout: V2, V1 over A1 — tracks[0] is the top video track */
+function defaultTracks(): Track[] {
+  const nv = setting<number>('newProject.videoTracks')
+  const na = setting<number>('newProject.audioTracks')
+  const track = (kind: TrackKind, name: string): Track => ({ id: uid(), kind, name, muted: false, locked: false, gain: 1, clips: [] })
+  return [
+    ...Array.from({ length: nv }, (_, i) => track('video', `V${nv - i}`)),
+    ...Array.from({ length: na }, (_, i) => track('audio', `A${i + 1}`))
+  ]
 }
 
 export function projectDuration(p: Project): number {
@@ -218,7 +228,9 @@ export function sanitizeProject(p: Project): Project {
   const label = (o: { color?: number }) => {
     if (o.color !== undefined && !(Number.isInteger(o.color) && o.color >= 1 && o.color <= LABEL_COLORS)) delete o.color
   }
-  for (const track of p.tracks) {
+  // L6: the timelines list is healed first, then the tracks of every timeline
+  healTimelines(p)
+  for (const track of allTracks(p)) {
     if (!Number.isFinite(track.gain)) track.gain = 1
     // K4: centre is the implicit default; a pan that is there is an Anim
     if (track.pan !== undefined) track.pan = anim(track.pan, 0)
@@ -413,6 +425,9 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
   for (const f of targets) {
     const c = f.clip
     const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
+    // L6: a compound's source is its timeline
+    const srcLen = asset && asset.kind !== 'image' ? asset.duration
+      : isCompound(c) && c.timelineId ? timelineDuration(p, c.timelineId) : undefined
     if (edge === 'in') {
       const end = c.start + c.duration
       let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
@@ -428,9 +443,9 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
       shiftClipAnims(c, -delta) // keyframes stay glued to the content
     } else {
       let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
-      if (asset && asset.kind !== 'image' && c.freezeAt === undefined) {
+      if (srcLen !== undefined && c.freezeAt === undefined) {
         // edge trim never reveals more than the source (unless already looping; a freeze is not bound by it)
-        const maxOut = Math.max(relAtOffset(c, asset.duration - c.inPoint), c.duration)
+        const maxOut = Math.max(relAtOffset(c, srcLen - c.inPoint), c.duration)
         if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
       }
       c.duration = nd
@@ -991,6 +1006,19 @@ interface EditorState {
   /** Remove media files from the bin AND every timeline clip that uses them
       (linked twins share the assetId) — one undo entry. */
   removeAssets(assetIds: string[]): void
+  /** L6 timelines. `setActiveTimeline` opens one (its tracks become project.tracks;
+      not an undo step — a view, like scrolling); the rest are one undo step each.
+      `addTimeline` → the new, empty, open timeline's id. `removeTimeline` refuses
+      the last one and one a compound clip plays (false). `nestClips` puts the
+      clips (and their linked twins) into a new timeline and leaves one compound
+      clip in their place → its id. `insertTimelineClip` lays a timeline into the
+      open one → the clip id, or null when that would make a loop. */
+  setActiveTimeline(id: string): void
+  addTimeline(name?: string): string
+  renameTimeline(id: string, name: string): void
+  removeTimeline(id: string): boolean
+  nestClips(ids: string[]): string | null
+  insertTimelineClip(timelineId: string, trackId: string | null, at: number): string | null
   /** H5 bin folders, one undo step each: a new folder (holding these assets) → its id;
       rename; move assets/folders into a folder (null = root); delete a folder — what it
       held goes to the root, never away (shared/bins.ts) */
@@ -1421,6 +1449,118 @@ export const useEditor = create<EditorState>((set, get) => ({
     get().pushHistory('hCollect')
     set({ project: next })
   },
+  setActiveTimeline: (id) =>
+    set((s) => {
+      const p = s.project
+      const act = activeTimelineId(p)
+      const list = timelinesOf(p)
+      const target = list.find((t) => t.id === id)
+      if (!target || id === act) return s
+      // the open timeline's tracks go back into its entry, the target's come out of theirs
+      const timelines = list.map((t) =>
+        t.id === act ? { id: t.id, name: t.name, tracks: p.tracks } : t.id === id ? { id: t.id, name: t.name } : t)
+      return {
+        project: { ...p, tracks: target.tracks ?? [], timelines, activeTimeline: id },
+        selection: [], range: null, animClipId: null
+      }
+    }),
+  addTimeline: (name) => {
+    const id = uid()
+    get().pushHistory('hTimeline')
+    set((s) => ({
+      project: {
+        ...s.project,
+        timelines: [...namedTimelines(s.project), { id, name: name?.trim() || trf('tlNth', { n: timelinesOf(s.project).length + 1 }), tracks: defaultTracks() }],
+        activeTimeline: activeTimelineId(s.project)
+      }
+    }))
+    get().setActiveTimeline(id)
+    return id
+  },
+  renameTimeline: (id, name) => {
+    const next = name.trim()
+    const t = timelinesOf(get().project).find((x) => x.id === id)
+    if (!t || !next || t.name === next) return
+    get().pushHistory('hTimeline')
+    set((s) => ({
+      project: { ...s.project, timelines: namedTimelines(s.project).map((x) => (x.id === id ? { ...x, name: next } : x)), activeTimeline: activeTimelineId(s.project) }
+    }))
+  },
+  removeTimeline: (id) => {
+    const p = get().project
+    const list = timelinesOf(p)
+    if (list.length < 2 || !list.some((t) => t.id === id)) return false
+    if (allTracks(p).some((t) => t.clips.some((c) => isCompound(c) && c.timelineId === id))) return false
+    get().pushHistory('hTimeline')
+    if (activeTimelineId(p) === id) get().setActiveTimeline(list.find((t) => t.id !== id)!.id)
+    set((s) => ({ project: { ...s.project, timelines: timelinesOf(s.project).filter((t) => t.id !== id) } }))
+    return true
+  },
+  nestClips: (ids) => {
+    const p0 = get().project
+    const chosen = new Set(withLinked(p0, ids).filter((id) => {
+      const f = findClip(p0, id)
+      return !!f && !f.track.locked
+    }))
+    if (!chosen.size) return null
+    const tid = uid()
+    const cid = uid()
+    get().pushHistory('hNest')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const moved = p.tracks.flatMap((t) => t.clips.filter((c) => chosen.has(c.id)))
+      const a = Math.min(...moved.map((c) => c.start))
+      const b = Math.max(...moved.map((c) => c.start + c.duration))
+      const used = p.tracks.filter((t) => t.clips.some((c) => chosen.has(c.id)))
+      // the nest keeps the layout of the tracks it came from (their order, kinds and names)
+      const inner: Track[] = used.map((t) => ({
+        id: uid(), kind: t.kind, name: t.name, muted: false, locked: false, gain: 1,
+        ...(t.color ? { color: t.color } : {}),
+        clips: t.clips.filter((c) => chosen.has(c.id)).map((c) => ({ ...c, start: c.start - a }))
+      }))
+      for (const t of used) t.clips = t.clips.filter((c) => !chosen.has(c.id))
+      // the compound goes where the top picture was (the top track if all is sound);
+      // a track busy over the span gets a fresh one of its kind right above it
+      let host = used.find((t) => t.kind === 'video') ?? used[0]
+      if (host.clips.some((c) => c.start < b - 1e-6 && c.start + c.duration > a + 1e-6)) {
+        const fresh = makeTrack(p, host.kind)
+        p.tracks.splice(p.tracks.indexOf(host), 0, fresh)
+        host = fresh
+      }
+      const name = trf('tlCompound', { n: timelinesOf(p).length })
+      const { transitionIn: _t, fadeInCurve: _fi, fadeOutCurve: _fo, mask: _m, ...defaults } = newClipDefaults()
+      void _t; void _fi; void _fo; void _m
+      host.clips.push({ id: cid, kind: 'timeline', timelineId: tid, start: a, duration: b - a, inPoint: 0, label: name, ...defaults })
+      p.timelines = [...namedTimelines(p), { id: tid, name, tracks: inner }]
+      p.activeTimeline = activeTimelineId(s.project)
+      return { project: p, selection: [cid] }
+    })
+    return cid
+  },
+  insertTimelineClip: (timelineId, trackId, at) => {
+    const p0 = get().project
+    const len = timelineDuration(p0, timelineId)
+    if (!timelineTracks(p0, timelineId) || !(len > 0) || nestsInto(p0, activeTimelineId(p0), timelineId)) return null
+    const cid = uid()
+    const start = toFrame(Math.max(0, at), p0.fps)
+    get().pushHistory('hNest')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const free = (t: Track) => !t.locked && t.kind === 'video' &&
+        !t.clips.some((c) => c.start < start + len - 1e-6 && c.start + c.duration > start + 1e-6)
+      let track = trackId ? p.tracks.find((t) => t.id === trackId && !t.locked) : p.tracks.find(free)
+      if (!track) {
+        track = makeTrack(p, 'video')
+        p.tracks.unshift(track)
+      }
+      const name = timelinesOf(p).find((t) => t.id === timelineId)?.name || tr('tlMain')
+      const { transitionIn: _t, fadeInCurve: _fi, fadeOutCurve: _fo, mask: _m, ...defaults } = newClipDefaults()
+      void _t; void _fi; void _fo; void _m
+      track.clips.push({ id: cid, kind: 'timeline', timelineId, start, duration: len, inPoint: 0, label: name, ...defaults })
+      return { project: p, selection: [cid] }
+    })
+    return cid
+  },
   addBin: (name, parentId, assetIds) => {
     const id = uid()
     get().pushHistory('hBinNew')
@@ -1470,8 +1610,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       p.voiceRuns = (p.voiceRuns ?? []).filter((r) => !ids.has(r.assetId))
       p.defects = (p.defects ?? []).filter((d) => !ids.has(d.assetId))
       const dead = new Set<string>()
-      // clips lose their source — drop them everywhere, locked tracks included
-      for (const tr of p.tracks) {
+      // clips lose their source — drop them everywhere, locked tracks and other timelines included
+      for (const tr of allTracks(p)) {
         tr.clips = tr.clips.filter((c) => {
           const doomed = !!c.assetId && ids.has(c.assetId)
           if (doomed) dead.add(c.id)
@@ -2761,7 +2901,7 @@ function makeTrack(p: Project, kind: TrackKind): Track {
 }
 
 /** The part of a clip inside [from..to], or null if they don't overlap. */
-function clipIntersection(c: Clip, from: number, to: number): Clip | null {
+export function clipIntersection(c: Clip, from: number, to: number): Clip | null {
   const end = c.start + c.duration
   const a = Math.max(c.start, from)
   const b = Math.min(end, to)

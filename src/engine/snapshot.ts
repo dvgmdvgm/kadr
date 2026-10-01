@@ -6,6 +6,7 @@
 // This is also the embedded Claude's "eyes": kadr_snapshot returns the PNG
 // path for it to Read.
 import { useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { dirOf } from '@shared/paths'
 import {
   setForceCaptureAll, captureReady, captureTargets, captureVersion, pokeCaptureSync
@@ -32,7 +33,7 @@ export function registerPreviewCanvas(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const hasFragmentsNear = (t: number): boolean => {
-  const p = useEditor.getState().project
+  const p = flattenProject(useEditor.getState().project)
   return p.tracks.some(
     (tr) => tr.kind === 'video' && !tr.muted && tr.clips.some(
       (c) => c.kind === 'remotion' && !c.disabled && t >= c.start - 2 && t < c.start + c.duration + 0.75

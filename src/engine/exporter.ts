@@ -16,6 +16,7 @@ import { Mp4FrameSource } from './demux'
 import { chromiumCanDecode } from './codecs'
 import { activity } from './autosave'
 import { projectDuration, useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { registerLibFonts } from './fonts'
 import { loadLuts } from './lut'
 import { logInfo, logWarn } from './log'
@@ -84,7 +85,7 @@ export function startExport(
 
   async function run(): Promise<void> {
     // a switched-off clip (E9) is not in the film: not mixed, drawn, rendered or checked for
-    project = withoutDisabled(project)
+    project = withoutDisabled(flattenProject(project))
     // a moved or renamed source used to render black and fail at the mux:
     // refuse up front (before the busy check: nothing awaits between it and the flag) and say which files
     const missing = await missingForExport(project, range)

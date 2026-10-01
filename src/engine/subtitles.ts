@@ -9,6 +9,7 @@ import { audioFollowsSpeed } from '@shared/audioSpeed'
 import { hasRamp, relAtOffset, sourceOffset } from '@shared/speedRamp'
 import { gainKeys as gainKeysOf } from '@shared/gainKeys'
 import { overlapFades, trackHeard, panAt } from './player'
+import { flattenProject } from './nesting'
 import { evalAnim } from './anim'
 import { logInfo } from './log'
 import { docWords, glueWords } from './words'
@@ -177,13 +178,18 @@ export function collectRangeAudio(
   filter?: RangeAudioFilter
 ): AudioSegment[] {
   const segs: AudioSegment[] = []
+  // L6: a compound clip is heard through its contents; their ids are the
+  // compound's (and its track's) followed by '/', so a filter naming the
+  // compound or its track takes them along
+  project = flattenProject(project)
+  const named = (ids: string[], id: string) => ids.some((x) => id === x || id.startsWith(x + '/'))
   for (const track of project.tracks) {
     // an analysis aimed at tracks or clips hears them whatever is soloed
     if (filter?.trackIds || filter?.clipIds ? track.muted : !trackHeard(project, track)) continue
-    if (filter?.trackIds && !filter.trackIds.includes(track.id)) continue
+    if (filter?.trackIds && !named(filter.trackIds, track.id)) continue
     for (const clip of track.clips) {
       if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
-      if (filter?.clipIds && !filter.clipIds.includes(clip.id)) continue
+      if (filter?.clipIds && !named(filter.clipIds, clip.id)) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (!asset?.hasAudio) continue
       const ramped = hasRamp(clip)

@@ -3,6 +3,7 @@
 // like the pool's (so the fader, the limiter, the meter and the output device
 // apply), at the level the clip plays at that moment, at its speed.
 import { useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { createScrub, type Grain } from './scrub'
 import { audibleClipsAt, audioLevelAt, panAt } from './player'
 import { clipSourceTime } from './timelineMath'
@@ -55,7 +56,7 @@ export const scrub = createScrub<ClipGrain>({
   now: () => performance.now(),
   grains: (t) => {
     resumeAudio()
-    const project = useEditor.getState().project
+    const project = flattenProject(useEditor.getState().project)
     return audibleClipsAt(project, t).map(({ clip, track, asset }) => {
       const rel = t - clip.start
       return {

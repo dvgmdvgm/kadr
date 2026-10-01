@@ -7,7 +7,7 @@
 // Relative paths are written with '/' whatever the OS, so a project collected on
 // Windows opens on Linux and back. Pure strings, no node imports: main uses it
 // for project:read/write and the collect, the check runs it in plain node.
-import type { Project } from './types'
+import type { Project, Track } from './types'
 
 export type PathKind = 'media' | 'proxy' | 'text' | 'script' | 'run' | 'lut'
 
@@ -47,6 +47,10 @@ export function projectPaths(p: Project): { path: string; kind: PathKind }[] {
 /** a copy with every path passed through `fn` — the input is never touched */
 export function mapPaths(p: Project, fn: (path: string, kind: PathKind) => string): Project {
   const f = (v: string | undefined, kind: PathKind) => (v ? fn(v, kind) : v)
+  const luts = (tracks: Track[]) => tracks.map((t) => !t.clips?.some((c) => c.lut) ? t : {
+    ...t,
+    clips: t.clips.map((c) => { if (!c.lut) return c; const path = f(c.lut.path, 'lut')!; return path === c.lut.path ? c : { ...c, lut: { ...c.lut, path } } })
+  })
   return {
     ...p,
     assets: (p.assets ?? []).map((a) => {
@@ -54,12 +58,9 @@ export function mapPaths(p: Project, fn: (path: string, kind: PathKind) => strin
       return path === a.path && proxyPath === a.proxyPath ? a
         : { ...a, path, ...(a.proxyPath !== undefined ? { proxyPath } : {}) }
     }),
-    ...(p.tracks ? {
-      tracks: p.tracks.map((t) => !t.clips?.some((c) => c.lut) ? t : {
-        ...t,
-        clips: t.clips.map((c) => { if (!c.lut) return c; const path = f(c.lut.path, 'lut')!; return path === c.lut.path ? c : { ...c, lut: { ...c.lut, path } } })
-      })
-    } : {}),
+    ...(p.tracks ? { tracks: luts(p.tracks) } : {}),
+    // L6: the clips of the other timelines carry LUTs too
+    ...(p.timelines ? { timelines: p.timelines.map((tl) => (tl.tracks ? { ...tl, tracks: luts(tl.tracks) } : tl)) } : {}),
     ...(p.texts ? { texts: p.texts.map((t) => { const path = f(t.path, 'text')!; return path === t.path ? t : { ...t, path } }) } : {}),
     ...(p.voiceRuns ? {
       voiceRuns: p.voiceRuns.map((r) => {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor } from '@/state/store'
+import { allTracks } from '@shared/timelines'
 import { useProxyProgress, wantsProxy, rebuildProxy } from '@/engine/proxy'
 import { useOffline, openRelink } from '@/engine/offline'
 import { importFiles, dropPayload, dragHasMedia, dropUsable, importDrop, useImportUi } from '@/engine/mediaImport'
@@ -65,7 +66,9 @@ function ScrubVideo({ src, t }: { src: string; t: number }) {
 export function MediaBin() {
   const t = useT()
   const assets = useEditor((s) => s.project.assets)
-  const tracks = useEditor((s) => s.project.tracks)
+  // L6: what is in use, and whether anything is on a timeline, counts every timeline
+  const project = useEditor((s) => s.project)
+  const tracks = useMemo(() => allTracks(project), [project])
   // an empty project: the bin's empty state is where a session starts, so it offers the recent list
   const noClips = tracks.every((tk) => !tk.clips.length)
   const texts = useEditor((s) => s.project.texts ?? [])
@@ -240,7 +243,7 @@ export function MediaBin() {
   /** how many timeline clips reference these assets (for the confirm text) */
   const clipsUsing = (ids: string[]) => {
     const set = new Set(ids)
-    return useEditor.getState().project.tracks
+    return allTracks(useEditor.getState().project)
       .reduce((n, tr) => n + tr.clips.filter((c) => c.assetId && set.has(c.assetId)).length, 0)
   }
 

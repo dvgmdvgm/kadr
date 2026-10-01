@@ -5,6 +5,7 @@
 // keeps the captured players synced to the editor clock.
 import type { Anim, Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { evalAnim } from './anim'
 import { GRADE_KEYS } from '@shared/colour'
 import { blendOf } from '@shared/blend'
@@ -45,7 +46,7 @@ export function setForceCaptureAll(on: boolean) {
   forceAll = on
   // a snapshot takes the fragments at the project's full width; live preview
   // goes back to ≤1280 afterwards (already running windows are resized)
-  const p = useEditor.getState().project
+  const p = flattenProject(useEditor.getState().project)
   for (const [id, { clipId }] of active) {
     const clip = p.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
     const [w, h] = captureSize(clip, p)
@@ -206,7 +207,7 @@ export function wireFragmentCapture() {
     const s = useEditor.getState()
     const rel = s.playhead - clip.start
     const inside = rel >= 0 && rel < clip.duration
-    const vol = clip.muted || !trackHeard(s.project, track) || !inside
+    const vol = clip.muted || !trackHeard(flattenProject(s.project), track) || !inside
       ? 0
       : Math.min(1, evalAnim(clip.gain, Math.max(0, rel)) * track.gain *
           fadeFactor(clip, Math.max(0, rel), overlapFades(track, clip)))
@@ -240,7 +241,7 @@ export function wireFragmentCapture() {
   // nobody tracked, rendering until the app quit.
   const reconcileOnce = async () => {
     const s = useEditor.getState()
-    const want = wanted(s.project, s.playhead)
+    const want = wanted(flattenProject(s.project), s.playhead)
     for (const id of [...active.keys()]) {
       if (!want.has(id)) {
         active.delete(id)
@@ -255,7 +256,7 @@ export function wireFragmentCapture() {
       active.set(id, { clipId: clip.id })
       try {
         const url = await ensureFragmentServer()
-        const [cw, ch] = captureSize(clip, s.project)
+        const [cw, ch] = captureSize(clip, flattenProject(s.project))
         await window.kadr.fragmentCaptureStart(
           id, `${url}/?comp=${encodeURIComponent(id)}`, cw, ch, clip.fragmentMeta?.fps ?? 60
         )

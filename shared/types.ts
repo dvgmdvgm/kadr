@@ -192,8 +192,11 @@ export interface Clip {
   id: string
   /** source asset; text clips have no asset */
   assetId?: string
-  /** 'text' = text overlay; 'remotion' = live fragment composition */
-  kind: 'media' | 'text' | 'remotion'
+  /** 'text' = text overlay; 'remotion' = live fragment composition;
+      'timeline' = a compound clip playing another timeline of the project (L6) */
+  kind: 'media' | 'text' | 'remotion' | 'timeline'
+  /** timeline clips: the `Timeline.id` it plays; `inPoint` is a second of that timeline */
+  timelineId?: string
   /** remotion clips: composition id inside the shared fragments workspace */
   fragmentId?: string
   /** remotion clips: composition geometry/timing snapshot (preview + export) */
@@ -294,6 +297,14 @@ export interface Track {
   clips: Clip[]
 }
 
+/** L6: a sequence of its own — edited when open, played inside others by a clip of kind 'timeline' */
+export interface Timeline {
+  id: string
+  name: string
+  /** absent for the open timeline, whose tracks are `project.tracks` */
+  tracks?: Track[]
+}
+
 export interface TimelineMarker {
   id: string
   /** project seconds; markers float above all tracks */
@@ -353,7 +364,13 @@ export interface Project {
   fps: number
   /** background color of the canvas */
   background: string
+  /** the OPEN timeline's tracks — every editing and render path reads these */
   tracks: Track[]
+  /** L6: every timeline of the project, the open one included (its `tracks`
+      absent there: they are `project.tracks`). Absent = one timeline. */
+  timelines?: Timeline[]
+  /** L6: the id of the open timeline in `timelines` */
+  activeTimeline?: string
   assets: MediaAsset[]
   /** the media bin's folders (H5) */
   bins?: BinFolder[]

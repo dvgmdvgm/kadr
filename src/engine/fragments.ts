@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import type { FragmentInfo, Project } from '@shared/types'
 import { dirOf } from '@shared/paths'
 import { useEditor } from '@/state/store'
+import { allTracks } from '@shared/timelines'
 import { logWarn } from './log'
 import { tr } from '../i18n'
 
@@ -83,7 +84,7 @@ export async function createFragment(
 export async function syncProjectFragments(project: Project, projectPath: string | null): Promise<void> {
   if (!projectPath) return
   const ids = [...new Set(
-    project.tracks.flatMap((t) => t.clips)
+    allTracks(project).flatMap((t) => t.clips)
       .filter((c) => c.kind === 'remotion' && c.fragmentId)
       .map((c) => c.fragmentId!)
   )]

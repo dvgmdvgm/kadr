@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
+import { flattenProject } from '@/engine/nesting'
 import { evalAnim } from '@/engine/anim'
 import { fadeFactor, overlapFades, trackHeard } from '@/engine/player'
 import { ensureFragmentServer, useFragmentServer } from '@/engine/fragments'
@@ -16,7 +17,7 @@ import { Icon } from './icons'
  * No rendering happens — the dev server hot-reloads Claude's edits live.
  */
 export function FragmentOverlays({ canvas }: { canvas: React.RefObject<HTMLCanvasElement> }) {
-  const project = useEditor((s) => s.project)
+  const project = flattenProject(useEditor((s) => s.project))
   const url = useFragmentServer((s) => s.url)
   const error = useFragmentServer((s) => s.error)
   const [rect, setRect] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
@@ -64,7 +65,7 @@ export function FragmentOverlays({ canvas }: { canvas: React.RefObject<HTMLCanva
   // CHANGES matter: selecting a string key re-renders this component when an
   // iframe comes or goes, not on every frame of playback (the frames
   // themselves follow the clock through a store subscription, below).
-  const nearKey = useEditor((s) => nearClips(s.project, s.playhead).map((n) => `${n.key}:${n.clip.id}`).join(','))
+  const nearKey = useEditor((s) => nearClips(flattenProject(s.project), s.playhead).map((n) => `${n.key}:${n.clip.id}`).join(','))
   if (!anyFragments) return null
   // keep iframes mounted a bit around the clip so entry is seamless;
   // clips that need GL features render through pixel capture instead
@@ -237,7 +238,7 @@ function FragmentFrame({
   // the display scale at mount goes into the URL (the page sizes its 3D
   // from the first frame); later changes travel by message
   const [src] = useState(() => {
-    const l = frameLayout(clip, track, rect, useEditor.getState().project, useEditor.getState().playhead)
+    const l = frameLayout(clip, track, rect, flattenProject(useEditor.getState().project), useEditor.getState().playhead)
     return `${slotOrigin(url, slot)}/?comp=${encodeURIComponent(clip.fragmentId!)}&scale=${Math.min(1, l.scale).toFixed(3)}`
   })
 
@@ -252,7 +253,7 @@ function FragmentFrame({
       const st = useEditor.getState()
       const r = st.playhead - clip.start
       const inside = r >= 0 && r < clip.duration
-      const vol = clip.muted || !trackHeard(st.project, track) || !inside
+      const vol = clip.muted || !trackHeard(flattenProject(st.project), track) || !inside
         ? 0
         : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r, overlapFades(track, clip)))
       post({
@@ -266,7 +267,7 @@ function FragmentFrame({
     }
     const place = () => {
       const st = useEditor.getState()
-      const l = frameLayout(clip, track, rect, st.project, st.playhead)
+      const l = frameLayout(clip, track, rect, flattenProject(st.project), st.playhead)
       const s = el.style
       s.left = `${l.left}px`
       s.top = `${l.top}px`

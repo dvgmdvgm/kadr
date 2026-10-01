@@ -72,8 +72,8 @@ async function readProjectFile(path: string): Promise<Known | null> {
       name: p.name || basename(path),
       path,
       assets: (p.assets ?? []).map((a: { path?: string }) => a.path).filter(Boolean),
-      fragmentIds: (p.tracks ?? []).flatMap((t: { clips?: { fragmentId?: string }[] }) =>
-        (t.clips ?? []).map((c) => c.fragmentId).filter(Boolean)),
+      fragmentIds: [...(p.tracks ?? []), ...(p.timelines ?? []).flatMap((tl: { tracks?: unknown[] }) => tl.tracks ?? [])].flatMap((t: { clips?: { fragmentId?: string }[] }) =>
+        (t.clips ?? []).map((c) => c.fragmentId).filter((x): x is string => !!x)),
       runDirs: (p.voiceRuns ?? []).map((r: { runDir?: string }) => r.runDir).filter(Boolean)
     }
   } catch {

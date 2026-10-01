@@ -4,6 +4,7 @@ import { registerPreviewCanvas } from '@/engine/snapshot'
 import { usePopout } from '@/engine/popout'
 import { useT } from '@/i18n'
 import { useEditor, useSettings, projectDuration } from '@/state/store'
+import { flattenProject } from '@/engine/nesting'
 import { AudioMeter } from './AudioMeter'
 import { FragmentOverlays } from './FragmentOverlays'
 import { ClipGizmo } from './ClipGizmo'
@@ -32,7 +33,7 @@ export function Preview() {
     const player = new Player({
       getState: () => {
         const s = useEditor.getState()
-        return { project: s.project, playhead: s.playhead, playing: s.playing, playRate: s.playRate, loop: s.loop, range: s.range, playEnd: s.playEnd }
+        return { project: flattenProject(s.project), playhead: s.playhead, playing: s.playing, playRate: s.playRate, loop: s.loop, range: s.range, playEnd: s.playEnd }
       },
       setPlayhead: (t) => useEditor.getState().setPlayhead(t),
       setPlaying: (p) => useEditor.getState().setPlaying(p),
