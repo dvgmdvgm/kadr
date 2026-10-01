@@ -12,6 +12,7 @@ const NAME: Record<StorageGroupId, TKey> = {
   ttsqcCache: 'stTtsqcCache',
   reversed: 'stReversed',
   imported: 'stImported',
+  recordings: 'stRecordings',
   voiceRuns: 'stVoiceRuns',
   backups: 'stBackups',
   templates: 'stTemplates'
@@ -23,6 +24,7 @@ const ABOUT: Record<StorageGroupId, TKey> = {
   ttsqcCache: 'stTtsqcCacheAbout',
   reversed: 'stReversedAbout',
   imported: 'stImportedAbout',
+  recordings: 'stRecordingsAbout',
   voiceRuns: 'stVoiceRunsAbout',
   backups: 'stBackupsAbout',
   templates: 'stTemplatesAbout'

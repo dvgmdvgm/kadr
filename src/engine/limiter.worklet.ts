@@ -55,3 +55,39 @@ class KadrLoudness extends AudioWorkletProcessor {
 }
 
 registerProcessor('kadr-loudness', KadrLoudness)
+
+declare const currentFrame: number
+
+/** K8: a microphone take. Mono in (the node down-mixes), outputs silence (it is
+ *  pulled only while it reaches the destination); posts `{ frame }` with the
+ *  context frame of its first sample, then Float32Array chunks of ~0.1 s, and
+ *  `'done'` after the last one once told 'stop'. */
+class KadrCapture extends AudioWorkletProcessor {
+  private buf = new Float32Array(Math.round(sampleRate / 10))
+  private n = 0
+  private started = false
+  private stopped = false
+  constructor() {
+    super()
+    this.port.onmessage = (e: MessageEvent) => { if (e.data === 'stop') this.stopped = true }
+  }
+  private flush() {
+    if (!this.n) return
+    const chunk = this.buf.slice(0, this.n)
+    this.port.postMessage(chunk, [chunk.buffer])
+    this.n = 0
+  }
+  process(inputs: Float32Array[][]): boolean {
+    if (this.stopped) { this.flush(); this.port.postMessage('done'); return false }
+    const ch = inputs[0]?.[0]
+    if (!ch) return true
+    if (!this.started) { this.started = true; this.port.postMessage({ frame: currentFrame }) }
+    for (let i = 0; i < ch.length; i++) {
+      this.buf[this.n++] = ch[i]
+      if (this.n === this.buf.length) this.flush()
+    }
+    return true
+  }
+}
+
+registerProcessor('kadr-capture', KadrCapture)

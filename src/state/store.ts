@@ -1061,7 +1061,15 @@ interface EditorState {
    * one with the same path is already in the bin. One undo entry.
    */
   placeAudio(asset: Omit<MediaAsset, 'id'>, at: number,
-    opts?: { gain?: number; label?: string; history?: string }): { clipId: string; trackId: string; assetId: string }
+    opts?: {
+      gain?: number; label?: string
+      /** the undo label; null = the caller pushed one already (K8: several takes, one step) */
+      history?: string | null
+      /** K8: this track when it is free over the span; else the usual choice */
+      trackId?: string
+      /** K8: a take starts part-way into its file and may end before it */
+      inPoint?: number; duration?: number
+    }): { clipId: string; trackId: string; assetId: string }
   /** Change the project's name, size or fps. One undo step per `session`
    *  (the Inspector passes one per focus of a field, so typing "1080" is one
    *  step); a call without a session is a step of its own. A patch that
@@ -1852,7 +1860,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   placeAudio: (asset, at, opts) => {
-    get().pushHistory(opts?.history ?? 'hInsert')
+    if (opts?.history !== null) get().pushHistory(opts?.history ?? 'hInsert')
     let result = { clipId: '', trackId: '', assetId: '' }
     set((s) => {
       const p = cloneProject(s.project)
@@ -1862,9 +1870,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         p.assets = [...p.assets, a]
       }
       const start = Math.max(0, at)
-      const end = start + Math.max(0.01, a.duration)
-      let track = p.tracks.find((t) => t.kind === 'audio' && !t.locked &&
-        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6))
+      const inPoint = opts?.inPoint ?? 0
+      const duration = opts?.duration ?? a.duration
+      const end = start + Math.max(0.01, duration)
+      const free = (t: Track) => t.kind === 'audio' && !t.locked &&
+        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6)
+      const want = p.tracks.find((t) => t.id === opts?.trackId)
+      let track = want && free(want) ? want : p.tracks.find(free)
       if (!track) {
         track = makeTrack(p, 'audio')
         p.tracks.push(track)
@@ -1876,8 +1888,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         assetId: a.id,
         kind: 'media',
         start,
-        duration: a.duration,
-        inPoint: 0,
+        duration,
+        inPoint,
         label: opts?.label ?? a.name,
         ...defaults,
         gain: Number.isFinite(gain) ? { value: Math.min(2, Math.max(0, gain as number)) } : defaults.gain

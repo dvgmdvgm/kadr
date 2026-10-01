@@ -1155,7 +1155,7 @@ export interface BackupOffer {
 
 export type StorageGroupId =
   | 'proxies' | 'decoded' | 'fragments' | 'ttsqcCache'
-  | 'reversed' | 'imported' | 'voiceRuns' | 'backups' | 'templates'
+  | 'reversed' | 'imported' | 'recordings' | 'voiceRuns' | 'backups' | 'templates'
 
 /** A project, reduced to what identifies the files it owns on disk. */
 export interface StorageProject {
@@ -1307,6 +1307,9 @@ export interface KadrApi {
   /** Save raw media content (path-less File / data: URL from a browser drag)
       into userData/imported; cached by content hash. Returns the path. */
   saveBlobMedia(name: string, mime: string, data: Uint8Array): Promise<string>
+  /** K8: a microphone take (WAV bytes) into `<project>/media/recordings`, or
+      userData/recordings for an unsaved project. Returns the path. */
+  saveRecording(data: Uint8Array, projectPath: string | null): Promise<string>
   /** Resolve an XDG FileTransfer portal drop (transfer key → local paths). */
   portalFiles(key: string): Promise<string[]>
   /** Media from the OS clipboard: copied files (uri-list) or a copied image

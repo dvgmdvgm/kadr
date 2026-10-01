@@ -119,6 +119,7 @@ const api: KadrApi = {
   },
   downloadMedia: (url) => ipcRenderer.invoke('media:download', url),
   saveBlobMedia: (name, mime, data) => ipcRenderer.invoke('media:save-blob', name, mime, data),
+  saveRecording: (data, projectPath) => ipcRenderer.invoke('media:save-recording', data, projectPath),
   portalFiles: (key) => ipcRenderer.invoke('media:portal-files', key),
   clipboardMedia: () => ipcRenderer.invoke('media:clipboard-paste'),
   dropLog: (entry) => ipcRenderer.send('debug:drop-log', entry),

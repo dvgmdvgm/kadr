@@ -147,6 +147,15 @@ function createWindow() {
   })
   win.setMenuBarVisibility(false)
   const owner = win
+  // K8: the microphone, for the editor's own top document only, audio only.
+  // Fragment pages run inside this same webContents (iframes from the
+  // workspace dev server) and get no capture. Every other permission keeps
+  // Electron's no-handler behaviour, which grants it.
+  win.webContents.session.setPermissionRequestHandler((wc, perm, cb, details) => {
+    if (perm !== 'media') { cb(true); return }
+    const d = details as { isMainFrame?: boolean; mediaTypes?: string[] }
+    cb(wc === owner.webContents && !!d.isMainFrame && !(d.mediaTypes ?? []).includes('video'))
+  })
   closeAllowed = closeGuard = unresponsive = false
   win.on('close', (e) => {
     if (!mustAsk()) return
@@ -935,6 +944,17 @@ function registerIpc() {
       return out // identical content saved before
     } catch { /* proceed */ }
     return writeImported(out, buf)
+  })
+
+  // K8: a microphone take, a WAV the page encoded. Next to a saved project
+  // (`<project>/media/recordings`, so it travels and is saved relative), else in
+  // userData/recordings — REFERENCED either way: the clip points at this file.
+  ipcMain.handle('media:save-recording', async (_e, data: Uint8Array, projectPath: string | null) => {
+    if (!data?.byteLength) throw new Error('empty recording')
+    const dir = projectPath ? join(dirname(projectPath), 'media', 'recordings') : join(app.getPath('userData'), 'recordings')
+    await fs.mkdir(dir, { recursive: true })
+    const out = join(dir, `take-${new Date().toISOString().replace(/[:.]/g, '-')}.wav`)
+    return writeImported(out, Buffer.from(data.buffer, data.byteOffset, data.byteLength))
   })
 
   ipcMain.handle('fonts:lib', async (_e, projectPath: string) => {

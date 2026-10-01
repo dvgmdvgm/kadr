@@ -40,6 +40,8 @@ const GROUPS: GroupDef[] = [
   { id: 'ttsqcCache', dir: homeCache, rebuildable: true, match: 'none' },
   { id: 'reversed', dir: () => join(app.getPath('userData'), 'reversed'), rebuildable: false, match: 'path' },
   { id: 'imported', dir: () => join(app.getPath('userData'), 'imported'), rebuildable: false, match: 'path' },
+  // K8: microphone takes of never-saved projects (a saved one keeps them in <project>/media/recordings)
+  { id: 'recordings', dir: () => join(app.getPath('userData'), 'recordings'), rebuildable: false, match: 'path' },
   { id: 'voiceRuns', dir: () => join(app.getPath('userData'), 'ttsqc-runs'), rebuildable: false, match: 'path' },
   // one folder per project, named projectKey(path) (electron/backups.ts); a never-saved
   // project's folder (unsaved-<id>) belongs to no file and shows as unattributed

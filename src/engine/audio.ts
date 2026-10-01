@@ -37,8 +37,14 @@ let routed = 0
 // preview sounds as before); what the strip meters is the sum of its elements
 // after their gain and pan — one bus per AUDIO track, in front of the master.
 /** a stereo peak tap: a splitter into one analyser per channel */
-type Tap = [AnalyserNode, AnalyserNode]
+export type Tap = [AnalyserNode, AnalyserNode]
 let masterTap: Tap | null = null
+/** the worklet module (limiter, loudness, K8's capture) — resolves once loaded */
+let workletModule: Promise<void> | null = null
+export function workletReady(): Promise<void> {
+  ensureAudio()
+  return workletModule!
+}
 const buses = new Map<string, { bus: GainNode; tap: Tap }>()
 /** where each element's pan goes now: a track id, or '' = straight to the master */
 const routedTo = new WeakMap<HTMLMediaElement, string>()
@@ -47,7 +53,7 @@ let limiterReduction = 0
 let meterPausedAt: number | null = null
 const peakBuf = new Float32Array(2048)
 
-function tap(c: AudioContext, from: AudioNode): Tap {
+export function tap(c: AudioContext, from: AudioNode): Tap {
   const split = c.createChannelSplitter(2)
   const mk = () => { const a = c.createAnalyser(); a.fftSize = 2048; return a }
   const t: Tap = [mk(), mk()]
@@ -79,7 +85,7 @@ export function setElementTrack(el: HTMLMediaElement, trackId: string) {
   routedTo.set(el, trackId)
 }
 
-function peaks(t: Tap | null | undefined): [number, number] {
+export function peaks(t: Tap | null | undefined): [number, number] {
   if (!t) return [0, 0]
   const out: [number, number] = [0, 0]
   for (let ch = 0; ch < 2; ch++) {
@@ -113,7 +119,8 @@ export function ensureAudio(): AudioContext {
     analyser.connect(ctx.destination)
     masterTap = tap(ctx, analyser)
     const c = ctx
-    c.audioWorklet.addModule(limiterModule).then(() => {
+    workletModule = c.audioWorklet.addModule(limiterModule)
+    workletModule.then(() => {
       limiter = new AudioWorkletNode(c, 'kadr-limiter', {
         outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit'
       })

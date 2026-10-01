@@ -50,6 +50,8 @@ mixes audio and muxes/transcodes per preset.
   the drag ends — not even a seek landing late — and each stops by itself);
   `check-mixer-binding.mjs` (K6: the fader and the header slider are one
   value, the taper table, one undo step per gesture, keyed edits as keys);
+  `check-record-place.mjs` (K8: a microphone take started at t with a
+  pre-roll lands at t, latency compensated, ends where recording stopped);
   `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
@@ -622,6 +624,27 @@ mixes audio and muxes/transcodes per preset.
   playhead was MOVED to since the stop resets the measurement, a resume does
   not. Keyed pan or clip gain take an edit as a key under the playhead, never
   `.value`. Test: `node scripts/check-mixer-binding.mjs`.
+  RECORDING (K8, `src/engine/record.ts`, `shared/recordPlace.ts`): a track is
+  ARMED from its header or strip (runtime only, never in the project); an armed
+  track holds its input open (getUserMedia, no echo cancel / noise suppression
+  / AGC, per-track device) and its strip meters that input. Record (Shift+R,
+  the transport's button, which shows once a track is armed) plays from
+  `playback.recordPreroll` s before the playhead — or from the range's start
+  to its end (punch-in) — past the timeline's end and with the loop off, while
+  a `kadr-capture` processor in the limiter's worklet module records each armed
+  input mono from before the count-in. Each playhead update is paired with
+  `ctx.currentTime`; the median of their difference maps the capture's first
+  frame onto the timeline, and the clip's inPoint skips the pre-roll plus the
+  input latency (`MediaTrackSettings.latency` + `playback.recordOffsetMs`, the
+  knob for a loopback-measured device). Stopping playback ends the take: 16-bit
+  WAV through `media:save-recording` into `<project>/media/recordings`, or
+  `userData/recordings` (a REFERENCED storage group) unsaved; every take is
+  placed by `placeAudio` on its own track when free there, all ONE undo step;
+  undo keeps the files. MICROPHONE PERMISSION: main's
+  `setPermissionRequestHandler` grants `media` only to the editor's own TOP
+  frame and only audio — fragment iframes run in the same webContents and get
+  nothing; other permissions keep Electron's grant-all default.
+  Test: `node scripts/check-record-place.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings

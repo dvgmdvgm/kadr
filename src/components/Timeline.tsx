@@ -48,7 +48,7 @@ import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
 import { scrub } from '@/engine/scrubAudio'
 import { toggleTrack, useMixerUi } from '@/engine/mixer'
-import { MixerDock } from './Mixer'
+import { ArmButton, MixerDock } from './Mixer'
 import { dbText, gainToDb } from '@shared/fader'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
@@ -1724,6 +1724,7 @@ function TrackRow({
               <Icon name="move" size={13} />
             </button>
           )}
+          {track.kind === 'audio' && <ArmButton trackId={track.id} />}
           <button
             className={track.muted ? 'toggled' : ''}
             data-act="mute"

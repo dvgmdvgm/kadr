@@ -15,6 +15,7 @@ import { contextTargetOpen, sendContext } from './contextLine'
 import { applySilences, findSilencesHere, cuttable } from './silences'
 import { useBeatsUi } from './beats'
 import { findScenesHere } from './scenes'
+import { toggleRecording } from './record'
 import { duckHere, duckTargets } from './duck'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
@@ -75,6 +76,7 @@ const HANDLERS: Record<ActionId, Handler> = {
     }
   },
   'transport.playInOut': { run: (s) => s.playInOut() },
+  'transport.record': { run: () => { void toggleRecording() } },
   'edit.split': { run: (s) => s.splitAtPlayhead() },
   'file.save': { run: () => appCommands.save() },
   'file.saveAs': { run: () => appCommands.saveAs() },

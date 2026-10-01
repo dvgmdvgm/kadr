@@ -439,6 +439,12 @@ function Playback({ t }: { t: T }) {
       <Row label={t('setOutput')} keys={['playback.audioOutput']} shown={t('setOutDefault')}>
         <OutputDevice t={t} />
       </Row>
+      <Row label={t('setPreroll')} keys={['playback.recordPreroll']} shown={`3 ${t('setSec')}`} unit={t('setSec')}>
+        <Num k="playback.recordPreroll" label={t('setPreroll')} step={1} />
+      </Row>
+      <Row label={t('setRecOffset')} keys={['playback.recordOffsetMs']} shown="0 ms" unit="ms" detail={t('setRecOffsetNote')}>
+        <Num k="playback.recordOffsetMs" label={t('setRecOffset')} step={5} />
+      </Row>
       <Row label={t('setFollow')} keys={['playback.follow']} shown={t('setFollowPage')}>
         <Choice k="playback.follow" label={t('setFollow')} width={240}
                 options={[['off', t('setFollowOff')], ['page', t('setFollowPage')], ['smooth', t('setFollowSmooth')]]} />

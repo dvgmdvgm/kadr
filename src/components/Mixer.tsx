@@ -14,6 +14,7 @@ import {
 } from '@/engine/mixer'
 import { trackPeaks, masterPeaks, loudness, resetLoudness, limiterInfo } from '@/engine/audio'
 import { trackHeard } from '@/engine/player'
+import { useRecord, toggleArm, setInput, inputPeaks, isArmed, useAudioInputs } from '@/engine/record'
 
 // ---- the peak meter: −60…0 dBFS linear in dB, a hold line for 2 s, then it falls
 const FALL_DB_S = 24
@@ -192,6 +193,39 @@ function Pan({ track }: { track: Track }) {
 
 type Reg = (key: string) => (e: MeterEls | null) => void
 
+/** K8: arm for recording — the track header's (`th-arm`) and the strip's (`mx-btn mx-arm`) */
+export function ArmButton({ trackId, strip = false }: { trackId: string; strip?: boolean }) {
+  const t = useT()
+  const on = useRecord((s) => trackId in s.armed)
+  const label = on ? t('mxArmed') : t('mxArm')
+  return (
+    <button className={strip ? `mx-btn mx-arm${on ? ' on' : ''}` : `th-arm${on ? ' on' : ''}`}
+            data-act={strip ? 'mx-arm' : 'arm'} aria-pressed={on} title={label} aria-label={t('mxArm')}
+            onClick={() => toggleArm(trackId)}>
+      <Icon name="circle" size={strip ? 12 : 13} style={on ? { fill: 'currentColor' } : undefined} />
+    </button>
+  )
+}
+
+/** K8: the armed strip's input, under its name; the select changes it */
+function InputLine({ trackId }: { trackId: string }) {
+  const t = useT()
+  const device = useRecord((s) => s.armed[trackId])
+  const list = useAudioInputs()
+  if (device === undefined) return null
+  const name = device ? list.find(([id]) => id === device)?.[1] ?? device.slice(0, 8) : t('mxInDefault')
+  return (
+    <label className="mx-in" title={trf('mxInput', { device: name })}>
+      <Icon name="mic" size={10} />
+      <select className="mx-out-sel" data-act="mx-in" aria-label={trf('mxInput', { device: name })} value={device}
+              onChange={(e) => setInput(trackId, e.target.value)}>
+        <option value="">{t('mxInDefault')}</option>
+        {list.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+      </select>
+    </label>
+  )
+}
+
 function Strip({ track, quiet, narrow, reg }: { track: Track; quiet: boolean; narrow: boolean; reg: Reg }) {
   const t = useT()
   return (
@@ -201,6 +235,7 @@ function Strip({ track, quiet, narrow, reg }: { track: Track; quiet: boolean; na
       style={track.color ? { boxShadow: `inset 0 3px 0 var(--label-${track.color})` } : undefined}
     >
       <div className="mx-name" title={track.name}>{track.name}</div>
+      <InputLine trackId={track.id} />
       <Pan track={track} />
       <div className="mx-btns">
         <button className={`mx-btn mx-mute${track.muted ? ' on' : ''}`} data-act="mx-mute" aria-pressed={track.muted}
@@ -211,6 +246,7 @@ function Strip({ track, quiet, narrow, reg }: { track: Track; quiet: boolean; na
                 title={t('solo')} aria-label={t('solo')} onClick={() => toggleTrack(track.id, 'solo')}>
           <Icon name="solo" size={12} />
         </button>
+        {!narrow && <ArmButton trackId={track.id} strip />}
       </div>
       <div className="mx-body">
         <Fader gain={track.gain} label={track.name} onSet={(g) => setTrackGain(track.id, g)} />
@@ -340,7 +376,7 @@ export function MixerDock() {
       for (const [key, e] of els.current) {
         let m = states.get(key)
         if (!m) states.set(key, (m = newMeter()))
-        stepMeter(m, key === 'master' ? masterPeaks() : trackPeaks(key), now, e)
+        stepMeter(m, key === 'master' ? masterPeaks() : isArmed(key) ? inputPeaks(key) : trackPeaks(key), now, e)
       }
     }
     raf = requestAnimationFrame(loop)
