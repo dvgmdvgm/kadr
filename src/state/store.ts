@@ -99,6 +99,12 @@ function namedTimelines(p: Project): import('@shared/types').Timeline[] {
   return timelinesOf(p).map((t, i) => (t.name ? t : { ...t, name: trf('tlNth', { n: i + 1 }) }))
 }
 
+/** L6: a clip that plays timeline `timelineId` from its start; no fades, curves or transition — the expansion has none */
+function compoundClip(id: string, timelineId: string, start: number, duration: number, label: string): Clip {
+  const { speed, gain, muted, transform, effects } = newClipDefaults()
+  return { id, kind: 'timeline', timelineId, start, duration, inPoint: 0, label, speed, gain, muted, transform, effects }
+}
+
 /** the «Новые проекты» track layout: V2, V1 over A1 — tracks[0] is the top video track */
 function defaultTracks(): Track[] {
   const nv = setting<number>('newProject.videoTracks')
@@ -1528,9 +1534,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         host = fresh
       }
       const name = trf('tlCompound', { n: timelinesOf(p).length })
-      const { transitionIn: _t, fadeInCurve: _fi, fadeOutCurve: _fo, mask: _m, ...defaults } = newClipDefaults()
-      void _t; void _fi; void _fo; void _m
-      host.clips.push({ id: cid, kind: 'timeline', timelineId: tid, start: a, duration: b - a, inPoint: 0, label: name, ...defaults })
+      host.clips.push(compoundClip(cid, tid, a, b - a, name))
       p.timelines = [...namedTimelines(p), { id: tid, name, tracks: inner }]
       p.activeTimeline = activeTimelineId(s.project)
       return { project: p, selection: [cid] }
@@ -1554,9 +1558,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         p.tracks.unshift(track)
       }
       const name = timelinesOf(p).find((t) => t.id === timelineId)?.name || tr('tlMain')
-      const { transitionIn: _t, fadeInCurve: _fi, fadeOutCurve: _fo, mask: _m, ...defaults } = newClipDefaults()
-      void _t; void _fi; void _fo; void _m
-      track.clips.push({ id: cid, kind: 'timeline', timelineId, start, duration: len, inPoint: 0, label: name, ...defaults })
+      track.clips.push(compoundClip(cid, timelineId, start, len, name))
       return { project: p, selection: [cid] }
     })
     return cid
