@@ -116,6 +116,10 @@ check('«make compound» leaves one clip of kind timeline over the selection', h
   const mute = structuredClone(nested)
   mute.tracks.flatMap((t) => t.clips).find((c) => c.id === cid).muted = true
   check('a muted compound is silent and still drawn', collectRangeAudio(mute, 0, 12).every((x) => x.start === 0) && videoLayersAt(flattenProject(mute), 4).length === 4)
+  // J6: the colour section, kadr_grade and the palette's colour actions take only a clip whose picture is drawn as it
+  const { isVisualClip } = await load(`export { isVisualClip } from './src/engine/colourUi'`)
+  check('a compound clip is not a colour target (its picture is graded inside it)',
+    !isVisualClip(nested, comp[0]) && isVisualClip(ref, ref.tracks[1].clips[0]))
   // K6's Inspector offers a compound clip a pan row: it moves the contents as the same pan on each would
   const panned = structuredClone(nested)
   panned.tracks.flatMap((t) => t.clips).find((c) => c.id === cid).pan = { value: 0.4 }

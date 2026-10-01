@@ -36,9 +36,10 @@ export const useColourUi = create<{
   }
 }))
 
-/** a clip the section applies to: a picture — whatever sits on a video track */
+/** a clip the section applies to: a picture — whatever sits on a video track,
+    but a compound clip (L6): flattenProject draws its contents, not it */
 export function isVisualClip(p: Project, c: Clip) {
-  return p.tracks.some((t) => t.kind === 'video' && t.clips.some((x) => x.id === c.id))
+  return c.kind !== 'timeline' && p.tracks.some((t) => t.kind === 'video' && t.clips.some((x) => x.id === c.id))
 }
 
 /** the selected visual clip, or null */

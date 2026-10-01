@@ -385,7 +385,7 @@ function ClipProps({ clip }: { clip: Clip }) {
       {hasAudio && !(twin && clip.muted) && <ClipFxSection clip={clip} />}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
-      {visual && clip.kind !== 'timeline' && <EffectsSection clip={clip} />}
+      {visual && <EffectsSection clip={clip} />}
     </>
   )
 }
