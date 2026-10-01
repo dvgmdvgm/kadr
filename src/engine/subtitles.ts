@@ -6,6 +6,7 @@ import type {
 import { useEditor, uid } from '@/state/store'
 import { dirOf, baseOf } from '@shared/paths'
 import { audioFollowsSpeed } from '@shared/audioSpeed'
+import { hasRamp, relAtOffset, sourceOffset } from '@shared/speedRamp'
 import { gainKeys as gainKeysOf } from '@shared/gainKeys'
 import { overlapFades, trackHeard, panAt } from './player'
 import { evalAnim } from './anim'
@@ -15,6 +16,9 @@ import { tr } from '../i18n'
 import {
   srtTime, cuesToSrt, cuesInRange, chaptersInRange, chapterMarks, type ExportExtras
 } from '@shared/exportExtras'
+
+/** L3: timeline seconds per constant-speed audio chunk of a ramped clip */
+const RAMP_AUDIO_CHUNK = 0.1
 
 // ------------------------------------------------------------------ SRT
 
@@ -182,8 +186,9 @@ export function collectRangeAudio(
       if (filter?.clipIds && !filter.clipIds.includes(clip.id)) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (!asset?.hasAudio) continue
-      const speed = clip.speed || 1
-      if (!audioFollowsSpeed(speed)) continue // silent, as in the preview
+      const ramped = hasRamp(clip)
+      const base = clip.speed || 1
+      if (!ramped && !audioFollowsSpeed(base)) continue // silent, as in the preview
       const span = Math.max(0.05, asset.duration - clip.inPoint)
       const from = Math.max(clip.start, start)
       const to = Math.min(clip.start + clip.duration, end)
@@ -192,9 +197,24 @@ export function collectRangeAudio(
       let local = from - clip.start
       const localEnd = to - clip.start
       while (local < localEnd - 0.001) {
-        const srcOff = (local * speed) % span
-        const untilWrap = (span - srcOff) / speed
-        const segDur = Math.min(untilWrap, localEnd - local)
+        let srcOff: number
+        let segDur: number
+        let speed = base
+        if (!ramped) {
+          srcOff = (local * speed) % span
+          const untilWrap = (span - srcOff) / speed
+          segDur = Math.min(untilWrap, localEnd - local)
+        } else {
+          // L3: a ramp is cut into short constant-speed chunks whose ends sit
+          // exactly on the curve (atempo per chunk); inside one the sound runs
+          // linearly — a few ms off the picture at the steepest preset
+          const off = sourceOffset(clip, local)
+          srcOff = off % span
+          const untilWrap = relAtOffset(clip, off - srcOff + span) - local
+          segDur = Math.min(untilWrap, localEnd - local, RAMP_AUDIO_CHUNK)
+          speed = (sourceOffset(clip, local + segDur) - off) / segDur
+          if (!audioFollowsSpeed(speed)) { local += segDur; continue } // silent, as in the preview
+        }
         const fiLocal = local < fadeIn ? Math.min(fadeIn - local, segDur) : 0
         const tail = clip.duration - (local + segDur)
         const foLocal = tail < fadeOut ? Math.min(fadeOut - tail, segDur) : 0
@@ -361,8 +381,7 @@ export function docTimeToProject(project: Project, doc: TextDoc, t: number): num
     for (const track of project.tracks) {
       for (const clip of track.clips) {
         if (clip.assetId !== doc.assetId) continue
-        const speed = clip.speed || 1
-        const rel = (t - clip.inPoint) / speed
+        const rel = relAtOffset(clip, t - clip.inPoint)
         if (rel >= -0.5 && rel <= clip.duration + 0.5) {
           return clip.start + Math.max(0, Math.min(clip.duration, rel))
         }

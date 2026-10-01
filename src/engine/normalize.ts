@@ -4,6 +4,7 @@
 // changes, one undo entry, repeated runs converge to the same gain.
 import { create } from 'zustand'
 import { useEditor, findClip, withLinked } from '@/state/store'
+import { sourceOffset } from '@shared/speedRamp'
 
 /** YouTube/streaming loudness target and the true-peak ceiling. */
 export const NORMALIZE_TARGET_LUFS = -14
@@ -57,7 +58,7 @@ export async function normalizeClip(clipId: string, opts?: {
     const targetLufs = opts?.targetLufs ?? NORMALIZE_TARGET_LUFS
     const peakDb = opts?.peakDb ?? NORMALIZE_PEAK_DB
     const start = clip.inPoint || 0
-    const used = clip.duration * (clip.speed || 1)
+    const used = sourceOffset(clip, clip.duration)
     const dur = asset.duration > 0 ? Math.min(used, Math.max(0.1, asset.duration - start)) : used
     const { i, tp } = await window.kadr.measureLoudness(asset.path, start, dur)
 

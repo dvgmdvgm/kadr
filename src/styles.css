@@ -2354,6 +2354,7 @@ div.tr-error {
 /* speed jog strip in the clip menu: the ticks slide with the value */
 .speed-dial { border-top: 1px solid var(--c-line); margin-top: var(--s2); }
 .speed-dial .ctx-dur-row { border-bottom: none; margin-bottom: 0; justify-content: center; }
+.speed-dial .speed-ramp-row { flex-wrap: wrap; margin-top: 0; }
 .speed-jog {
   position: relative;
   height: 30px;

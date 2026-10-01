@@ -40,6 +40,7 @@ import { levelAt, addLevelPoint, moveLevelPoint, deleteLevelPoint, shiftLevel, s
 import { spanToProject, projectToSrc, type VisibleSpan } from '@/engine/voiceDefects'
 import { clipsInSpan, clipsBetween, unlocked } from '@/engine/timelineSelect'
 import { layoutSpeeds, SPEED_MIN, SPEED_MAX, type SpeedItem } from '@/engine/speedLayout'
+import { RAMP_PRESETS, rampPresetOf, relAtOffset, sourceOffset, type RampPreset } from '@shared/speedRamp'
 import { useVoiceUi, setVerdict, clearVerdict, addUserDefect, setDefectsHidden } from '@/engine/voiceCheck'
 import { confirmDefect } from '@/engine/voiceRegen'
 import { useDefectsUi, targetRun } from './DefectsDialog'
@@ -1481,6 +1482,7 @@ const JOG_PX = 160
 function SpeedDial({ clipId }: { clipId: string }) {
   const t = useT()
   const speed = useEditor((s) => findClip(s.project, clipId)?.clip.speed || 1)
+  const ramp = useEditor((s) => { const c = findClip(s.project, clipId)?.clip; return c ? rampPresetOf(c) : null })
   const [text, setText] = useState<string | null>(null)
 
   const setAll = (v: number) => {
@@ -1570,9 +1572,20 @@ function SpeedDial({ clipId }: { clipId: string }) {
           </button>
         ))}
       </div>
+      <div className="ctx-dur-row speed-ramp-row" title={t('rampHint')}>
+        <span>{t('speedRamp')}</span>
+        {([null, ...RAMP_PRESETS] as (RampPreset | null)[]).map((p) => (
+          <button key={p ?? 'off'} className={p === ramp ? 'dur-on' : ''} aria-pressed={p === ramp}
+            onClick={() => useEditor.getState().setSpeedRamp(speedGroup(clipId).map((i) => i.id), p)}>
+            {t(p ? RAMP_LABEL[p] : 'rampOff')}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
+
+const RAMP_LABEL = { up: 'rampUp', down: 'rampDown', peak: 'rampPeak', dip: 'rampDip' } as const
 
 function TrackRow({
   track, trackH, contentW, view, onMenu
@@ -2332,7 +2345,7 @@ const ClipView = memo(function ClipView({
   // timeline length of one full pass over the source — the loop period
   const natural =
     asset && asset.kind !== 'image'
-      ? Math.max(0.05, asset.duration - clip.inPoint) / speed
+      ? relAtOffset(clip, Math.max(0.05, asset.duration - clip.inPoint))
       : Infinity
   const loops = isFinite(natural) && clip.duration > natural + 0.01
 
@@ -2356,7 +2369,8 @@ const ClipView = memo(function ClipView({
     ctx.clearRect(0, 0, cw, ch)
     const span = Math.max(0.05, asset.duration - clip.inPoint)
     const mid = ch / 2
-    const cols = waveColumns(wf, { cw, vis0, dpr, zoom, speed, inPoint: clip.inPoint, span })
+    const cols = waveColumns(wf, { cw, vis0, dpr, zoom, speed, inPoint: clip.inPoint, span,
+      ...(clip.speedRamp?.keyframes?.length ? { src: (t: number) => sourceOffset(clip, t) } : {}) })
     // one path per colour, filled once: switching fillStyle for every column
     // was a large share of the redraw
     const peaks = new Path2D()
@@ -2371,7 +2385,7 @@ const ClipView = memo(function ClipView({
     ctx.fill(peaks)
     ctx.fillStyle = token('--c-wave-rms')
     ctx.fill(rmsPath)
-  }, [asset, zoom, vis0, visW, clip.inPoint, clip.start, speed, laneHeight])
+  }, [asset, zoom, vis0, visW, clip.inPoint, clip.start, speed, clip.speedRamp, laneHeight])
 
   // -------------------------------------------------------------- main drag
   // window-level listeners: the clip element remounts when it crosses to

@@ -46,6 +46,9 @@ mixes audio and muxes/transcodes per preset.
   chain against the one pan law — static, keyframed, mono (K10: at its own
   level on each channel, preview = export, premix too), hard left silent
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
+  `check-speed-ramp.mjs` (L3: source time is the integral of a speed ramp in
+  every consumer — preview/export frames, frame blending, export audio chunks
+  within a frame of the picture, markers, splits, trims, speed changes);
   `check-scrub-grains.mjs` (K7: scrub grains at most every 60 ms, none after
   the drag ends — not even a seek landing late — and each stops by itself);
   `check-eta.mjs` (G8: the export's fps / time left from
@@ -873,6 +876,27 @@ mixes audio and muxes/transcodes per preset.
   preview and the export alike. The export used to clamp atempo to 0.25–8,
   so a 20× clip's sound ran 2.5× past its end. Test:
   `node scripts/check-speed-audio.mjs`.
+  SPEED RAMPS (L3, `Clip.speedRamp`, `shared/speedRamp.ts`): the speed as an
+  Anim over clip time (absolute speeds; `speed` stays the base the presets are
+  drawn from). The source runs at its INTEGRAL — `sourceOffset(clip, rel)`,
+  Simpson per key segment (exact for the polynomial easings), and its inverse
+  `relAtOffset` — and every consumer goes through them: `clipSourceTime`
+  (preview, export frames, the frame signature, the demux reads behind them),
+  frame blending (`speedAt`), the preview element's playbackRate every frame,
+  markers, voice defects, words, scenes, trims, splits, range lifts and slips.
+  Without a ramp it is `rel × speed` to the bit. The export's audio cuts a ramp
+  into 0.1 s constant-speed chunks whose ends sit on the curve (one atempo
+  each; inside a chunk the sound runs linearly, a few ms off the picture at the
+  steepest preset); a chunk outside [1/16, 16]× is silent, as above. The speed
+  menu's «Рампа» row (`setSpeedRamp`: up, down, peak 1→4→1, dip 1→¼→1, or off)
+  keeps each clip's source span — duration = span / the preset's mean speed —
+  and the group a chain, like the speed dial; a speed change scales the ramp's
+  values with the base. Paused, the preview reseeks when the element shows
+  another SOURCE frame (`offFrame`), not past a flat 40 ms: off 1× the playhead
+  samples anywhere in a frame, and the preview sat one frame off the export.
+  Not handled: a reversed ramp (the reversed file plays the same curve, not
+  its mirror) and ramps on fragment clips (the menu offers none). Test:
+  `node scripts/check-speed-ramp.mjs`.
 - `src/engine/player.ts` — pure layer/audio queries, `MediaPool`,
   `drawFrame` (shared by preview and export), `Player` (anchored rAF
   clock, ~4 fps idle when paused; the tick is exception-proof — one bad

@@ -7,6 +7,7 @@
 import { useEditor, projectDuration } from '@/state/store'
 import { logError } from './log'
 import { tr } from '@/i18n'
+import { relAtOffset, sourceOffset } from '@shared/speedRamp'
 
 export interface FindScenesArgs {
   /** one clip; default: start+end, else the in/out range, else the whole timeline */
@@ -43,12 +44,12 @@ export async function findScenes(a: FindScenesArgs = {}): Promise<number[]> {
     const asset = p.assets.find((x) => x.id === c.assetId)!
     const t0 = Math.max(start, c.start)
     const t1 = Math.min(end, c.start + c.duration)
-    const src0 = c.inPoint + (t0 - c.start) * c.speed
+    const src0 = c.inPoint + sourceOffset(c, t0 - c.start)
     // ponytail: a clip looped past its source (duration > source/speed) is scanned once
-    const len = Math.min((t1 - t0) * c.speed, asset.duration - src0)
+    const len = Math.min(sourceOffset(c, t1 - c.start) - (src0 - c.inPoint), asset.duration - src0)
     if (!(len > 0)) continue
     const cuts = await window.kadr.detectScenes(asset.path, src0, len, a.threshold)
-    for (const t of cuts) times.push(c.start + (t - c.inPoint) / c.speed)
+    for (const t of cuts) times.push(c.start + relAtOffset(c, t - c.inPoint))
   }
   useEditor.getState().setSceneMarkers(times, { start, end })
   return (useEditor.getState().project.markers ?? [])

@@ -12,6 +12,7 @@ import { lutFor } from './lut'
 import { evalAnim } from './anim'
 import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
+import { speedAt } from '@shared/speedRamp'
 import { getTextLayer } from './text'
 import { attachAudio, detachAudio, setElementGain, setElementPan, setMasterGain, isRouted, resumeAudio } from './audio'
 import { clampPan } from '@shared/pan'
@@ -44,9 +45,19 @@ export { clipSourceTime }
 /** Source frames per project frame, for frame blending in the export: below 1
     the successor frame is blended in. Alpha sources and freezes never blend
     (a freeze would fade into the frame after the one it holds). */
-export function sourceFrameRate(clip: Clip, asset: MediaAsset, fps: number): number {
+export function sourceFrameRate(clip: Clip, asset: MediaAsset, fps: number, rel = 0): number {
   if (asset.hasAlpha || clip.freezeAt !== undefined) return 1
-  return ((clip.speed || 1) * (asset.fps || fps)) / fps
+  return (speedAt(clip, rel) * (asset.fps || fps)) / fps
+}
+
+/** Paused, does the element show another SOURCE frame than `desired`? A flat
+    40 ms used to be the test: fine at 1× (the playhead samples mid-frame), but
+    a faster clip (or a ramp, L3) samples anywhere in a frame, so the preview
+    sat one frame off the export. Without a known fps the old tolerance stands. */
+function offFrame(cur: number, desired: number, asset: MediaAsset | undefined): boolean {
+  const fps = asset?.fps
+  if (!(fps! > 0)) return Math.abs(cur - desired) > 0.04
+  return Math.floor(cur * fps! + 1e-6) !== Math.floor(desired * fps! + 1e-6)
 }
 
 /** Does the clip's element play (rather than sit paused and follow by seeks)?
@@ -131,8 +142,8 @@ export function audibleClipsAt(project: Project, t: number): ActiveLayer[] {
     if (!trackHeard(project, track)) continue
     for (const clip of track.clips) {
       if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
-      if (!audioFollowsSpeed(clip.speed || 1)) continue // silent, as in the export
       if (t < clip.start || t >= clip.start + clip.duration) continue
+      if (!audioFollowsSpeed(speedAt(clip, t - clip.start))) continue // silent, as in the export
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (asset?.hasAudio) out.push({ clip, track, asset })
     }
@@ -963,7 +974,7 @@ export class Player {
       const desired = clipSourceTime(clip, asset, rel)
       const isAudible = audible.some((a) => a.clip.id === clip.id)
       const running = elementRuns(clip, playing, rate) // a freeze sits paused on its frame
-      const eff = (clip.speed || 1) * (running ? rate : 1)
+      const eff = speedAt(clip, rel) * (running ? rate : 1) // a ramp re-rates the element every frame
       // beyond Chromium's cap the audio is silent, as for a clip that fast (shared/audioSpeed.ts)
       el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
       this.pool.setVolume(el, audioLevelAt(clip, track, rel))
@@ -991,7 +1002,7 @@ export class Player {
         if (el.paused) el.play().catch(() => { /* not ready yet */ })
       } else {
         if (!el.paused) el.pause()
-        if (Math.abs(el.currentTime - desired) > 0.04 && el.readyState >= 1 && !el.seeking) {
+        if (offFrame(el.currentTime, desired, asset) && el.readyState >= 1 && !el.seeking) {
           el.currentTime = desired
         }
         if (el.seeking && !playing) loading = true // reverse seeks all the time: no spinner for that

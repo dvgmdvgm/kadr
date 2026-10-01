@@ -61,7 +61,7 @@ export function placeWords(project: Project, docs: TextDoc[] = project.texts ?? 
       // a video and its audio twin show the same words: one set. Clips linked
       // by hand but cut differently are not twins.
       if (clip.linkId) {
-        const key = `${clip.linkId}|${clip.start}|${clip.duration}|${clip.inPoint}|${clip.speed || 1}`
+        const key = `${clip.linkId}|${clip.start}|${clip.duration}|${clip.inPoint}|${clip.speed || 1}|${JSON.stringify(clip.speedRamp ?? null)}`
         if (links.has(key)) continue
         links.add(key)
       }

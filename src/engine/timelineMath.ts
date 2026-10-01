@@ -3,6 +3,7 @@
 // the overlap zones of a track. Both were rewritten for speed on a 1124-clip,
 // 19-minute project, and both must give EXACTLY what the old, slow code gave.
 import type { Clip, MediaAsset } from '@shared/types'
+import { sourceOffset } from '@shared/speedRamp'
 
 /** A waveform as the timeline draws it: peak and RMS bins (0..255) at `rate` per second. */
 export interface WaveBins {
@@ -52,6 +53,8 @@ export function waveWindow(wf: WaveBins, k: number): { max: Uint8Array; rms: Uin
  */
 export function waveColumns(wf: WaveBins, o: {
   cw: number; vis0: number; dpr: number; zoom: number; speed: number; inPoint: number; span: number
+  /** L3: a ramped clip's source offset at a clip-local second (absent = × speed) */
+  src?: (t: number) => number
 }): { peak: Uint8Array; rms: Uint8Array } {
   const peakOut = new Uint8Array(o.cw)
   const rmsOut = new Uint8Array(o.cw)
@@ -65,9 +68,11 @@ export function waveColumns(wf: WaveBins, o: {
   const wins: ({ max: Uint8Array; rms: Uint8Array } | undefined)[] = []
   for (let x = 0; x < o.cw; x++) {
     const localT = (o.vis0 + x / o.dpr) / o.zoom
-    const srcT = o.inPoint + ((localT * o.speed) % o.span)
+    const off = o.src ? o.src(localT) : localT * o.speed
+    const srcT = o.inPoint + (off % o.span)
+    const perPx = o.src ? o.src(localT + 1 / (o.zoom * o.dpr)) - off : srcPerPx
     const i0 = Math.floor(srcT * wf.rate)
-    const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((srcT + srcPerPx) * wf.rate)))
+    const i1 = Math.min(n, Math.max(i0 + 1, Math.ceil((srcT + perPx) * wf.rate)))
     let peak = 0
     let rms = 0
     const len = i1 - i0
@@ -250,12 +255,11 @@ export function followLeft(mode: FollowMode, x: number, left: number, lanes: num
   return Math.abs(want - left) < 0.5 ? null : want
 }
 
-/** Source-media time for a clip-local timeline offset, honoring speed and
-    looping. A freeze frame (`freezeAt`, E10) samples that one second throughout. */
+/** Source-media time for a clip-local timeline offset, honoring speed (a ramp
+    integrates, shared/speedRamp.ts) and looping. A freeze frame (`freezeAt`, E10) samples that one second throughout. */
 export function clipSourceTime(clip: Clip, asset: MediaAsset | undefined, rel: number): number {
   if (clip.freezeAt !== undefined) return clip.freezeAt
-  const speed = clip.speed || 1
-  let srcRel = rel * speed
+  let srcRel = sourceOffset(clip, rel)
   if (asset && asset.kind !== 'image' && asset.duration > 0) {
     const span = Math.max(0.05, asset.duration - clip.inPoint)
     if (srcRel >= span) srcRel %= span // extended beyond the source — loop

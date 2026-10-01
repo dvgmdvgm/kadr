@@ -28,6 +28,8 @@ import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { nextMarkerTime } from '@shared/markers'
+import { sourceOffset, relAtOffset, scaleRampValues, rampAnim, rampMean, type RampPreset } from '@shared/speedRamp'
+import { layoutSpeeds, type SpeedItem } from '../engine/speedLayout'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
@@ -302,6 +304,7 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
   }
   c.gain = fn(c.gain)
   if (c.pan) c.pan = fn(c.pan)
+  if (c.speedRamp) c.speedRamp = fn(c.speedRamp)
   if (c.grade) {
     const g: Partial<ClipGrade> = { ...c.grade }
     for (const k of GRADE_KEYS) if (g[k]) g[k] = fn(g[k]!)
@@ -409,18 +412,17 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
     .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)
   for (const f of targets) {
     const c = f.clip
-    const speed = c.speed || 1
     const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
     if (edge === 'in') {
       const end = c.start + c.duration
       let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
       let delta = ns - c.start
       // can't reveal media before the source start: the first frame inside it
-      if (c.inPoint + delta * speed < 0) {
-        ns = toFrame(c.start - c.inPoint / speed, p.fps, Math.ceil)
+      if (c.inPoint + sourceOffset(c, delta) < 0) {
+        ns = toFrame(c.start + relAtOffset(c, -c.inPoint), p.fps, Math.ceil)
         delta = ns - c.start
       }
-      c.inPoint = Math.max(0, c.inPoint + delta * speed)
+      c.inPoint = Math.max(0, c.inPoint + sourceOffset(c, delta))
       c.start = ns
       c.duration = end - ns
       shiftClipAnims(c, -delta) // keyframes stay glued to the content
@@ -428,7 +430,7 @@ function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: numbe
       let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
       if (asset && asset.kind !== 'image' && c.freezeAt === undefined) {
         // edge trim never reveals more than the source (unless already looping; a freeze is not bound by it)
-        const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
+        const maxOut = Math.max(relAtOffset(c, asset.duration - c.inPoint), c.duration)
         if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
       }
       c.duration = nd
@@ -502,7 +504,7 @@ function splitClipAt(track: Track, c: Clip, t: number, rightLinks: Map<string, s
     id: uid(),
     start: t,
     duration: c.duration - offset,
-    inPoint: c.inPoint + offset * (c.speed || 1),
+    inPoint: c.inPoint + sourceOffset(c, offset),
     fadeIn: 0,
     linkId
   }
@@ -573,7 +575,6 @@ function liftRange(p: Project, r: { start: number; end: number }) {
     const out: Clip[] = []
     for (const c of [...tr.clips]) {
       const end = c.start + c.duration
-      const speed = c.speed || 1
       if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
         out.push(c) // outside
       } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
@@ -588,7 +589,7 @@ function liftRange(p: Project, r: { start: number; end: number }) {
         out.push(c)
       } else {
         const cut = r.end - c.start
-        c.inPoint += cut * speed
+        c.inPoint += sourceOffset(c, cut)
         c.duration = end - r.end
         c.start = r.end
         shiftClipAnims(c, -cut)
@@ -1111,6 +1112,11 @@ interface EditorState {
   setClipSpeed(clipId: string, speed: number, duration: number, start?: number): void
   /** setClipSpeed for several clips in one update (group speed change). */
   setClipSpeeds(entries: { id: string; speed: number; duration: number; start?: number }[]): void
+  /** L3: ramp the clips' speed with a preset (null = constant base speed
+      again). Each keeps its source span — the duration becomes the span over
+      the preset's mean speed — and the group stays a chain, like the speed
+      dial; linked partners follow. One undo step. */
+  setSpeedRamp(clipIds: string[], preset: RampPreset | null): void
   /** Change duration (loop-extend); linked partners follow. */
   setClipDuration(clipId: string, duration: number): void
   /** Pick the transition for a clip's incoming overlap ('none' = hard cut). */
@@ -1502,9 +1508,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     for (const track of s.project.tracks) {
       for (const clip of track.clips) {
         if (clip.assetId !== oldAssetId) continue
-        const speed = clip.speed || 1
         const a = remap(clip.inPoint)
-        const b = remap(clip.inPoint + clip.duration * speed)
+        const b = remap(clip.inPoint + sourceOffset(clip, clip.duration))
         if (a === null || b === null || b <= a) {
           // a clip edge sits inside the phrase being replaced: there is no
           // honest answer for where it should land, so we refuse instead of
@@ -1512,7 +1517,7 @@ export const useEditor = create<EditorState>((set, get) => ({
           return { error: trf('eStCutInside', { label: clip.label ?? '' }) }
         }
         affected.push({ clip, track, oldStart: clip.start, oldEnd: clip.start + clip.duration,
-                        inPoint: a, duration: (b - a) / speed })
+                        inPoint: a, duration: relAtOffset(clip, b - a) })
       }
     }
     if (!affected.length) return { error: tr('eStNoClips') }
@@ -1825,7 +1830,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       c.markers ??= []
       const n = c.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
       const rel = Math.min(c.duration, Math.max(0, toFrame(time, p.fps) - c.start))
-      c.markers.push({ id, source: c.inPoint + rel * (c.speed || 1), label: opts?.label?.trim() || String(n) })
+      c.markers.push({ id, source: c.inPoint + sourceOffset(c, rel), label: opts?.label?.trim() || String(n) })
       return { project: p }
     })
     return id
@@ -2088,6 +2093,7 @@ export const useEditor = create<EditorState>((set, get) => ({
           const c = f.clip
           const oldSpeed = c.speed || 1
           rescaleClipAnims(c, oldSpeed / speed)
+          scaleRampValues(c, speed / oldSpeed) // a ramp keeps its shape around the new base
           c.speed = speed
           // the speed stays exact; the end is quantised from the raw end
           const s0 = start !== undefined ? Math.max(0, start) : c.start
@@ -2097,6 +2103,44 @@ export const useEditor = create<EditorState>((set, get) => ({
       }
       return { project: p }
     }),
+
+  setSpeedRamp: (clipIds, preset) => {
+    const st = get()
+    const base = new Map<string, number>()
+    const items: SpeedItem[] = []
+    for (const id of clipIds) {
+      const f = findClip(st.project, id)
+      if (!f || f.track.locked || f.clip.kind !== 'media' || !(f.clip.duration > 0)) continue
+      base.set(id, f.clip.speed || 1)
+      // the clip's effective speed: what layoutSpeeds keeps is the source span
+      items.push({ id, trackId: f.track.id, start: f.clip.start, duration: f.clip.duration,
+        speed: sourceOffset(f.clip, f.clip.duration) / f.clip.duration })
+    }
+    if (!items.length) return
+    st.pushHistory('hSpeedRamp')
+    const plan = layoutSpeeds(items, (it) => (preset ? rampMean(preset, base.get(it.id)!) : base.get(it.id)!), 'start')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const done = new Set<string>()
+      for (const e of plan) {
+        for (const f of withLinked(p, [e.id])
+          .map((cid) => findClip(p, cid))
+          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
+          const c = f.clip
+          if (done.has(c.id)) continue
+          done.add(c.id)
+          const s0 = Math.max(0, e.start)
+          c.start = toFrame(s0, p.fps)
+          const d = frameEnd(p.fps, c.start, s0 + e.duration) - c.start
+          rescaleClipAnims(c, d / c.duration) // the clip's other keys stay glued to its length
+          c.duration = d
+          if (preset) c.speedRamp = rampAnim(preset, c.speed || 1, d)
+          else delete c.speedRamp
+        }
+      }
+      return { project: p }
+    })
+  },
 
   setClipDuration: (clipId, duration) =>
     set((s) => {
@@ -2311,7 +2355,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         const c = f.clip
         const speed = c.speed || 1
         // a clip already longer than its source (looping) keeps what it has
-        const hi = Math.max(asset.duration - c.duration * speed, c.inPoint)
+        const hi = Math.max(asset.duration - sourceOffset(c, c.duration), c.inPoint)
         const ni = Math.min(hi, Math.max(0, c.inPoint + d * speed))
         if (ni !== c.inPoint) changed = true
         c.inPoint = ni
@@ -2593,6 +2637,7 @@ export const useEditor = create<EditorState>((set, get) => ({
           const c = f.clip
           const old = c.speed || 1
           rescaleClipAnims(c, old / sp)
+          scaleRampValues(c, sp / old)
           c.speed = sp
           c.duration = frameEnd(p.fps, c.start, c.start + (c.duration * old) / sp) - c.start
         }
@@ -2721,11 +2766,10 @@ function clipIntersection(c: Clip, from: number, to: number): Clip | null {
   const a = Math.max(c.start, from)
   const b = Math.min(end, to)
   if (b - a < 0.01) return null
-  const speed = c.speed || 1
   const piece: Clip = JSON.parse(JSON.stringify(c))
   piece.start = a
   piece.duration = b - a
-  piece.inPoint = c.inPoint + (a - c.start) * speed
+  piece.inPoint = c.inPoint + sourceOffset(c, a - c.start)
   if (a > c.start) {
     piece.fadeIn = 0
     shiftClipAnims(piece, -(a - c.start))

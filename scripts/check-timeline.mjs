@@ -8,13 +8,14 @@
 //      tracks with equal starts, butt joints and nested clips.
 //
 // Pure node, no app.  Run: node scripts/check-timeline.mjs
-import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { transformSync } from 'esbuild'
+import { buildSync } from 'esbuild'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const js = transformSync(readFileSync(join(root, 'src', 'engine', 'timelineMath.ts'), 'utf8'), { loader: 'ts', format: 'esm' }).code
+// bundled: clipSourceTime reads shared/speedRamp.ts (L3)
+const js = buildSync({ entryPoints: [join(root, 'src', 'engine', 'timelineMath.ts')], bundle: true, format: 'esm',
+  platform: 'neutral', write: false, logLevel: 'error', alias: { '@shared': join(root, 'shared') } }).outputFiles[0].text
 const { waveColumns, trackOverlaps } = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
 
 let fails = 0

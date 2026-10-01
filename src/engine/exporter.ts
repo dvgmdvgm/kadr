@@ -584,7 +584,7 @@ export function startExport(
         // per-pixel alpha the two passes stack (0.5 → 0.56 effective alpha,
         // measured), so alpha sources stay unblended — exactly as they were
         // before they had a fast decode path at all.
-        const srcRate = sourceFrameRate(clip, asset, fps)
+        const srcRate = sourceFrameRate(clip, asset, fps, t - clip.start)
         waits.push(
           s.frameAt(srcT).then(
             (f) => {

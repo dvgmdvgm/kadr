@@ -207,6 +207,9 @@ export interface Clip {
   inPoint: number
   /** playback rate, 1 = normal; duration beyond source/speed loops the media */
   speed: number
+  /** L3: the speed as a curve over clip time (absolute speeds; shared/speedRamp.ts —
+      the source runs at its integral); absent or keyless = constant `speed` */
+  speedRamp?: Anim
   /** fade in/out lengths in timeline seconds (video opacity + audio gain) */
   fadeIn?: number
   fadeOut?: number

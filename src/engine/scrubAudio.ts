@@ -8,6 +8,7 @@ import { audibleClipsAt, audioLevelAt, panAt } from './player'
 import { clipSourceTime } from './timelineMath'
 import { attachAudio, detachAudio, resumeAudio, setElementGain, setElementPan } from './audio'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
+import { speedAt } from '@shared/speedRamp'
 
 interface ClipGrain extends Grain { path: string; level: number; pan: number; rate: number }
 
@@ -60,7 +61,7 @@ export const scrub = createScrub<ClipGrain>({
       return {
         key: clip.id, path: asset!.path, at: clipSourceTime(clip, asset, rel),
         level: audioLevelAt(clip, track, rel), pan: panAt(clip, track, t),
-        rate: Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, clip.speed || 1))
+        rate: Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, speedAt(clip, rel)))
       }
     })
   },

@@ -2,13 +2,14 @@
 // the list, the next/previous keys and the clip's flags. Pure; tested by
 // scripts/check-markers.mjs.
 import type { Clip, Project } from './types'
+import { relAtOffset } from './speedRamp'
 
 /** A clip marker's place on the timeline: its source second through the
-    clip's in point and speed, or null when the clip does not show it (trimmed
+    clip's in point and speed (a ramp's integral), or null when the clip does not show it (trimmed
     off, or a freeze frame). The first pass only — a looped tail does not repeat it. */
 export function clipMarkerTime(clip: Clip, source: number): number | null {
   if (!Number.isFinite(source) || clip.freezeAt !== undefined) return null
-  const rel = (source - clip.inPoint) / (clip.speed || 1)
+  const rel = relAtOffset(clip, source - clip.inPoint)
   return rel >= -1e-9 && rel <= clip.duration + 1e-9 ? clip.start + rel : null
 }
 
