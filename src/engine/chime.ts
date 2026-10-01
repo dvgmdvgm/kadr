@@ -8,7 +8,10 @@ export function playDoneChime() {
   if (setting('general.chime') !== true) return
   const vol = setting<number>('general.chimeVolume') / 100
   try {
-    const ctx = new AudioContext()
+    // K6: the chime follows the preview's output device (Настройки → Воспроизведение, the master strip)
+    const sinkId = String(setting('playback.audioOutput') ?? '')
+    let ctx: AudioContext
+    try { ctx = new AudioContext(sinkId ? ({ sinkId } as AudioContextOptions) : undefined) } catch { ctx = new AudioContext() } // the device is gone
     const t0 = ctx.currentTime + 0.02
     const note = (freq: number, at: number, dur: number, peak: number) => {
       const osc = ctx.createOscillator()

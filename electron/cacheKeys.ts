@@ -45,6 +45,12 @@ export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : (
 export const decodedSuffix = (opts?: { alpha?: boolean; packed?: boolean; sdr?: boolean }) =>
   opts?.packed ? ':p2' : opts?.alpha ? ':a' : opts?.sdr ? SDR : ''
 
+/** K9: a denoised copy, `<key>-<nr>.flac`: the key is the source's alone, so the
+    storage panel ties every strength of it to the project (the part after '-'
+    is afftdn's `nr`, dB — another strength is another file) */
+export const DENOISE_SUFFIX = ':dn'
+export const denoiseName = (key: string, nr: number) => `${key}-${+nr.toFixed(2)}`
+
 /** reversed: the same source cut differently is a different render */
 export const reverseSuffix = (start: number, duration: number) =>
   `:${start.toFixed(3)}:${duration.toFixed(3)}`

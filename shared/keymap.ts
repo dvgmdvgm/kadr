@@ -33,6 +33,7 @@ export const ACTIONS = [
   { id: 'transport.stop', labelKey: 'actStop', context: g, defaultKeys: [k('KeyK')] },
   { id: 'transport.loop', labelKey: 'actLoop', context: g, defaultKeys: [k('KeyL', ctrl)], prevent: true },
   { id: 'transport.playInOut', labelKey: 'actPlayInOut', context: g, defaultKeys: [k('Slash')], prevent: true },
+  { id: 'transport.record', labelKey: 'actRecord', context: g, defaultKeys: [k('KeyR', { shift: true })] },
   { id: 'edit.split', labelKey: 'actSplit', context: g, defaultKeys: [k('KeyS')] },
   { id: 'file.save', labelKey: 'save', context: g, defaultKeys: [k('KeyS', ctrl)], prevent: true },
   { id: 'file.saveAs', labelKey: 'saveAs', context: g, defaultKeys: [k('KeyS', { ctrl: true, shift: true })], prevent: true },

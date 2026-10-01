@@ -3,7 +3,7 @@ import { cacheDir } from './appSettings'
 import { promises as fs, statfsSync } from 'fs'
 import { join, basename, resolve, sep } from 'path'
 import { loadResolved } from '../shared/projectPaths'
-import { mediaCacheKey, proxySuffix, decodedSuffix, projectKey } from './cacheKeys'
+import { mediaCacheKey, proxySuffix, decodedSuffix, projectKey, DENOISE_SUFFIX } from './cacheKeys'
 import type {
   StorageScan, StorageGroup, StorageGroupId, StorageProject, StoragePruneRequest,
   StoragePruneResult
@@ -37,9 +37,13 @@ const GROUPS: GroupDef[] = [
   { id: 'proxies', dir: () => cacheDir('proxies'), rebuildable: true, match: 'key' },
   { id: 'decoded', dir: () => cacheDir('decoded'), rebuildable: true, match: 'key' },
   { id: 'fragments', dir: () => cacheDir('fragment-renders'), rebuildable: true, match: 'prefix' },
+  // K9: denoised copies of sources, `<key>-<nr>.flac`
+  { id: 'denoised', dir: () => cacheDir('denoised'), rebuildable: true, match: 'key' },
   { id: 'ttsqcCache', dir: homeCache, rebuildable: true, match: 'none' },
   { id: 'reversed', dir: () => join(app.getPath('userData'), 'reversed'), rebuildable: false, match: 'path' },
   { id: 'imported', dir: () => join(app.getPath('userData'), 'imported'), rebuildable: false, match: 'path' },
+  // K8: microphone takes of never-saved projects (a saved one keeps them in <project>/media/recordings)
+  { id: 'recordings', dir: () => join(app.getPath('userData'), 'recordings'), rebuildable: false, match: 'path' },
   { id: 'voiceRuns', dir: () => join(app.getPath('userData'), 'ttsqc-runs'), rebuildable: false, match: 'path' },
   // one folder per project, named projectKey(path) (electron/backups.ts); a never-saved
   // project's folder (unsaved-<id>) belongs to no file and shows as unattributed
@@ -92,7 +96,8 @@ async function keysOf(k: Known): Promise<Set<string>> {
     let st
     try { st = await fs.stat(src) } catch { return }
     for (const suffix of [proxySuffix(false), proxySuffix(true), proxySuffix(false, true),
-                          decodedSuffix(), decodedSuffix({ alpha: true }), decodedSuffix({ packed: true }), decodedSuffix({ sdr: true })]) {
+                          decodedSuffix(), decodedSuffix({ alpha: true }), decodedSuffix({ packed: true }), decodedSuffix({ sdr: true }),
+                          DENOISE_SUFFIX]) {
       keys.add(mediaCacheKey(src, st.size, st.mtimeMs, suffix))
     }
   }
@@ -157,7 +162,7 @@ function ownersOf(
   for (const k of known) {
     let mine = false
     if (def.match === 'key') {
-      const key = entry.name.split('.')[0]
+      const key = entry.name.split(/[.-]/)[0] // `<key>.<ext>`, `<key>.part.<ext>`, a denoised `<key>-<nr>.flac`
       mine = keys.get(k.id)?.has(key) ?? false
     } else if (def.match === 'prefix') {
       // fragment renders are named "<fragmentId>-<hash>-q2[-a].<ext>"

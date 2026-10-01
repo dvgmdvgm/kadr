@@ -1,17 +1,21 @@
 // K7: the audio scrub on the live project — src/engine/scrub.ts's core with
-// real elements. One <audio> per clip, routed element → gain → pan → master
-// like the pool's (so the fader, the limiter, the meter and the output device
-// apply), at the level the clip plays at that moment, at its speed.
+// real elements. One <audio> per clip, routed like the pool's: element → the
+// clip's effects → gain → pan → its track's bus → the track's effects → master
+// (K12: so a de-essed, EQ'd voice scrubs as it plays, and the strip meters it),
+// the denoised copy once built, at the level the clip plays at that moment, at
+// its speed.
 import { useEditor } from '@/state/store'
 import { flattenProject } from './nesting'
 import { createScrub, type Grain } from './scrub'
 import { audibleClipsAt, audioLevelAt, panAt } from './player'
 import { clipSourceTime } from './timelineMath'
-import { attachAudio, detachAudio, resumeAudio, setElementGain, setElementPan } from './audio'
+import { attachAudio, detachAudio, resumeAudio, setElementGain, setElementPan, setElementTrack, setElementFx } from './audio'
+import { denoisedFor } from './denoise'
+import type { AudioFx } from '@shared/audioFx'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { speedAt } from '@shared/speedRamp'
 
-interface ClipGrain extends Grain { path: string; level: number; pan: number; rate: number }
+interface ClipGrain extends Grain { path: string; level: number; pan: number; rate: number; track: string; fx: AudioFx[] | undefined }
 
 /** clip id → its scrub element; the oldest goes past VOICES_MAX */
 const voices = new Map<string, { el: HTMLAudioElement; path: string }>()
@@ -37,6 +41,8 @@ function voice(g: ClipGrain): HTMLAudioElement {
   voices.set(g.key, v)
   setElementGain(v.el, g.level)
   setElementPan(v.el, g.pan)
+  setElementTrack(v.el, g.track)
+  setElementFx(v.el, g.fx)
   v.el.playbackRate = g.rate
   scrubStats.grains++
   return v.el
@@ -60,7 +66,8 @@ export const scrub = createScrub<ClipGrain>({
     return audibleClipsAt(project, t).map(({ clip, track, asset }) => {
       const rel = t - clip.start
       return {
-        key: clip.id, path: asset!.path, at: clipSourceTime(clip, asset, rel),
+        key: clip.id, path: denoisedFor(clip, track, asset!) ?? asset!.path, at: clipSourceTime(clip, asset, rel),
+        track: track.kind === 'audio' ? track.id : '', fx: clip.audioFx,
         level: audioLevelAt(clip, track, rel), pan: panAt(clip, track, t),
         rate: Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, speedAt(clip, rel)))
       }

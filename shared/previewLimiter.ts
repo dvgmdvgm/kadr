@@ -24,6 +24,8 @@ type Samples = ArrayLike<number>
 export interface Limiter {
   /** n frames of planar input into planar output (arrays may be shorter than `channels`: missing ones read as silence / are dropped) */
   process(input: Samples[], output: { [i: number]: number }[], n: number): void
+  /** K6: the lowest gain applied since the last call (1 = not acting), for the master strip */
+  takeMinGain(): number
 }
 
 function bufferSize(sampleRate: number, channels: number, attackMs: number): number {
@@ -49,6 +51,7 @@ export function createLimiter(
   const nextdelta = new Float64Array(obuf)
   const nextpos = new Int32Array(obuf).fill(-1)
   let att = 1, delta = 0, pos = 0, nextiter = 0, nextlen = 0
+  let minGain = 1
 
   return {
     process(input, output, n) {
@@ -105,6 +108,7 @@ export function createLimiter(
 
         att += delta
         const g = att   // the C multiplies here; the lines below only move the state
+        if (g < minGain) minGain = g
 
         if (b === nextpos[nextiter]) {
           delta = nextdelta[nextiter]
@@ -134,6 +138,7 @@ export function createLimiter(
         }
         pos = (pos + channels) % size
       }
-    }
+    },
+    takeMinGain() { const m = minGain; minGain = 1; return m }
   }
 }

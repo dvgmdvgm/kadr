@@ -17,7 +17,8 @@ import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { speedAt } from '@shared/speedRamp'
 import { getTextLayer } from './text'
-import { attachAudio, detachAudio, setElementGain, setElementPan, setMasterGain, isRouted, resumeAudio } from './audio'
+import { attachAudio, detachAudio, setElementGain, setElementPan, setElementTrack, setMasterGain, isRouted, resumeAudio, setElementFx, setTrackFx, pruneBuses } from './audio'
+import { denoisedFor } from './denoise'
 import { clampPan } from '@shared/pan'
 import { logError } from './log'
 import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
@@ -1015,6 +1016,11 @@ export class Player {
     if (this.gcCounter % 30 === 0) this.pool.evictExcept(clipsAround(project, t))
   }
 
+  /** K9: a denoised clip on an audio track plays its source's denoised copy once it exists (the export mixes the same file) */
+  private denoiseSource(clip: Clip, track: Track, asset: MediaAsset) {
+    this.pool.setSourceOverride(clip.id, denoisedFor(clip, track, asset))
+  }
+
   private syncMedia(project: Project, t: number, playing: boolean, rate: number) {
     // Reverse has no element path (a <video> only plays forward): the elements
     // are handled as paused and follow the clock by seeking, muted — frames
@@ -1028,10 +1034,14 @@ export class Player {
       (l) => l.asset && l.asset.kind === 'video'
     )
     const audible = audibleClipsAt(project, t)
+    // K9: track effects on the buses (a bus that never had any is not made for them)
+    for (const tr of project.tracks) if (tr.kind === 'audio') setTrackFx(tr.id, tr.audioFx)
+    pruneBuses(project.tracks)
 
     for (const { clip, track, asset } of [...visual, ...audible]) {
       if (seen.has(clip.id)) continue
       seen.add(clip.id)
+      this.denoiseSource(clip, track, asset!)
       const el = this.pool.get(clip.id, asset!)
       if (!(el instanceof HTMLVideoElement)) continue
       activeIds.add(clip.id)
@@ -1045,6 +1055,8 @@ export class Player {
       el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
       this.pool.setVolume(el, audioLevelAt(clip, track, rel))
       setElementPan(el, panAt(clip, track, t))
+      setElementTrack(el, track.kind === 'audio' ? track.id : '')
+      setElementFx(el, clip.audioFx)
       // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
       // is muted (shared/audioSpeed.ts), the element free-runs at the clamped
       // rate and the resync below keeps it on the master clock with seeks
@@ -1076,9 +1088,10 @@ export class Player {
     }
 
     // preroll: seek clips that start within ~2s so cuts don't flash black
-    for (const { clip, asset } of upcomingClipsAt(project, t, 2)) {
+    for (const { clip, track, asset } of upcomingClipsAt(project, t, 2)) {
       if (seen.has(clip.id)) continue
       seen.add(clip.id)
+      this.denoiseSource(clip, track, asset!)
       const el = this.pool.get(clip.id, asset!)
       if (!(el instanceof HTMLVideoElement)) continue
       activeIds.add(clip.id) // keep it from being paused-collected mid-seek

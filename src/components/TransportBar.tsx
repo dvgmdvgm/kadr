@@ -3,7 +3,8 @@ import { useEditor, projectDuration, type HistEntry } from '@/state/store'
 import { useSettings } from '@/state/store'
 import { snapshotFrame } from '@/engine/snapshot'
 import { usePopout, togglePreviewWindow } from '@/engine/popout'
-import { useT, tr, type TKey } from '@/i18n'
+import { useT, tr, trf, type TKey } from '@/i18n'
+import { useRecord, toggleRecording } from '@/engine/record'
 import { Icon, Spinner } from './icons'
 import { logWarn } from '@/engine/log'
 import { useOnion, toggleOnion } from '@/engine/onion'
@@ -11,6 +12,25 @@ import { formatTime, parseTimecode } from '@/engine/timelineMath'
 import { CtxMenu } from './CtxMenu'
 import type { SettingKey } from '@shared/settings'
 
+
+/** K8: shown once a track is armed; during the count-in it reads 3, 2, 1 */
+function RecordButton() {
+  const t = useT()
+  const armed = useRecord((s) => Object.keys(s.armed).length > 0)
+  const phase = useRecord((s) => s.phase)
+  const count = useRecord((s) => s.count)
+  if (!armed && phase === 'idle') return null
+  const busy = phase !== 'idle'
+  const label = busy ? t('recStop') : t('recStart')
+  return (
+    <button className={`icon-only${busy ? ' active' : ''}`} data-act="record" data-phase={phase}
+            title={phase === 'count' ? trf('recCount', { n: count }) : label} aria-label={label} aria-pressed={busy}
+            style={{ color: 'var(--c-danger)' }} onClick={() => { void toggleRecording() }}>
+      {phase === 'count' ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{count}</span>
+        : <Icon name="circle" style={busy ? { fill: 'currentColor' } : undefined} />}
+    </button>
+  )
+}
 
 export function TransportBar() {
   const t = useT()
@@ -79,6 +99,7 @@ export function TransportBar() {
       >
         <Icon name="loop" />
       </button>
+      <RecordButton />
       <span className="sep" />
       <button className="icon-only" data-act="split" title={t('split')} aria-label={t('split')}
               onClick={() => st().splitAtPlayhead()}>

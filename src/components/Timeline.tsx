@@ -52,6 +52,10 @@ import { scrub } from '@/engine/scrubAudio'
 import { clipMarkerTime } from '@shared/markers'
 import { isCompound } from '@shared/timelines'
 import { TimelineTabs, openCompound } from './TimelineTabs'
+import { keyRun, toggleTrack, useMixerUi } from '@/engine/mixer'
+import { ArmButton, MixerDock } from './Mixer'
+import { useMixerPopout, mixerHost, dockMixerWindow } from '@/engine/popout'
+import { dbText, gainToDb } from '@shared/fader'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -566,6 +570,8 @@ export function Timeline({ height }: { height: number }) {
     }
   }
 
+  const mixerOpen = useMixerUi((s) => s.open)
+  const mixerWin = useMixerPopout((s) => s.win)
   return (
     <div className="timeline" style={{ height }}>
       <div className="tl-toolbar">
@@ -598,6 +604,7 @@ export function Timeline({ height }: { height: number }) {
         <DefectButtons />
         <SilenceButtons />
         <TimelineHelp />
+        <MixerToggle />
         <span className="flex1" />
         <label className="zoom-ctl">
           {t('trackHeight')}
@@ -638,6 +645,7 @@ export function Timeline({ height }: { height: number }) {
         </label>
       </div>
       <TimelineTabs />
+      <div className="mx-row">
       <div className="tl-scroll" ref={scrollRef} onDragOver={onAnyDragOver} onDrop={onAnyDrop}>
         <div className="tl-content" style={{ width: HEADER_W + contentW, ['--z' as string]: zoom, ['--hw' as string]: `${HEADER_W}px` }}>
           <RulerRow contentW={contentW} view={view} />
@@ -665,9 +673,25 @@ export function Timeline({ height }: { height: number }) {
           </div>
         </div>
       </div>
+      {mixerOpen && !mixerWin && <MixerDock />}
+      {/* K12: popped out, the same component renders into the mixer's own window */}
+      {mixerOpen && mixerWin && createPortal(<MixerDock win={mixerWin as Window & typeof globalThis} />, mixerHost)}
+      </div>
       {menu && <TrackMenu menu={menu} onClose={() => setMenu(null)} />}
       <TimelineAsks />
     </div>
+  )
+}
+
+/** K6: «Микшер» in the timeline toolbar opens the dock right of the lanes */
+function MixerToggle() {
+  const t = useT()
+  const open = useMixerUi((s) => s.open)
+  return (
+    <button className={open ? 'toggled' : ''} data-act="mixer" aria-pressed={open} title={t('mxToggleTitle')}
+            onClick={() => { if (open) dockMixerWindow(); useMixerUi.getState().setOpen(!open) }}>
+      <Icon name="sliders" size={13} /> {t('mxToggle')}
+    </button>
   )
 }
 
@@ -1620,6 +1644,7 @@ function TrackRow({
   const t = useT()
   const reorder = useRef<{ pushed: boolean } | null>(null)
   const gainRef = useRef<HTMLInputElement>(null)
+  const keys = useRef(keyRun()).current
   const [naming, setNaming] = useState(false)
   // Only what is near the visible stretch goes into the DOM (half a screen on
   // either side, so a scroll finds it drawn), plus the selection — a clip being
@@ -1787,18 +1812,14 @@ function TrackRow({
               <Icon name="move" size={13} />
             </button>
           )}
+          {track.kind === 'audio' && <ArmButton trackId={track.id} />}
           <button
             className={track.muted ? 'toggled' : ''}
             data-act="mute"
             title={t('mute')}
             aria-label={t('mute')}
             aria-pressed={track.muted}
-            onClick={() => {
-              // an edit like solo, name and colour (E9): it is in the undo history (L2)
-              const st = useEditor.getState()
-              st.pushHistory('hTrack')
-              st.updateTrack(track.id, { muted: !track.muted })
-            }}
+            onClick={() => toggleTrack(track.id, 'muted')}
           >
             <Icon name={track.muted ? 'mute' : 'volume'} size={13} />
           </button>
@@ -1808,11 +1829,7 @@ function TrackRow({
             title={t('solo')}
             aria-label={t('solo')}
             aria-pressed={!!track.solo}
-            onClick={() => {
-              const st = useEditor.getState()
-              st.pushHistory('hTrack')
-              st.updateTrack(track.id, { solo: !track.solo })
-            }}
+            onClick={() => toggleTrack(track.id, 'solo')}
           >
             <Icon name="solo" size={13} />
           </button>
@@ -1846,13 +1863,19 @@ function TrackRow({
               aria-label={track.kind === 'audio' ? t('volume') : t('opacity')}
               onPointerDown={(e) => {
                 e.stopPropagation()
+                keys.end()
                 useEditor.getState().pushHistory('hEdit')
               }}
+              // K12: arrow keys change it too — one undo step per run, as on the strip
+              onKeyDown={(e) => { if (/^(Arrow|Page|Home$|End$)/.test(e.key)) keys.key() }}
+              onBlur={keys.end}
               onChange={(e) =>
                 useEditor.getState().updateTrack(track.id, { gain: Number(e.target.value) })
               }
             />
-            <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>
+            {track.kind === 'audio'
+              ? <span className="gain-pct dim" title={t('thGainDb')}>{dbText(gainToDb(track.gain))}</span>
+              : <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>}
           </div>
         )}
       </div>

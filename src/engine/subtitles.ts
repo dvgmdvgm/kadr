@@ -8,6 +8,7 @@ import { dirOf, baseOf } from '@shared/paths'
 import { audioFollowsSpeed } from '@shared/audioSpeed'
 import { hasRamp, relAtOffset, sourceOffset } from '@shared/speedRamp'
 import { gainKeys as gainKeysOf } from '@shared/gainKeys'
+import { dspFx, denoiseOf } from '@shared/audioFx'
 import { overlapFades, trackHeard, panAt } from './player'
 import { flattenProject } from './nesting'
 import { evalAnim } from './anim'
@@ -200,6 +201,10 @@ export function collectRangeAudio(
       const to = Math.min(clip.start + clip.duration, end)
       if (to - from < 0.001) continue
       const { fadeIn, fadeOut } = overlapFades(track, clip)
+      // K9: what the preview runs on this clip's element and on its track's bus
+      const fx = dspFx(clip.audioFx)
+      const denoise = track.kind === 'audio' ? denoiseOf(clip.audioFx) : null
+      const busFx = track.kind === 'audio' ? dspFx(track.audioFx) : []
       let local = from - clip.start
       const localEnd = to - clip.start
       while (local < localEnd - 0.001) {
@@ -221,9 +226,11 @@ export function collectRangeAudio(
           speed = (sourceOffset(clip, local + segDur) - off) / segDur
           if (!audioFollowsSpeed(speed)) { local += segDur; continue } // silent, as in the preview
         }
-        const fiLocal = local < fadeIn ? Math.min(fadeIn - local, segDur) : 0
+        // the WHOLE fade window goes with the segment, and where it stands in it
+        // (K2: a range or a source loop entering a fade part-way used to restart it)
+        const fi = local < fadeIn - 0.0005
         const tail = clip.duration - (local + segDur)
-        const foLocal = tail < fadeOut ? Math.min(fadeOut - tail, segDur) : 0
+        const fo = tail < fadeOut - 0.0005
         const gainKeys = gainKeysOf(clip.gain, local, local + segDur, (t) => evalAnim(clip.gain, t))
         const pan = segmentPan(clip, track, local, local + segDur)
         segs.push({
@@ -236,10 +243,15 @@ export function collectRangeAudio(
           ...pan,
           ...(asset.channels ? { channels: asset.channels } : {}),
           speed,
-          fadeIn: fiLocal,
-          fadeOut: foLocal,
-          ...(fiLocal && clip.fadeInCurve ? { fadeInCurve: clip.fadeInCurve } : {}),
-          ...(foLocal && clip.fadeOutCurve ? { fadeOutCurve: clip.fadeOutCurve } : {})
+          fadeIn: fi ? fadeIn : 0,
+          fadeOut: fo ? fadeOut : 0,
+          ...(fi && local > 0.0005 ? { fadeInFrom: local } : {}),
+          ...(fo && tail > 0.0005 ? { fadeOutPast: tail } : {}),
+          ...(fi && clip.fadeInCurve ? { fadeInCurve: clip.fadeInCurve } : {}),
+          ...(fo && clip.fadeOutCurve ? { fadeOutCurve: clip.fadeOutCurve } : {}),
+          ...(fx.length ? { fx } : {}),
+          ...(denoise !== null ? { denoise } : {}),
+          ...(busFx.length ? { bus: { id: track.id, fx: busFx } } : {})
         })
         local += segDur
       }

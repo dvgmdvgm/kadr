@@ -74,6 +74,10 @@ export const SETTINGS = {
   'playback.previewLimiter': { type: 'boolean', default: true, section: 'playback', legacy: 'kadr.previewLimiter' },
   /** K7: the preview's output device (a deviceId; '' = the system default) — AudioContext.setSinkId */
   'playback.audioOutput': { type: 'string', default: '', section: 'playback' },
+  /** K8: seconds of the timeline played before a microphone take starts (the 3-2-1) */
+  'playback.recordPreroll': { type: 'number', min: 0, max: 10, default: 3, section: 'playback' },
+  /** K8: ms added to the input device's reported latency when a take is placed (a loopback-measured correction) */
+  'playback.recordOffsetMs': { type: 'number', min: -1000, max: 1000, default: 0, section: 'playback' },
   /** the preview decodes the 540p proxy of a heavy source */
   'playback.proxies': { type: 'boolean', default: true, section: 'playback' },
   /** sources at or above this short side get a proxy, px */

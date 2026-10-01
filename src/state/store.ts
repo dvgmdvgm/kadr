@@ -39,6 +39,7 @@ import { sanitizeWheels, sanitizeCurves } from '@shared/curves'
 import { blendOf } from '@shared/blend'
 import { hexRgb } from '@shared/key'
 import type { FadeCurve } from '@shared/fadeCurves'
+import { cleanFx } from '@shared/audioFx'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -242,6 +243,8 @@ export function sanitizeProject(p: Project): Project {
     if (!Number.isFinite(track.gain)) track.gain = 1
     // K4: centre is the implicit default; a pan that is there is an Anim
     if (track.pan !== undefined) track.pan = anim(track.pan, 0)
+    // K9: well-formed effects or none
+    if (track.audioFx !== undefined) { const fx = cleanFx(track.audioFx); if (fx) track.audioFx = fx; else delete track.audioFx }
     label(track)
     if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
@@ -266,6 +269,7 @@ export function sanitizeProject(p: Project): Project {
       c.transform = { ...newClipDefaults().transform, ...(c.transform ?? {}) }
       c.gain = anim(c.gain, 1)
       c.effects ??= []
+      if (c.audioFx !== undefined) { const fx = cleanFx(c.audioFx); if (fx) c.audioFx = fx; else delete c.audioFx }
       // J1: a grade that is there has every control; one that is not stays absent
       if (c.grade !== undefined) {
         if (!c.grade || typeof c.grade !== 'object') delete c.grade
@@ -1085,6 +1089,8 @@ interface EditorState {
   removeTrack(trackId: string): void
   moveTrack(trackId: string, toIndex: number): void
   updateTrack(trackId: string, patch: Partial<Track>): void
+  /** K4/K6: the master fader, linear (no history: callers push once per gesture) */
+  setMasterGain(gain: number): void
 
   insertClipFromAsset(assetId: string, trackId: string | null, at: number, ripple?: boolean): void
   /** Place several assets back-to-back starting at `at` (one undo entry);
@@ -1143,7 +1149,15 @@ interface EditorState {
    * one with the same path is already in the bin. One undo entry.
    */
   placeAudio(asset: Omit<MediaAsset, 'id'>, at: number,
-    opts?: { gain?: number; label?: string; history?: string }): { clipId: string; trackId: string; assetId: string }
+    opts?: {
+      gain?: number; label?: string
+      /** the undo label; null = the caller pushed one already (K8: several takes, one step) */
+      history?: string | null
+      /** K8: this track when it is free over the span; else the usual choice */
+      trackId?: string
+      /** K8: a take starts part-way into its file and may end before it */
+      inPoint?: number; duration?: number
+    }): { clipId: string; trackId: string; assetId: string }
   /** Change the project's name, size or fps. One undo step per `session`
    *  (the Inspector passes one per focus of a field, so typing "1080" is one
    *  step); a call without a session is a step of its own. A patch that
@@ -2089,7 +2103,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   placeAudio: (asset, at, opts) => {
-    get().pushHistory(opts?.history ?? 'hInsert')
+    if (opts?.history !== null) get().pushHistory(opts?.history ?? 'hInsert')
     let result = { clipId: '', trackId: '', assetId: '' }
     set((s) => {
       const p = cloneProject(s.project)
@@ -2099,9 +2113,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         p.assets = [...p.assets, a]
       }
       const start = Math.max(0, at)
-      const end = start + Math.max(0.01, a.duration)
-      let track = p.tracks.find((t) => t.kind === 'audio' && !t.locked &&
-        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6))
+      const inPoint = opts?.inPoint ?? 0
+      const duration = opts?.duration ?? a.duration
+      const end = start + Math.max(0.01, duration)
+      const free = (t: Track) => t.kind === 'audio' && !t.locked &&
+        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6)
+      const want = p.tracks.find((t) => t.id === opts?.trackId)
+      let track = want && free(want) ? want : p.tracks.find(free)
       if (!track) {
         track = makeTrack(p, 'audio')
         p.tracks.push(track)
@@ -2113,8 +2131,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         assetId: a.id,
         kind: 'media',
         start,
-        duration: a.duration,
-        inPoint: 0,
+        duration,
+        inPoint,
         label: opts?.label ?? a.name,
         ...defaults,
         gain: Number.isFinite(gain) ? { value: Math.min(2, Math.max(0, gain as number)) } : defaults.gain
@@ -2168,6 +2186,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (t) Object.assign(t, patch)
       return { project: p }
     }),
+
+  setMasterGain: (gain) => set((s) => ({ project: { ...s.project, masterGain: gain } })),
 
   insertClipFromAsset: (assetId, trackId, at, ripple) =>
     get().insertClipsFromAssets([assetId], trackId, at, ripple),

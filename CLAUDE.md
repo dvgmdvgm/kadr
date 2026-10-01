@@ -55,7 +55,21 @@ mixes audio and muxes/transcodes per preset.
   every consumer — preview/export frames, frame blending, export audio chunks
   within a frame of the picture, markers, splits, trims, speed changes);
   `check-scrub-grains.mjs` (K7: scrub grains at most every 60 ms, none after
-  the drag ends — not even a seek landing late — and each stops by itself);
+  the drag ends — not even a seek landing late — and each stops by itself;
+  K12: a voice is wired through the clip's effects into its track's bus and
+  plays the denoised copy, on a fake WebAudio graph, `scripts/fake-webaudio.mjs`);
+  `check-mixer-binding.mjs` (K6: the fader and the header slider are one
+  value, the taper table, one undo step per gesture — arrow keys on the
+  header slider too — keyed edits as keys; K12: a removed track's bus leaves
+  the graph, the output label is the context's real device);
+  `check-record-place.mjs` (K8: a microphone take started at t with a
+  pre-roll lands at t, latency compensated, ends where recording stopped);
+  `check-audio-fx.mjs` wants ffmpeg (K9: the real `kadr-fx` worklet in
+  128-frame quanta and the export's form within −60 dB, the EQ against
+  ffmpeg's biquads, the compressor on its static curve, the de-esser's split
+  band, clip effects before the gain and track effects on the sum in the
+  graph and the premix, denoise of the same length with no shift and less
+  hiss, a range entering a fade part-way, the bake hash and the up-mix);
   `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
@@ -327,6 +341,11 @@ mixes audio and muxes/transcodes per preset.
   clip like the default transition, so new overlaps hold their loudness where
   a linear pair dips ~3 dB. The curve is picked from the fade handle's
   right-click menu. Test: `node scripts/check-fade-curves.mjs`.
+  A segment carries the WHOLE fade window and where it stands in it
+  (`fadeInFrom`, `fadeOutPast`): a range export or a source loop that starts
+  inside a fade used to restart it from zero. afade takes no negative start,
+  so `fadeChain` pads the segment with that much silence, fades, and trims
+  the padding off (test: `check-audio-fx.mjs`).
   PAN AND THE MASTER FADER (K4, `shared/pan.ts`): `Clip.pan` (clip-local keys)
   plus `Track.pan` (project-time keys), −1…1 as Anims, summed and clamped
   (`panAt`); absent = centre and no filter at all, so an old project mixes
@@ -654,12 +673,92 @@ mixes audio and muxes/transcodes per preset.
   AudioContext — the popped-out preview and the scrub included; only a CHANGE
   of the setting is applied, so a test's `{type:'none'}` holds. Dragging the
   playhead on the ruler while stopped plays ~80 ms grains of every audible clip
-  at most every 60 ms, from `<audio>` elements of their own routed through the
-  same gain → pan → master (`src/engine/scrub.ts` core, `scrubAudio.ts` glue):
-  the pool's elements belong to the resync. A grain is timed from its seek
+  at most every 60 ms, from `<audio>` elements of their own routed as the
+  pool's are — the clip's effects, gain, pan, its track's bus and effects,
+  master — and from the denoised copy once built (K12: `denoisedFor`, one rule
+  for playback and the scrub), so a de-essed voice scrubs as it plays
+  (`src/engine/scrub.ts` core, `scrubAudio.ts` glue): the pool's elements
+  belong to the resync. A grain is timed from its seek
   landing, a seek that lands after the drag is dropped, and every grain stops
   itself, so a lost pointerup cannot leave a sound running.
   `kadrEditor.scrubStats`. Test: `node scripts/check-scrub-grains.mjs`.
+  THE MIXER (K6, `src/components/Mixer.tsx`, writes in `src/engine/mixer.ts`):
+  a dock right of the timeline's lanes («Микшер» in its toolbar, open state in
+  localStorage), one strip per AUDIO track plus the master. The fader IS
+  `Track.gain` / `project.masterGain` through ONE taper table
+  (`shared/fader.ts`: +6 → 1, 0 → 0.8 … −40 → 0.14, −60 → 0) that the
+  Inspector's gain range shares; the strip and the track header write through
+  the same functions, and mute now pushes an undo step like solo. A track's
+  gain stays in each element's gain (the sound did not change); what a strip
+  meters is a per-track BUS GainNode at unity between the elements' pan and
+  the master, tapped by a splitter into two analysers (`trackPeaks`,
+  `masterPeaks` after the limiter); a track that is gone takes its bus out of
+  the graph (`pruneBuses`, every sync of the player — undo gets a fresh one,
+  which is why an element's route is remembered as the NODE, not the track
+  id). The master's device label is the context's real `sinkId`
+  (`outputDevice`): a switch that failed leaves the sound where it was, and the
+  label with it — the setting is only the wish. «Микшер в отдельном окне»
+  (canvas K, RULES 3; `popout.ts`, `useMixerPopout`) renders the same
+  `MixerDock` through a portal into a window of its own at full width; the
+  subtree reads its window from the `HostWindow` context (`CtxMenu.tsx`) for
+  its meter loop, timers, menus and outside clicks, and the AudioContext stays
+  the editor's. The limiter worklet posts its gain
+  reduction 10×/s (`limiterInfo`). The loudness worklet takes 'pause'/'run':
+  while stopped nothing is fed (the filter's tail drifted the integrated value
+  −18.60 → −18.67 in 3 s) and M/S read −∞; playback that starts where the
+  playhead was MOVED to since the stop resets the measurement, a resume does
+  not. Keyed pan or clip gain take an edit as a key under the playhead, never
+  `.value`. Test: `node scripts/check-mixer-binding.mjs`.
+  RECORDING (K8, `src/engine/record.ts`, `shared/recordPlace.ts`): a track is
+  ARMED from its header or strip (runtime only, never in the project); an armed
+  track holds its input open (getUserMedia, no echo cancel / noise suppression
+  / AGC, per-track device) and its strip meters that input. Record (Shift+R,
+  the transport's button, which shows once a track is armed) plays from
+  `playback.recordPreroll` s before the playhead — or from the range's start
+  to its end (punch-in) — past the timeline's end and with the loop off, while
+  a `kadr-capture` processor in the limiter's worklet module records each armed
+  input mono from before the count-in. Each playhead update is paired with
+  `ctx.currentTime`; the median of their difference maps the capture's first
+  frame onto the timeline, and the clip's inPoint skips the pre-roll plus the
+  input latency (`MediaTrackSettings.latency` + `playback.recordOffsetMs`, the
+  knob for a loopback-measured device). Stopping playback ends the take: 16-bit
+  WAV through `media:save-recording` into `<project>/media/recordings`, or
+  `userData/recordings` (a REFERENCED storage group) unsaved; every take is
+  placed by `placeAudio` on its own track when free there, all ONE undo step;
+  undo keeps the files. MICROPHONE PERMISSION: main's
+  `setPermissionRequestHandler` grants `media` only to the editor's own TOP
+  frame and only audio — fragment iframes run in the same webContents and get
+  nothing; other permissions keep Electron's grant-all default.
+  Test: `node scripts/check-record-place.mjs`.
+  AUDIO EFFECTS (K9, `shared/audioFx.ts`): EQ (RBJ biquads: low cut, low
+  shelf, peak, high shelf), compressor (feed-forward, stereo-linked peak,
+  Giannoulis-Massberg-Reiss soft knee, gain smoothed in dB) and de-esser (a
+  high-pass detects, x − lowpass(x) is turned down — in phase, and the input
+  comes back exactly when nothing is reduced) are ONE DSP: the preview runs
+  it in the `kadr-fx` processor of the limiter's worklet module, the export
+  runs the same code in main. `Clip.audioFx` sits between the element and its
+  gain, `Track.audioFx` on the track's bus (bus → fx → the strip's tap), as
+  in Premiere/Resolve; parameters are Hz/dB/ms, so the 44.1 kHz preview and
+  the 48 kHz export compute their own coefficients. A new list re-parameterises
+  the running node, which keeps its filter and detector state (no click on a
+  slider). The export does NOT force the premix: `applyAudioFx` runs before
+  any mixing — a clip's segment is decoded up to its atempo, processed and
+  becomes a temp WAV at speed 1 (its gain, keys, fades and pan then apply as
+  before); a track's segments are summed with `mixInto`, processed and become
+  one segment (≈23 MB per minute of timeline per track, in memory: a
+  10-minute track mixed in 1.9 s, +250 MB peak). DENOISE is a file: ffmpeg
+  `afftdn` over the whole source at a noise floor MEASURED per file (10th
+  percentile of 50 ms RMS at 48 kHz, told 6 dB above — at the default −50 a
+  −35 dB hiss went through untouched, and `tn=1` measured worse), 24-bit
+  FLAC in `cacheDir('denoised')` as `<mediaCacheKey(src, ':dn')>-<nr>.flac`
+  (REBUILDABLE, `.part` sidecar, one at a time; `audio:denoise`). The preview
+  plays it through the pool's source override (audio-track clips only — a
+  video clip's element is its picture), the export's `configureDenoiser` hook
+  swaps the segment's path. Analysis mixdowns go through the same muxer, so
+  they hear the effects too. Not in the chain: fragment audio. Live (sandbox, dialogue clip with EQ + compressor + denoise
+  and a de-esser on its track, capture of the preview's master vs a WAV
+  export): 44 windows of 0.2 s, worst 0.45 dB, mean 0.11 dB; a 5.1 source
+  preview vs export 0.00 dB. Test: `node scripts/check-audio-fx.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings
@@ -1485,7 +1584,8 @@ mixes audio and muxes/transcodes per preset.
   wrong file. Projects are keyed BY PATH, never by name. `storage:prune`
   FAILS CLOSED: without an explicit `confirm: true` it only counts, so a
   caller newer than the handler errs towards keeping the files.
-- `src/engine/popout.ts` — the preview in an OS window of its own. NOTHING
+- `src/engine/popout.ts` — the preview (and, K12, the mixer) in an OS
+  window of its own, one `popout()` each. NOTHING
   IS REBUILT ON THE WAY OVER: the preview always lives in ONE host div
   that a React portal renders into, and popping out only moves that div
   into the popup's document — re-creating it would mean a fresh GL context

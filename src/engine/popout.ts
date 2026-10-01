@@ -16,12 +16,15 @@
 //
 // The popup is `about:blank`, i.e. same-origin with the editor and in the
 // same renderer process: without that the DOM could not be adopted at all.
+//
+// K12: the mixer pops out the same way (canvas K, RULES 3) — a window and a
+// host of its own; the AudioContext stays this window's, as for the preview.
 import { create } from 'zustand'
 import { tr } from '@/i18n'
 import { logWarn } from './log'
 
 // J8: the scopes go to a window of their own the same way (`scopesPopout`) —
-// one factory, two instances; each has its own host, slot, geometry and window.
+// one factory, three instances (K12: the mixer too); each has its own host, slot, geometry and window.
 
 const MIN_W = 320
 const MIN_H = 200
@@ -29,7 +32,11 @@ const MIN_H = 200
 interface Geom { w: number; h: number; x?: number; y?: number }
 
 /** an element that lives in the editor or in an OS window of its own; only its parent changes */
-function makePopout(o: { name: string; geomKey: string; defW: number; defH: number; hostClass: string; title: () => string; fail: () => string; bodyClass: string }) {
+function makePopout(o: {
+  name: string; geomKey: string; defW: number; defH: number; hostClass: string; title: () => string; fail: () => string; bodyClass: string
+  /** K12: where the host goes back to when docked (default: its slot); null = out of every document */
+  home?: () => HTMLElement | null
+}) {
   /** null = docked in the editor */
   const use = create<{ win: Window | null }>(() => ({ win: null }))
   /** The one element it ever lives in. */
@@ -139,7 +146,9 @@ function makePopout(o: { name: string; geomKey: string; defW: number; defH: numb
     stopStyles = null
     // the host has to leave the popup's document while that document is still
     // alive: the canvas, its GL context and the fragment iframes go with it
-    ;(slot ?? document.body).appendChild(host)
+    const home = o.home ? o.home() : slot ?? document.body
+    if (home) home.appendChild(host)
+    else host.remove()
     use.setState({ win: null })
     if (w && !closing && !w.closed) {
       saveGeom(w)
@@ -197,3 +206,13 @@ export const togglePreviewWindow = preview.toggle
 
 /** J8: the scopes panel's own window (RULES 3) */
 export const scopesPopout = makePopout({ name: 'kadr-scopes', geomKey: 'kadr.scopesWindow', defW: 760, defH: 520, hostClass: 'sc-host', title: () => tr('scPopTitle'), fail: () => tr('lmScopesPopFail'), bodyClass: 'kadr-popout' })
+
+// K12, canvas K board Window: all twelve strips at full width in 1320 px; docked,
+// the mixer lives under the timeline's toolbar, so its host leaves every document
+const mixer = makePopout({ name: 'kadr-mixer', geomKey: 'kadr.mixerWindow', defW: 1320, defH: 560, hostClass: 'preview-host', title: () => tr('mxWinTitle'), fail: () => tr('lmPopoutFail'), bodyClass: 'kadr-popout', home: () => null })
+/** null = the mixer is docked under the timeline's toolbar (or hidden). */
+export const useMixerPopout = mixer.use
+/** The mixer's place in its own window: a portal renders the strips into it. */
+export const mixerHost: HTMLDivElement = mixer.host
+export const openMixerWindow = mixer.open
+export const dockMixerWindow = mixer.dock

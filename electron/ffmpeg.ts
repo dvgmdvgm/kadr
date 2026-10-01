@@ -11,6 +11,7 @@ import { rawEncodeArgs, parseEncoders, probeEncodeArgs, ALPHA_MODE_HELP, knowsAl
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
 import { AFADE_CURVE } from '@shared/fadeCurves'
+import { createFxChain, type AudioFx } from '@shared/audioFx'
 import { proxyColourArgs, PACK_GAP, type FfColour } from '@shared/streamColour'
 import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
@@ -903,6 +904,30 @@ async function withChannels(segs: AudioSegment[]): Promise<AudioSegment[]> {
   return paths.length ? segs.map((s) => (s.channels ? s : { ...s, channels: found.get(s.path) || undefined })) : segs
 }
 
+const n6 = (x: number) => String(+x.toFixed(6))
+
+/**
+ * The segment's fades. A window may begin before the segment (`fadeInFrom`, or
+ * a fade-out longer than what is left) — a range or a source loop entering it
+ * part-way; afade takes no negative start, so the segment is padded with that
+ * much silence in front, faded over its whole window, and the padding cut off
+ * again (K2: the fade used to restart from zero at the segment's first sample).
+ */
+function fadeChain(s: AudioSegment, outDur: number): string[] {
+  const fin = s.fadeIn > 0.001, fout = s.fadeOut > 0.001
+  if (!fin && !fout) return []
+  const inFrom = fin ? s.fadeInFrom ?? 0 : 0
+  const outAt = outDur + (s.fadeOutPast ?? 0) - s.fadeOut // segment-local start of the fade-out window
+  const preS = Math.round(Math.max(inFrom, fout ? -outAt : 0, 0) * 48000)
+  const pre = preS / 48000
+  return [
+    ...(preS ? [`adelay=delays=${preS}S:all=1`] : []),
+    ...(fin ? [`afade=t=in:st=${n6(pre - inFrom)}:d=${n6(s.fadeIn)}${curveArg(s.fadeInCurve)}`] : []),
+    ...(fout ? [`afade=t=out:st=${n6(pre + outAt)}:d=${n6(s.fadeOut)}${curveArg(s.fadeOutCurve)}`] : []),
+    ...(preS ? [`atrim=start_sample=${preS}`, 'asetpts=N/SR/TB'] : [])
+  ]
+}
+
 /** per-segment filter chain shared by the single-graph mix and the premix */
 function segmentChain(s: AudioSegment): string[] {
   const speed = s.speed || 1
@@ -918,10 +943,7 @@ function segmentChain(s: AudioSegment): string[] {
     ...(s.gainKeys?.length
       ? ['asetpts=N/SR/TB', 'asetnsamples=n=480:p=0', `volume='${gainExpr(s.gainKeys)}':eval=frame`]
       : []),
-    ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}${curveArg(s.fadeInCurve)}`] : []),
-    ...(s.fadeOut > 0.001
-      ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}${curveArg(s.fadeOutCurve)}`]
-      : []),
+    ...fadeChain(s, outDur),
     // K4: pan after the upmix (aformat above), as the preview's panner does (shared/pan.ts)
     ...(s.panKeys?.length ? ['asetpts=N/SR/TB', panEvalFilter(s.panKeys)] : s.pan ? [panFilter(s.pan)] : [])
   ]
@@ -950,6 +972,16 @@ export async function premixSegments(
   onProgress?: (done: number, total: number) => void,
   isCancelled?: () => boolean
 ): Promise<void> {
+  await writeWavF32(outPath, await mixInto(segs, duration, onProgress, isCancelled))
+}
+
+/** the premix's sum, in memory: interleaved stereo f32 at MIX_RATE over [0, duration) */
+async function mixInto(
+  segs: AudioSegment[],
+  duration: number,
+  onProgress?: (done: number, total: number) => void,
+  isCancelled?: () => boolean
+): Promise<Float32Array> {
   const totalFrames = Math.ceil(duration * MIX_RATE)
   const mix = new Float32Array(totalFrames * MIX_CH)
   const PAR = 4
@@ -966,46 +998,192 @@ export async function premixSegments(
         '-v', 'error', '-nostdin', ...segmentInput(s),
         '-af', segmentChain(s).join(','), '-f', 'f32le', '-ac', String(MIX_CH), '-ar', String(MIX_RATE), 'pipe:1'
       ]
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-        let err = ''
-        let pos = offset
-        let carry: Buffer | null = null // f32le sample split across chunks
-        child.stdout!.on('data', (c: Buffer) => {
-          if (carry) { c = Buffer.concat([carry, c]); carry = null }
-          const usable = c.length - (c.length % 4)
-          if (usable < c.length) carry = c.subarray(usable)
-          const n = Math.min(usable / 4, mix.length - pos)
-          for (let i = 0; i < n; i++) mix[pos + i] += c.readFloatLE(i * 4)
-          pos += n
-        })
-        child.stderr!.on('data', (c) => { err += c })
-        child.on('error', reject)
-        child.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`premix ${basename(s.path)} @${s.start.toFixed(2)}s: ffmpeg exited ${code}: ${err.slice(0, 300)}`))
-        })
+      let pos = offset
+      await pcmStream(args, `premix ${basename(s.path)} @${s.start.toFixed(2)}s`, (f) => {
+        const n = Math.min(f.length, mix.length - pos)
+        for (let i = 0; i < n; i++) mix[pos + i] += f[i]
+        pos += n
       })
       onProgress?.(++done, segs.length)
     }
   }
   await Promise.all(Array.from({ length: Math.min(PAR, segs.length) }, worker))
+  return mix
+}
 
-  // WAVE_FORMAT_IEEE_FLOAT (3) — ffmpeg reads it back as pcm_f32le
-  const dataBytes = mix.length * 4
+/** run ffmpeg with `args` (writing f32le to pipe:1) and hand its samples over as they come */
+function pcmStream(args: string[], what: string, onSamples: (f: Float32Array) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let err = ''
+    let carry: Buffer | null = null // a sample (or, for the fx pass, a stereo frame) split across chunks
+    child.stdout!.on('data', (c: Buffer) => {
+      if (carry) { c = Buffer.concat([carry, c]); carry = null }
+      const usable = c.length - (c.length % (4 * MIX_CH))
+      if (usable < c.length) carry = c.subarray(usable)
+      const f = new Float32Array(usable / 4)
+      for (let i = 0; i < f.length; i++) f[i] = c.readFloatLE(i * 4)
+      onSamples(f)
+    })
+    child.stderr!.on('data', (c) => { err += c })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`${what}: ffmpeg exited ${code}: ${err.slice(0, 300)}`))
+    })
+  })
+}
+
+/** WAVE_FORMAT_IEEE_FLOAT (3) header — ffmpeg reads it back as pcm_f32le */
+function wavHeader(dataBytes: number): Buffer {
   const header = Buffer.alloc(44)
   header.write('RIFF', 0); header.writeUInt32LE(36 + dataBytes, 4); header.write('WAVE', 8)
   header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(3, 20)
   header.writeUInt16LE(MIX_CH, 22); header.writeUInt32LE(MIX_RATE, 24)
   header.writeUInt32LE(MIX_RATE * MIX_CH * 4, 28); header.writeUInt16LE(MIX_CH * 4, 32); header.writeUInt16LE(32, 34)
   header.write('data', 36); header.writeUInt32LE(dataBytes, 40)
+  return header
+}
+
+async function writeWavF32(outPath: string, mix: Float32Array): Promise<void> {
+  const dataBytes = mix.length * 4
   const fh = await fsp.open(outPath, 'w')
   try {
-    await fh.write(header)
+    await fh.write(wavHeader(dataBytes))
     await fh.write(Buffer.from(mix.buffer, mix.byteOffset, dataBytes))
   } finally {
     await fh.close()
   }
+}
+
+// ---------------------------------------------------------------- K9: effects
+
+/**
+ * Run an effect chain (shared/audioFx.ts — the preview's worklet runs the same
+ * code) over interleaved stereo f32 at `sr`, in place, from frame `from` on: the
+ * chain starts there at rest, as the worklet does when the clip starts sounding.
+ */
+export function fxInterleaved(buf: Float32Array, list: AudioFx[], sr: number, from = 0): void {
+  const chain = createFxChain(list, sr, MIX_CH)
+  if (chain) fxRun(chain, buf, Math.round(from))
+}
+const BLOCK = 4096
+function fxRun(chain: NonNullable<ReturnType<typeof createFxChain>>, buf: Float32Array, from = 0): void {
+  const l = new Float64Array(BLOCK), r = new Float64Array(BLOCK)
+  const frames = buf.length / MIX_CH
+  for (let f = from; f < frames; f += BLOCK) {
+    const n = Math.min(BLOCK, frames - f)
+    for (let i = 0; i < n; i++) { l[i] = buf[(f + i) * 2]; r[i] = buf[(f + i) * 2 + 1] }
+    chain.process([l, r], n)
+    for (let i = 0; i < n; i++) { buf[(f + i) * 2] = l[i]; buf[(f + i) * 2 + 1] = r[i] }
+  }
+}
+
+/** main installs the denoise cache (electron/main.ts ensureDenoised); without it a segment's denoise is ignored */
+type Denoiser = (path: string, nr: number) => Promise<string>
+let denoiser: Denoiser | null = null
+export function configureDenoiser(fn: Denoiser | null) { denoiser = fn }
+
+/** K9: the denoised copy of a source — afftdn over the whole file, at its own rate and channels, 24-bit FLAC */
+export async function makeDenoised(src: string, out: string, nr: number): Promise<void> {
+  // told 6 dB above the measured floor: on hiss at −35 and −51 dBFS that took 20 and 20 dB
+  // off between the words where the floor itself took 14 and 13 (a tone in the same file untouched)
+  const nf = Math.min(-20, Math.max(-80, Math.round(await noiseFloorDb(src)) + 6))
+  await execFileP(FFMPEG, ['-v', 'error', '-nostdin', '-y', '-i', src, '-vn', '-map', '0:a:0',
+    '-af', `afftdn=nr=${n6(nr)}:nf=${nf}`, '-c:a', 'flac', '-sample_fmt', 's32', out], { maxBuffer: 1 << 20 })
+}
+
+/**
+ * The source's noise floor for afftdn's `nf`: the 10th percentile of its 50 ms
+ * RMS frames, mono, at 48 kHz (a lower rate cuts a hiss's bandwidth and reads it
+ * 8 dB low). afftdn reduces only what
+ * lies near the floor it is told: at its default −50 dB a −35 dB hiss went
+ * through untouched, and its own tracking (`tn=1`) measured worse than a told
+ * floor on both a loud and a quiet one.
+ */
+async function noiseFloorDb(src: string): Promise<number> {
+  const SR = 48000, N = SR / 20
+  const frames: number[] = []
+  let acc = 0, k = 0
+  await pcmStream(['-v', 'error', '-nostdin', '-i', src, '-vn', '-map', '0:a:0', '-f', 'f32le', '-ac', '2', '-ar', String(SR), 'pipe:1'],
+    `noise floor ${basename(src)}`, (f) => {
+      for (let i = 0; i < f.length; i += 2) {
+        const m = (f[i] + f[i + 1]) / 2
+        acc += m * m
+        if (++k === N) { frames.push(acc / N); acc = 0; k = 0 }
+      }
+    })
+  const loud = frames.filter((e) => e > 1e-12).sort((a, b) => a - b) // digital silence is not the floor
+  if (!loud.length) return -50
+  return 10 * Math.log10(loud[Math.floor(loud.length * 0.1)])
+}
+
+/**
+ * K9: a mix's effects, applied before it is mixed, so the graph and the premix
+ * both see plain segments. A clip's denoise swaps its source for the cached
+ * file; its DSP effects run on its sound after the element's speed and before
+ * its gain (the preview: element → fx → gain → pan), so the segment is decoded
+ * up to its atempo, processed, and comes back as a temp WAV at speed 1. A
+ * track's effects run on the track's SUM (bus → fx): its segments are premixed
+ * whole (≈23 MB per minute of timeline, in memory) and come back as one.
+ */
+async function applyAudioFx(segs: AudioSegment[], duration: number, temps: string[], isCancelled: () => boolean): Promise<AudioSegment[]> {
+  if (!segs.some((s) => s.fx?.length || s.denoise || s.bus)) return segs
+  const tmp = () => {
+    const f = join(TMP_DIR || tmpdir(), `kadr-fx-${process.pid}-${Date.now()}-${temps.length}.wav`)
+    temps.push(f)
+    return f
+  }
+  const out: AudioSegment[] = []
+  for (let s of segs) {
+    if (isCancelled()) throw new Error('cancelled')
+    if (s.denoise && denoiser) s = { ...s, path: await denoiser(s.path, s.denoise) }
+    if (s.fx?.length) {
+      const speed = s.speed || 1, outDur = s.duration / speed
+      const head = [
+        ...(s.channels === 1 ? ['pan=stereo|c0=c0|c1=c0'] : []),
+        'aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo',
+        ...(retimed(s) ? [...atempoChain(speed), `atrim=end_sample=${Math.round(outDur * 48000)}`] : [])
+      ]
+      const chain = createFxChain(s.fx, MIX_RATE, MIX_CH)!
+      const file = tmp()
+      const fh = await fsp.open(file, 'w')
+      let bytes = 0
+      try {
+        await fh.write(wavHeader(0))
+        let queue: Promise<unknown> = Promise.resolve()
+        await pcmStream(['-v', 'error', '-nostdin', ...segmentInput(s), '-af', head.join(','),
+          '-f', 'f32le', '-ac', String(MIX_CH), '-ar', String(MIX_RATE), 'pipe:1'], `fx ${basename(s.path)}`, (f) => {
+          fxRun(chain, f)
+          bytes += f.byteLength
+          queue = queue.then(() => fh.write(Buffer.from(f.buffer, f.byteOffset, f.byteLength)))
+        })
+        await queue
+        await fh.write(wavHeader(bytes), 0, 44, 0)
+      } finally {
+        await fh.close()
+      }
+      s = { ...s, path: file, inPoint: 0, duration: outDur, speed: 1, channels: 2 }
+    }
+    const { fx: _fx, denoise: _dn, ...plain } = s
+    out.push(plain)
+  }
+  // track buses: summed, processed, one segment per track
+  const byBus = new Map<string, AudioSegment[]>()
+  const rest: AudioSegment[] = []
+  for (const s of out) {
+    if (s.bus?.fx.length) byBus.set(s.bus.id, [...(byBus.get(s.bus.id) ?? []), s])
+    else rest.push(s)
+  }
+  for (const group of byBus.values()) {
+    if (isCancelled()) throw new Error('cancelled')
+    const sum = await mixInto(group.map(({ bus: _b, ...x }) => x), duration, undefined, isCancelled)
+    fxInterleaved(sum, group[0].bus!.fx, MIX_RATE)
+    const file = tmp()
+    await writeWavF32(file, sum)
+    rest.push({ path: file, inPoint: 0, duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0, channels: 2 })
+  }
+  return rest
 }
 
 export class ExportMuxer {
@@ -1023,12 +1201,24 @@ export class ExportMuxer {
   async run(
     job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void
   ): Promise<{ i: number; tp: number } | null> {
+    const temps: string[] = []
+    try {
+      return await this.mux(job, videoTemp, onProgress, temps)
+    } finally {
+      for (const f of temps) fsp.unlink(f).catch(() => { /* already gone */ })
+    }
+  }
+
+  private async mux(
+    job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void, temps: string[]
+  ): Promise<{ i: number; tp: number } | null> {
     const args: string[] = ['-y', '-v', 'error', '-progress', 'pipe:1']
     // Linux caps a single argv string at 128 KB (MAX_ARG_STRLEN): a timeline
     // with ~1000 SFX clips builds a filter graph past that and spawn() fails
     // with E2BIG. The graph goes through a script file instead of argv.
     let filterScript: string | null = null
-    let segs = await withChannels(job.audioSegments)
+    // K9: effects first — every path below then mixes plain segments
+    let segs = await applyAudioFx(await withChannels(job.audioSegments), job.duration, temps, () => this.cancelled)
     const hasVideo = !job.preset.audioOnly
 
     // G9: a loudness target measures the mix before it is written — on ONE

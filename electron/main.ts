@@ -6,12 +6,12 @@ import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan, probeColorTags,
   ExportMuxer, RawVideoEncoder, meanVolume, detectScenes, probeBasic, configureFfmpeg, detectEncoders,
-  makeSequence, sequenceHasAlpha
+  makeSequence, sequenceHasAlpha, makeDenoised, configureDenoiser
 } from './ffmpeg'
 import { scanMedia } from './mediaScan'
 import { frameOf } from '@shared/sequences'
 import { rawCodec, rawTempExt, seqPattern, isSeqFrame } from '@shared/rawEncode'
-import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
+import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix, DENOISE_SUFFIX, denoiseName } from './cacheKeys'
 import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
 import { registerClaudeIpc, sweepStaleSessions } from './claude'
@@ -124,8 +124,9 @@ let unresponsive = false
 let quitAfterClose = false
 const mustAsk = () => !!win && !win.isDestroyed() && !closeAllowed && closeGuard &&
   !unresponsive && !win.webContents.isCrashed()
-/** window.open names of the detached preview and scopes (J8) — see src/engine/popout.ts */
-const POPUP_WINS = new Set(['kadr-preview', 'kadr-scopes'])
+/** window.open names of the popups the page may open: the detached preview, the
+    scopes (J8) and the mixer (K12) — see src/engine/popout.ts */
+const POPUP_WINS = new Set(['kadr-preview', 'kadr-scopes', 'kadr-mixer'])
 
 function createWindow() {
   win = new BrowserWindow({
@@ -147,6 +148,15 @@ function createWindow() {
   })
   win.setMenuBarVisibility(false)
   const owner = win
+  // K8: the microphone, for the editor's own top document only, audio only.
+  // Fragment pages run inside this same webContents (iframes from the
+  // workspace dev server) and get no capture. Every other permission keeps
+  // Electron's no-handler behaviour, which grants it.
+  win.webContents.session.setPermissionRequestHandler((wc, perm, cb, details) => {
+    if (perm !== 'media') { cb(true); return }
+    const d = details as { isMainFrame?: boolean; mediaTypes?: string[] }
+    cb(wc === owner.webContents && !!d.isMainFrame && !(d.mediaTypes ?? []).includes('video'))
+  })
   closeAllowed = closeGuard = unresponsive = false
   win.on('close', (e) => {
     if (!mustAsk()) return
@@ -534,6 +544,44 @@ async function requestDecoded(
   return out
 }
 
+// K9: denoised copies of sources (afftdn, electron/ffmpeg.ts makeDenoised) — the
+// preview plays one in place of the source and the export mixes the same file.
+// REBUILDABLE like a proxy: named after the source and the strength, built into
+// a `.part` sidecar, one at a time.
+const denoisedDir = () => cacheDir('denoised')
+let denoiseChain: Promise<unknown> = Promise.resolve()
+const denoiseJobs = new Map<string, Promise<string>>()
+
+function ensureDenoised(srcPath: string, nr: number): Promise<string> {
+  const stat = statSync(srcPath)
+  const key = denoiseName(mediaCacheKey(srcPath, stat.size, stat.mtimeMs, DENOISE_SUFFIX), nr)
+  const out = join(denoisedDir(), `${key}.flac`)
+  let job = denoiseJobs.get(out)
+  if (job) return job
+  job = (async () => {
+    try {
+      if ((await fs.stat(out)).size > 0) return out
+    } catch { /* not built yet */ }
+    await fs.mkdir(denoisedDir(), { recursive: true })
+    const run = denoiseChain.then(async () => {
+      const tmp = join(denoisedDir(), `${key}.part.flac`)
+      try {
+        await makeDenoised(srcPath, tmp, nr)
+        await fs.rename(tmp, out)
+      } catch (err) {
+        fs.unlink(tmp).catch(() => { /* nothing to clean */ })
+        throw err
+      }
+    })
+    denoiseChain = run.catch(() => { /* keep the queue alive */ })
+    await run
+    return out
+  })().finally(() => denoiseJobs.delete(out))
+  denoiseJobs.set(out, job)
+  return job
+}
+configureDenoiser(ensureDenoised)
+
 /**
  * Keep the decode cache from eating the disk. A lossless colour+matte
  * intermediate costs ~250 MB per minute of 1080p60 and every edit of a
@@ -573,7 +621,7 @@ async function pruneDecodedCache(): Promise<void> {
  * Directories (the reverse worker's scratch `.tmp` dir) are left alone.
  */
 async function sweepPartFiles(): Promise<void> {
-  const dirs = [...['decoded', 'proxies', 'fragment-renders'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
+  const dirs = [...['decoded', 'proxies', 'fragment-renders', 'denoised'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
   let dropped = 0
   for (const dir of dirs) {
     let names: string[]
@@ -677,6 +725,8 @@ function registerIpc() {
   ipcMain.handle('media:loudness', (_e, srcPath: string, start: number, duration: number) =>
     measureLoudness(srcPath, start, duration)
   )
+
+  ipcMain.handle('audio:denoise', (_e, srcPath: string, nr: number) => ensureDenoised(String(srcPath), Number(nr)))
 
   ipcMain.handle('media:mean-volume', (_e, srcPath: string, start: number, duration: number) =>
     meanVolume(srcPath, start, duration)
@@ -935,6 +985,17 @@ function registerIpc() {
       return out // identical content saved before
     } catch { /* proceed */ }
     return writeImported(out, buf)
+  })
+
+  // K8: a microphone take, a WAV the page encoded. Next to a saved project
+  // (`<project>/media/recordings`, so it travels and is saved relative), else in
+  // userData/recordings — REFERENCED either way: the clip points at this file.
+  ipcMain.handle('media:save-recording', async (_e, data: Uint8Array, projectPath: string | null) => {
+    if (!data?.byteLength) throw new Error('empty recording')
+    const dir = projectPath ? join(dirname(projectPath), 'media', 'recordings') : join(app.getPath('userData'), 'recordings')
+    await fs.mkdir(dir, { recursive: true })
+    const out = join(dir, `take-${new Date().toISOString().replace(/[:.]/g, '-')}.wav`)
+    return writeImported(out, Buffer.from(data.buffer, data.byteOffset, data.byteLength))
   })
 
   ipcMain.handle('fonts:lib', async (_e, projectPath: string) => {

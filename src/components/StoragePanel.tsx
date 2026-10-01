@@ -9,9 +9,11 @@ const NAME: Record<StorageGroupId, TKey> = {
   proxies: 'stProxies',
   decoded: 'stDecoded',
   fragments: 'stFragments',
+  denoised: 'stDenoised',
   ttsqcCache: 'stTtsqcCache',
   reversed: 'stReversed',
   imported: 'stImported',
+  recordings: 'stRecordings',
   voiceRuns: 'stVoiceRuns',
   backups: 'stBackups',
   templates: 'stTemplates'
@@ -20,9 +22,11 @@ const ABOUT: Record<StorageGroupId, TKey> = {
   proxies: 'stProxiesAbout',
   decoded: 'stDecodedAbout',
   fragments: 'stFragmentsAbout',
+  denoised: 'stDenoisedAbout',
   ttsqcCache: 'stTtsqcCacheAbout',
   reversed: 'stReversedAbout',
   imported: 'stImportedAbout',
+  recordings: 'stRecordingsAbout',
   voiceRuns: 'stVoiceRunsAbout',
   backups: 'stBackupsAbout',
   templates: 'stTemplatesAbout'

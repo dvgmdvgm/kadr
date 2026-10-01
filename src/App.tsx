@@ -30,7 +30,7 @@ import { Modal } from './components/Modal'
 import { appCommands, loadKeymap, onEditorKey } from './engine/actions'
 import { needsConfirm } from './engine/discardGuard'
 import { rememberProject } from './engine/storage'
-import { usePopout, previewHost } from './engine/popout'
+import { usePopout, useMixerPopout, previewHost } from './engine/popout'
 import { ViewerSlot } from './components/SourceViewer'
 import { useEditor, newProject } from './state/store'
 import { dropPayload, dropUsable, importDrop } from './engine/mediaImport'
@@ -259,6 +259,7 @@ export default function App() {
   const togglePanel = (p: 'log' | 'storage') => setPanel((v) => (v === p ? null : p))
   const settingsOpen = useSettingsUi((s) => s.open)
   const popWin = usePopout((s) => s.win)
+  const mixWin = useMixerPopout((s) => s.win)
   // the log button stays quiet until something actually fails
   const logUnseen = useLog((s) => s.unseen)
   const [sideW, setSideW] = useState(() =>
@@ -291,11 +292,13 @@ export default function App() {
     // the detached preview is a window of its own: with the focus there,
     // Space and the arrows must still drive the same transport
     popWin?.addEventListener('keydown', onEditorKey)
+    mixWin?.addEventListener('keydown', onEditorKey) // K12: the mixer's own window too
     return () => {
       window.removeEventListener('keydown', onEditorKey)
       popWin?.removeEventListener('keydown', onEditorKey)
+      mixWin?.removeEventListener('keydown', onEditorKey)
     }
-  }, [popWin])
+  }, [popWin, mixWin])
 
   const startSideResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()

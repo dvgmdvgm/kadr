@@ -6,6 +6,7 @@ import { useT } from '@/i18n'
 import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
 import { audibleTracksInRange } from '@/engine/subtitles'
 import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
+import { ClipFxSection } from './AudioFxPanel'
 import { CtxMenu } from './CtxMenu'
 import { ColourSection } from './ColourSection'
 import { isVisualClip } from '@/engine/colourUi'
@@ -14,6 +15,10 @@ import { fontChoices } from '@/engine/fonts'
 import { audioTwin } from '@/engine/timelineSelect'
 import { openCompound } from './TimelineTabs'
 import { RESOLUTION_PRESETS, FPS_PRESETS, exactFps, fpsLabel } from '@shared/projectFormat'
+import { evalAnim } from '@/engine/anim'
+import { KF_EPS } from './animUtils'
+import { beginMixGesture, setClipAnimAt, toggleKeyAt } from '@/engine/mixer'
+import { faderPos, posDb, dbToGain, gainToDb, dbText, panText } from '@shared/fader'
 
 function Num({
   label, value, step = 1, min, max, onChange,
@@ -268,9 +273,9 @@ function ClipProps({ clip }: { clip: Clip }) {
   const visual = useEditor((s) => isVisualClip(s.project, clip))
   const project = useEditor((s) => s.project)
   const twin = useMemo(() => audioTwin(project, clip), [project, clip])
+  const hasAudio = clip.kind === 'media' && project.assets.some((a) => a.id === clip.assetId && a.hasAudio)
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
-  const setGain = (v: number) => update({ gain: { ...clip.gain, value: v } as Anim })
   const setStyle = (patch: Partial<TextStyle>) =>
     update({ textStyle: { ...clip.textStyle!, ...patch } })
 
@@ -314,17 +319,18 @@ function ClipProps({ clip }: { clip: Clip }) {
         </>
       )}
       {clip.kind !== 'timeline' && <>
-      <div className="insp-section">{t('position')}</div>
-      <Num label="X" value={clip.transform.x.value} onChange={(v) => setAnim('x', v)} />
-      <Num label="Y" value={clip.transform.y.value} onChange={(v) => setAnim('y', v)} />
-      <Num label={t('scale')} value={clip.transform.scale.value} step={0.05} min={0.01} max={20}
-        onChange={(v) => setAnim('scale', v)} />
-      <Num label={t('rotation')} value={clip.transform.rotation.value} step={1}
-        onChange={(v) => setAnim('rotation', v)} />
-      <Num label={t('opacity')} value={clip.transform.opacity.value} step={0.05} min={0} max={1}
-        onChange={(v) => setAnim('opacity', v)} />
       {visual && (
         <>
+          {/* K6 (canvas K, RULES 24): a sound has no position */}
+          <div className="insp-section">{t('position')}</div>
+          <Num label="X" value={clip.transform.x.value} onChange={(v) => setAnim('x', v)} />
+          <Num label="Y" value={clip.transform.y.value} onChange={(v) => setAnim('y', v)} />
+          <Num label={t('scale')} value={clip.transform.scale.value} step={0.05} min={0.01} max={20}
+            onChange={(v) => setAnim('scale', v)} />
+          <Num label={t('rotation')} value={clip.transform.rotation.value} step={1}
+            onChange={(v) => setAnim('rotation', v)} />
+          <Num label={t('opacity')} value={clip.transform.opacity.value} step={0.05} min={0} max={1}
+            onChange={(v) => setAnim('opacity', v)} />
           {/* F4: each choice is its own undo step */}
           <label className="insp-field">
             <span>{t('fit')}</span>
@@ -351,7 +357,7 @@ function ClipProps({ clip }: { clip: Clip }) {
       {/* J6 grade: a nest's picture is graded inside it (L6) */}
       {visual && <ColourSection clip={clip} />}
       </>}
-      <div className="insp-section">{t('volume')}</div>
+      <div className="insp-section">{t('inSound')}</div>
       {twin && clip.muted ? (
         // an AV import: the picture's own sound is off because it plays from the audio clip
         <div className="insp-field">
@@ -363,18 +369,75 @@ function ClipProps({ clip }: { clip: Clip }) {
         </div>
       ) : (
         <>
-          <Num label={t('volume')} value={clip.gain.value} step={0.05} min={0} max={2} onChange={setGain} />
+          <SoundRow clip={clip} k="gain" />
+          {!!clip.gain.keyframes?.length && (
+            <div className="cg-hint"><Icon name="diamond" size={12} style={{ color: 'var(--c-sel)' }} /><span>{t('inGainKeyed')}</span></div>
+          )}
+          <SoundRow clip={clip} k="pan" />
           <label className="insp-field">
             <span>{t('muted')}</span>
             <input type="checkbox" checked={clip.muted}
-              onChange={(e) => update({ muted: e.target.checked })} />
+              onChange={(e) => { useEditor.getState().pushHistory('hEdit'); update({ muted: e.target.checked }) }} />
           </label>
         </>
       )}
+      {/* K9 (canvas K, RULES 22): the clip's own sound — not the picture of an AV pair, whose sound is its twin's */}
+      {hasAudio && !(twin && clip.muted) && <ClipFxSection clip={clip} />}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
-      {clip.kind !== 'timeline' && <EffectsSection clip={clip} />}
+      {visual && clip.kind !== 'timeline' && <EffectsSection clip={clip} />}
     </>
+  )
+}
+
+/**
+ * K6 (canvas K, RULES 22–23): a clip's volume (the mixer's fader taper on a
+ * range, in dB) or pan. Keyed, the row shows the value under the playhead and
+ * an edit sets a key there (never `.value`, K1 finding 2); outside the clip a
+ * keyed row is disabled. A drag or a run of arrow keys is one undo step.
+ */
+function SoundRow({ clip, k }: { clip: Clip; k: 'gain' | 'pan' }) {
+  const t = useT()
+  const playhead = useEditor((s) => s.playhead)
+  const run = useRef(false)
+  const def = k === 'gain' ? 1 : 0
+  const a: Anim = clip[k] ?? { value: def }
+  const rel = playhead - clip.start
+  const inside = rel >= 0 && rel <= clip.duration
+  const keyed = !!a.keyframes?.length
+  const v = keyed ? evalAnim(a, Math.min(clip.duration, Math.max(0, rel))) : a.value
+  const atKey = keyed && inside && a.keyframes!.some((kf) => Math.abs(kf.time - rel) < KF_EPS)
+  const off = keyed && !inside
+  const label = k === 'gain' ? t('volume') : t('inPan')
+  const write = (x: number) => setClipAnimAt(clip.id, k, x, useEditor.getState().playhead)
+  return (
+    <div className="cg-row" data-row={k} title={off ? t('inKeyedOutside') : t(k === 'gain' ? 'inGainTitle' : 'inPanTitle')}>
+      <span className={keyed || v !== def ? 'cg-set' : ''}
+            onDoubleClick={() => { if (!off) { beginMixGesture(); write(def) } }}>{label}</span>
+      <input
+        type="range" aria-label={label} disabled={off}
+        min={k === 'gain' ? 0 : -1} max={1} step={k === 'gain' ? 0.001 : 0.01}
+        value={k === 'gain' ? faderPos(gainToDb(v)) : v}
+        onPointerDown={() => { run.current = true; beginMixGesture() }}
+        onKeyDown={() => { if (!run.current) { run.current = true; beginMixGesture() } }}
+        onBlur={() => { run.current = false }}
+        onPointerUp={() => { run.current = false }}
+        onChange={(e) => {
+          const x = Number(e.target.value)
+          write(k === 'gain' ? dbToGain(posDb(x)) : x)
+        }}
+      />
+      <span className="fx-val" style={{ width: 'auto', whiteSpace: 'nowrap' }}>{k === 'gain' ? `${dbText(gainToDb(v))} dB` : panText(v)}</span>
+      <button
+        className={`cg-kf${atKey ? ' on' : keyed ? ' cg-animated' : ''}`} data-act={`kf-${k}`}
+        disabled={!inside} aria-pressed={atKey}
+        title={atKey ? t('inKfDel') : keyed ? t('inKfAnim') : t('inKfAdd')}
+        aria-label={atKey ? t('inKfDel') : t('inKfAdd')}
+        onClick={() => toggleKeyAt(clip.id, k, useEditor.getState().playhead)}
+      >
+        <Icon name="diamond" size={12} />
+      </button>
+    </div>
   )
 }
 

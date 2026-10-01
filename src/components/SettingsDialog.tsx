@@ -14,6 +14,7 @@ import { PRESETS, presetName, allPresets } from '@/presets'
 import { X264_PRESETS, VIDEO_ENCODERS, VIDEO_CODECS } from '@shared/rawEncode'
 import { playDoneChime } from '@/engine/chime'
 import { useTtsUi } from './TtsDialog'
+import { useAudioOutputs } from './Mixer'
 import { KeysSection, KeysHeadActions } from './KeysSection'
 import {
   SETTINGS, awaitsRestart, running,
@@ -415,20 +416,11 @@ function Mouse({ t }: { t: T }) {
 
 /** K7: the audio outputs the system has now; Windows' 'default'/'communications' aliases are '' here */
 function OutputDevice({ t }: { t: T }) {
-  const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
+  const devices = useAudioOutputs() // the same list as the mixer's master strip (K6)
   const snap = useSnap()
-  useEffect(() => {
-    const md = navigator.mediaDevices
-    const list = () => md.enumerateDevices()
-      .then((all) => setDevices(all.filter((d) => d.kind === 'audiooutput' && d.deviceId !== 'default' && d.deviceId !== 'communications')))
-      .catch(() => setDevices([]))
-    list()
-    md.addEventListener('devicechange', list)
-    return () => md.removeEventListener('devicechange', list)
-  }, [])
   const v = String(val('playback.audioOutput', snap))
-  const options: [SettingValue, string][] = [['', t('setOutDefault')], ...devices.map((d): [string, string] => [d.deviceId, d.label || d.deviceId.slice(0, 8)])]
-  if (v && !devices.some((d) => d.deviceId === v)) options.push([v, t('setOutMissing')])
+  const options: [SettingValue, string][] = [['', t('setOutDefault')], ...devices]
+  if (v && !devices.some(([id]) => id === v)) options.push([v, t('setOutMissing')])
   return <Choice k="playback.audioOutput" label={t('setOutput')} width={240} options={options} />
 }
 
@@ -446,6 +438,12 @@ function Playback({ t }: { t: T }) {
       </Row>
       <Row label={t('setOutput')} keys={['playback.audioOutput']} shown={t('setOutDefault')}>
         <OutputDevice t={t} />
+      </Row>
+      <Row label={t('setPreroll')} keys={['playback.recordPreroll']} shown={`3 ${t('setSec')}`} unit={t('setSec')}>
+        <Num k="playback.recordPreroll" label={t('setPreroll')} step={1} />
+      </Row>
+      <Row label={t('setRecOffset')} keys={['playback.recordOffsetMs']} shown="0 ms" unit="ms" detail={t('setRecOffsetNote')}>
+        <Num k="playback.recordOffsetMs" label={t('setRecOffset')} step={5} />
       </Row>
       <Row label={t('setFollow')} keys={['playback.follow']} shown={t('setFollowPage')}>
         <Choice k="playback.follow" label={t('setFollow')} width={240}
