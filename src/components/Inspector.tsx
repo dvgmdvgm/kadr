@@ -1,37 +1,65 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { Anim, Clip, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
-import { useEditor, useFxPresets, findClip, uid } from '@/state/store'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Anim, Clip, ClipFit, Effect, FragmentInspect, FragmentParamDecl, FxPreset, TextStyle } from '@shared/types'
+import { useEditor, useFxPresets, findClip, uid, type ProjectSettingsPatch } from '@/state/store'
 import { GLOW_DEFAULTS } from '@/gl/glow'
 import { useT } from '@/i18n'
 import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
 import { audibleTracksInRange } from '@/engine/subtitles'
 import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
+import { ClipFxSection } from './AudioFxPanel'
 import { CtxMenu } from './CtxMenu'
+import { ColourSection } from './ColourSection'
+import { isVisualClip } from '@/engine/colourUi'
 import { Icon, Spinner } from './icons'
+import { fontChoices } from '@/engine/fonts'
+import { audioTwin } from '@/engine/timelineSelect'
+import { openCompound } from './TimelineTabs'
+import { RESOLUTION_PRESETS, FPS_PRESETS, exactFps, fpsLabel } from '@shared/projectFormat'
+import { evalAnim } from '@/engine/anim'
+import { KF_EPS } from './animUtils'
+import { beginMixGesture, setClipAnimAt, toggleKeyAt } from '@/engine/mixer'
+import { faderPos, posDb, dbToGain, gainToDb, dbText, panText } from '@shared/fader'
 
 function Num({
-  label, value, step = 1, min, max, onChange
+  label, value, step = 1, min, max, onChange,
+  onFocus = () => useEditor.getState().pushHistory('hEdit'),
+  onCommit
 }: {
   label: string
   value: number
   step?: number
   min?: number
   max?: number
-  onChange: (v: number) => void
+  onChange?: (v: number) => void
+  onFocus?: () => void
+  /** typed digits stay a draft until Enter or leaving the field (a value that
+      rounds, like W/H to even, would otherwise rewrite «1» as 2 mid-typing);
+      the spinner arrows still apply at once */
+  onCommit?: (v: number) => void
 }) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = () => {
+    if (draft === null) return
+    const v = Number(draft)
+    setDraft(null)
+    if (draft.trim() !== '' && !Number.isNaN(v)) onCommit!(v)
+  }
   return (
     <label className="insp-field">
       <span>{label}</span>
       <input
         type="number"
-        value={Number(value.toFixed(3))}
+        value={draft ?? Number(value.toFixed(3))}
         step={step}
         min={min}
         max={max}
-        onFocus={() => useEditor.getState().pushHistory('hEdit')}
+        onFocus={onFocus}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit() }}
         onChange={(e) => {
+          if (onCommit && (e.nativeEvent as InputEvent).inputType) { setDraft(e.target.value); return }
           const v = Number(e.target.value)
-          if (!Number.isNaN(v)) onChange(v)
+          if (!Number.isNaN(v)) (onCommit ?? onChange!)(v)
         }}
       />
     </label>
@@ -55,25 +83,184 @@ export function Inspector() {
   )
 }
 
+let settingsSession = 0
+
 function ProjectProps() {
   const t = useT()
   const project = useEditor((s) => s.project)
-  const patch = (p: Partial<typeof project>) =>
-    useEditor.setState((s) => ({ project: { ...s.project, ...p } }))
+  // one undo step per focus of a field, taken on its first real change
+  const session = useRef(0)
+  const focus = () => { session.current = ++settingsSession }
+  const patch = (p: ProjectSettingsPatch) =>
+    useEditor.getState().updateProjectSettings(p, session.current)
+  // a list pick is one undo step of its own
+  const pick = (p: ProjectSettingsPatch) => useEditor.getState().updateProjectSettings(p)
+  const res = RESOLUTION_PRESETS.findIndex(([w, h]) => w === project.width && h === project.height)
+  // a hand-typed 29.97 shows as the 29,97 preset and keeps its value until picked
+  const rate = FPS_PRESETS.findIndex(([n, d]) => n / d === exactFps(project.fps))
+  const [resCustom, setResCustom] = useState(false)
+  const [fpsCustom, setFpsCustom] = useState(false)
+  const transparent = project.background === 'transparent'
+  // unticking «Прозрачный» brings back the colour it replaced
+  const lastOpaque = useRef('#000000')
+  if (!transparent) lastOpaque.current = project.background
 
   return (
     <>
       <div className="insp-section">{t('projectSettings')}</div>
       <label className="insp-field">
         <span>{t('label')}</span>
-        <input value={project.name} onChange={(e) => patch({ name: e.target.value })} />
+        <input value={project.name} onFocus={focus} onChange={(e) => patch({ name: e.target.value })} />
       </label>
-      <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
-        onChange={(v) => patch({ width: Math.round(v / 2) * 2 })} />
-      <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
-        onChange={(v) => patch({ height: Math.round(v / 2) * 2 })} />
-      <Num label={t('framerate')} value={project.fps} step={1} min={1} max={120}
-        onChange={(v) => patch({ fps: v })} />
+      <label className="insp-field">
+        <span>{t('resolution')}</span>
+        <select data-act="project-res" value={resCustom || res < 0 ? 'custom' : String(res)} onChange={(e) => {
+          if (e.target.value === 'custom') { setResCustom(true); return }
+          const [width, height] = RESOLUTION_PRESETS[Number(e.target.value)]
+          setResCustom(false)
+          pick({ width, height })
+        }}>
+          {RESOLUTION_PRESETS.map(([w, h], i) => <option key={i} value={i}>{w} × {h}</option>)}
+          <option value="custom">{t('setResCustom')}</option>
+        </select>
+      </label>
+      {(resCustom || res < 0) && (
+        <>
+          <Num label={`${t('resolution')} W`} value={project.width} step={2} min={16}
+            onFocus={focus} onCommit={(v) => patch({ width: Math.max(16, Math.round(v / 2) * 2) })} />
+          <Num label={`${t('resolution')} H`} value={project.height} step={2} min={16}
+            onFocus={focus} onCommit={(v) => patch({ height: Math.max(16, Math.round(v / 2) * 2) })} />
+        </>
+      )}
+      <label className="insp-field">
+        <span>{t('framerate')}</span>
+        <select data-act="project-fps" value={fpsCustom || rate < 0 ? 'custom' : String(rate)} onChange={(e) => {
+          if (e.target.value === 'custom') { setFpsCustom(true); return }
+          const [n, d] = FPS_PRESETS[Number(e.target.value)]
+          setFpsCustom(false)
+          pick({ fps: n / d })
+        }}>
+          {FPS_PRESETS.map(([n, d], i) => <option key={i} value={i}>{fpsLabel(n / d).replace('.', ',')}</option>)}
+          <option value="custom">{t('setResCustom')}</option>
+        </select>
+      </label>
+      {(fpsCustom || rate < 0) && (
+        <Num label={t('framerate')} value={project.fps} step={1} min={1} max={240}
+          onFocus={focus} onCommit={(v) => patch({ fps: Math.min(240, Math.max(1, v)) })} />
+      )}
+      <div className="insp-field">
+        <span>{t('setBg')}</span>
+        <span className="insp-inline">
+          {!transparent && (
+            <input type="color" data-act="project-bg" aria-label={t('setBg')} value={project.background}
+              onFocus={focus} onChange={(e) => patch({ background: e.target.value })} />
+          )}
+          <label className="insp-inline">
+            <input type="checkbox" data-act="project-bg-transparent" checked={transparent}
+              onChange={(e) => pick({ background: e.target.checked ? 'transparent' : lastOpaque.current })} />
+            {t('bgTransparent')}
+          </label>
+        </span>
+      </div>
+    </>
+  )
+}
+
+/** F2: every TextStyle field. Colour pickers and number fields take one undo
+    step per focus; a checkbox or a list choice is a step of its own. */
+function TextStyleRows({ style, set }: { style: TextStyle; set: (p: Partial<TextStyle>) => void }) {
+  const t = useT()
+  const hist = () => useEditor.getState().pushHistory('hEdit')
+  const step = (p: Partial<TextStyle>) => { hist(); set(p) }
+  const [fonts, setFonts] = useState<{ project: string[]; system: string[] } | null>(null)
+  // the system list needs a user gesture: asked on the first press of the list
+  const loadFonts = () => { if (!fonts) void fontChoices(useEditor.getState().projectPath).then(setFonts) }
+  const listed = fonts ? [...fonts.project, ...fonts.system] : []
+  const color = (k: 'color' | 'outlineColor' | 'background' | 'shadowColor', label: string) => (
+    <input type="color" aria-label={label} value={style[k] || '#000000'} onFocus={hist} onChange={(e) => set({ [k]: e.target.value })} />
+  )
+  return (
+    <>
+      <label className="insp-field">
+        <span>{t('font')}</span>
+        <select data-act="text-font" value={style.fontFamily} onPointerDown={loadFonts} onFocus={loadFonts}
+          onChange={(e) => step({ fontFamily: e.target.value })}>
+          {!listed.includes(style.fontFamily) && <option value={style.fontFamily}>{style.fontFamily}</option>}
+          {!!fonts?.project.length && (
+            <optgroup label={t('fontsProject')}>
+              {fonts.project.map((f) => <option key={f} value={f}>{f}</option>)}
+            </optgroup>
+          )}
+          {fonts && (
+            <optgroup label={t('fontsSystem')}>
+              {fonts.system.map((f) => <option key={f} value={f}>{f}</option>)}
+            </optgroup>
+          )}
+        </select>
+      </label>
+      <Num label={t('fontSize')} value={style.fontSize} min={8} max={500}
+        onChange={(v) => set({ fontSize: v })} />
+      <label className="insp-field">
+        <span>{t('bold')}</span>
+        <input type="checkbox" checked={style.bold} onChange={(e) => step({ bold: e.target.checked })} />
+      </label>
+      <label className="insp-field">
+        <span>{t('italic')}</span>
+        <input type="checkbox" data-act="text-italic" checked={style.italic} onChange={(e) => step({ italic: e.target.checked })} />
+      </label>
+      <label className="insp-field">
+        <span>{t('align')}</span>
+        <select data-act="text-align" value={style.align} onChange={(e) => step({ align: e.target.value as TextStyle['align'] })}>
+          <option value="left">{t('alignLeft')}</option>
+          <option value="center">{t('alignCenter')}</option>
+          <option value="right">{t('alignRight')}</option>
+        </select>
+      </label>
+      <label className="insp-field">
+        <span>{t('color')}</span>
+        {color('color', t('color'))}
+      </label>
+      <label className="insp-field">
+        <span>{t('outline')}</span>
+        {color('outlineColor', t('outline'))}
+      </label>
+      <Num label={`${t('outline')} px`} value={style.outlineWidth} min={0} max={40}
+        onChange={(v) => set({ outlineWidth: v })} />
+      <label className="insp-field">
+        <span>{t('background')}</span>
+        <span className="insp-inline">
+          <input type="checkbox" data-act="text-bg" checked={!!style.background} aria-label={t('background')}
+            onChange={(e) => step({ background: e.target.checked ? '#000000' : '' })} />
+          {!!style.background && color('background', t('background'))}
+        </span>
+      </label>
+      {!!style.background && (
+        <Num label={t('bgPad')} value={style.backgroundPad} step={0.05} min={0} max={4}
+          onChange={(v) => set({ backgroundPad: v })} />
+      )}
+      <label className="insp-field">
+        <span>{t('shadow')}</span>
+        <span className="insp-inline">
+          <input type="checkbox" data-act="text-shadow" checked={!!style.shadowColor} aria-label={t('shadow')}
+            onChange={(e) => step(e.target.checked
+              ? { shadowColor: '#000000', ...(style.shadowBlur || style.shadowX || style.shadowY ? {} : { shadowBlur: 8, shadowX: 4, shadowY: 4 }) }
+              : { shadowColor: '' })} />
+          {!!style.shadowColor && color('shadowColor', t('shadow'))}
+        </span>
+      </label>
+      {!!style.shadowColor && (
+        <>
+          <Num label={t('shadowBlur')} value={style.shadowBlur} min={0} max={200} onChange={(v) => set({ shadowBlur: v })} />
+          <Num label={t('shadowX')} value={style.shadowX} min={-500} max={500} onChange={(v) => set({ shadowX: v })} />
+          <Num label={t('shadowY')} value={style.shadowY} min={-500} max={500} onChange={(v) => set({ shadowY: v })} />
+        </>
+      )}
+      <Num label={t('lineHeight')} value={style.lineHeight} step={0.05} min={0.5} max={4}
+        onChange={(v) => set({ lineHeight: v })} />
+      <Num label={t('letterSpacing')} value={style.letterSpacing} step={0.5} min={-50} max={200}
+        onChange={(v) => set({ letterSpacing: v })} />
+      <Num label={t('wrapWidth')} value={style.wrapWidth} step={10} min={0} max={10000}
+        onChange={(v) => set({ wrapWidth: Math.max(0, v) })} />
     </>
   )
 }
@@ -81,15 +268,34 @@ function ProjectProps() {
 function ClipProps({ clip }: { clip: Clip }) {
   const t = useT()
   const update = (patch: Partial<Clip>) => useEditor.getState().updateClip(clip.id, patch)
+  const named = useRef(false)
+  // J14: by the track, as the colour section — an A/V import's audio twin is no picture
+  const visual = useEditor((s) => isVisualClip(s.project, clip))
+  const project = useEditor((s) => s.project)
+  const twin = useMemo(() => audioTwin(project, clip), [project, clip])
+  const hasAudio = clip.kind === 'media' && project.assets.some((a) => a.id === clip.assetId && a.hasAudio)
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
-  const setGain = (v: number) => update({ gain: { ...clip.gain, value: v } as Anim })
   const setStyle = (patch: Partial<TextStyle>) =>
     update({ textStyle: { ...clip.textStyle!, ...patch } })
 
   return (
     <>
-      <div className="insp-section">{clip.label ?? t('clipName')}</div>
+      <div className="insp-section">{t('clipName')}</div>
+      <label className="insp-field">
+        <span>{t('label')}</span>
+        {/* F2 lands here; one undo step per focus, taken on the first keystroke */}
+        <input
+          data-act="clip-name"
+          value={clip.label ?? ''}
+          onFocus={() => { named.current = false }}
+          onChange={(e) => {
+            if (!named.current) { useEditor.getState().pushHistory('hEdit'); named.current = true }
+            update({ label: e.target.value })
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+        />
+      </label>
       {clip.kind === 'text' && clip.textStyle && (
         <>
           <label className="insp-field tall">
@@ -101,47 +307,137 @@ function ClipProps({ clip }: { clip: Clip }) {
               onChange={(e) => update({ text: e.target.value })}
             />
           </label>
-          <Num label={t('fontSize')} value={clip.textStyle.fontSize} min={8} max={500}
-            onChange={(v) => setStyle({ fontSize: v })} />
+          <TextStyleRows style={clip.textStyle} set={setStyle} />
+        </>
+      )}
+      {clip.kind === 'timeline' && (
+        // L6: a nest is played through its contents; its picture is edited inside it
+        <>
+          <div className="insp-section"><Icon name="layers" size={13} /> {t('tlCompoundSec')}</div>
+          <div className="insp-note">{t('tlCompoundNote')}</div>
+          <button data-act="insp-open-compound" onClick={() => openCompound(clip)}>{t('tlOpen')}</button>
+        </>
+      )}
+      {clip.kind !== 'timeline' && <>
+      {visual && (
+        <>
+          {/* K6 (canvas K, RULES 24): a sound has no position */}
+          <div className="insp-section">{t('position')}</div>
+          <Num label="X" value={clip.transform.x.value} onChange={(v) => setAnim('x', v)} />
+          <Num label="Y" value={clip.transform.y.value} onChange={(v) => setAnim('y', v)} />
+          <Num label={t('scale')} value={clip.transform.scale.value} step={0.05} min={0.01} max={20}
+            onChange={(v) => setAnim('scale', v)} />
+          <Num label={t('rotation')} value={clip.transform.rotation.value} step={1}
+            onChange={(v) => setAnim('rotation', v)} />
+          <Num label={t('opacity')} value={clip.transform.opacity.value} step={0.05} min={0} max={1}
+            onChange={(v) => setAnim('opacity', v)} />
+          {/* F4: each choice is its own undo step */}
           <label className="insp-field">
-            <span>{t('color')}</span>
-            <input type="color" value={clip.textStyle.color}
-              onChange={(e) => setStyle({ color: e.target.value })} />
+            <span>{t('fit')}</span>
+            <select data-act="clip-fit" value={clip.fit ?? 'contain'} onChange={(e) => {
+              useEditor.getState().pushHistory('hEdit')
+              update({ fit: e.target.value === 'contain' ? undefined : e.target.value as ClipFit })
+            }}>
+              <option value="contain">{t('fitContain')}</option>
+              <option value="cover">{t('fitCover')}</option>
+              <option value="stretch">{t('fitStretch')}</option>
+            </select>
           </label>
+          {(['flipX', 'flipY'] as const).map((k) => (
+            <label className="insp-field" key={k}>
+              <span>{t(k)}</span>
+              <input type="checkbox" data-act={`clip-${k}`} checked={!!clip[k]} onChange={(e) => {
+                useEditor.getState().pushHistory('hEdit')
+                update({ [k]: e.target.checked || undefined })
+              }} />
+            </label>
+          ))}
+        </>
+      )}
+      {/* J6 grade: a nest's picture is graded inside it (L6) */}
+      {visual && <ColourSection clip={clip} />}
+      </>}
+      <div className="insp-section">{t('inSound')}</div>
+      {twin && clip.muted ? (
+        // an AV import: the picture's own sound is off because it plays from the audio clip
+        <div className="insp-field">
+          <span>{t('audioOnTwin').replace('{track}', twin.track.name)}</span>
+          <button data-act="select-twin" title={t('audioOnTwinHint')}
+            onClick={() => useEditor.getState().select([twin.clip.id])}>
+            <Icon name="link" size={13} /> {twin.clip.label}
+          </button>
+        </div>
+      ) : (
+        <>
+          <SoundRow clip={clip} k="gain" />
+          {!!clip.gain.keyframes?.length && (
+            <div className="cg-hint"><Icon name="diamond" size={12} style={{ color: 'var(--c-sel)' }} /><span>{t('inGainKeyed')}</span></div>
+          )}
+          <SoundRow clip={clip} k="pan" />
           <label className="insp-field">
-            <span>{t('outline')}</span>
-            <input type="color" value={clip.textStyle.outlineColor}
-              onChange={(e) => setStyle({ outlineColor: e.target.value })} />
-          </label>
-          <Num label={`${t('outline')} px`} value={clip.textStyle.outlineWidth} min={0} max={40}
-            onChange={(v) => setStyle({ outlineWidth: v })} />
-          <label className="insp-field">
-            <span>{t('bold')}</span>
-            <input type="checkbox" checked={clip.textStyle.bold}
-              onChange={(e) => setStyle({ bold: e.target.checked })} />
+            <span>{t('muted')}</span>
+            <input type="checkbox" checked={clip.muted}
+              onChange={(e) => { useEditor.getState().pushHistory('hEdit'); update({ muted: e.target.checked }) }} />
           </label>
         </>
       )}
-      <div className="insp-section">{t('position')}</div>
-      <Num label="X" value={clip.transform.x.value} onChange={(v) => setAnim('x', v)} />
-      <Num label="Y" value={clip.transform.y.value} onChange={(v) => setAnim('y', v)} />
-      <Num label={t('scale')} value={clip.transform.scale.value} step={0.05} min={0.01} max={20}
-        onChange={(v) => setAnim('scale', v)} />
-      <Num label={t('rotation')} value={clip.transform.rotation.value} step={1}
-        onChange={(v) => setAnim('rotation', v)} />
-      <Num label={t('opacity')} value={clip.transform.opacity.value} step={0.05} min={0} max={1}
-        onChange={(v) => setAnim('opacity', v)} />
-      <div className="insp-section">{t('volume')}</div>
-      <Num label={t('volume')} value={clip.gain.value} step={0.05} min={0} max={2} onChange={setGain} />
-      <label className="insp-field">
-        <span>{t('muted')}</span>
-        <input type="checkbox" checked={clip.muted}
-          onChange={(e) => update({ muted: e.target.checked })} />
-      </label>
+      {/* K9 (canvas K, RULES 22): the clip's own sound — not the picture of an AV pair, whose sound is its twin's */}
+      {hasAudio && !(twin && clip.muted) && <ClipFxSection clip={clip} />}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
-      <EffectsSection clip={clip} />
+      {visual && <EffectsSection clip={clip} />}
     </>
+  )
+}
+
+/**
+ * K6 (canvas K, RULES 22–23): a clip's volume (the mixer's fader taper on a
+ * range, in dB) or pan. Keyed, the row shows the value under the playhead and
+ * an edit sets a key there (never `.value`, K1 finding 2); outside the clip a
+ * keyed row is disabled. A drag or a run of arrow keys is one undo step.
+ */
+function SoundRow({ clip, k }: { clip: Clip; k: 'gain' | 'pan' }) {
+  const t = useT()
+  const playhead = useEditor((s) => s.playhead)
+  const run = useRef(false)
+  const def = k === 'gain' ? 1 : 0
+  const a: Anim = clip[k] ?? { value: def }
+  const rel = playhead - clip.start
+  const inside = rel >= 0 && rel <= clip.duration
+  const keyed = !!a.keyframes?.length
+  const v = keyed ? evalAnim(a, Math.min(clip.duration, Math.max(0, rel))) : a.value
+  const atKey = keyed && inside && a.keyframes!.some((kf) => Math.abs(kf.time - rel) < KF_EPS)
+  const off = keyed && !inside
+  const label = k === 'gain' ? t('volume') : t('inPan')
+  const write = (x: number) => setClipAnimAt(clip.id, k, x, useEditor.getState().playhead)
+  return (
+    <div className="cg-row" data-row={k} title={off ? t('inKeyedOutside') : t(k === 'gain' ? 'inGainTitle' : 'inPanTitle')}>
+      <span className={keyed || v !== def ? 'cg-set' : ''}
+            onDoubleClick={() => { if (!off) { beginMixGesture(); write(def) } }}>{label}</span>
+      <input
+        type="range" aria-label={label} disabled={off}
+        min={k === 'gain' ? 0 : -1} max={1} step={k === 'gain' ? 0.001 : 0.01}
+        value={k === 'gain' ? faderPos(gainToDb(v)) : v}
+        onPointerDown={() => { run.current = true; beginMixGesture() }}
+        onKeyDown={() => { if (!run.current) { run.current = true; beginMixGesture() } }}
+        onBlur={() => { run.current = false }}
+        onPointerUp={() => { run.current = false }}
+        onChange={(e) => {
+          const x = Number(e.target.value)
+          write(k === 'gain' ? dbToGain(posDb(x)) : x)
+        }}
+      />
+      <span className="fx-val" style={{ width: 'auto', whiteSpace: 'nowrap' }}>{k === 'gain' ? `${dbText(gainToDb(v))} dB` : panText(v)}</span>
+      <button
+        className={`cg-kf${atKey ? ' on' : keyed ? ' cg-animated' : ''}`} data-act={`kf-${k}`}
+        disabled={!inside} aria-pressed={atKey}
+        title={atKey ? t('inKfDel') : keyed ? t('inKfAnim') : t('inKfAdd')}
+        aria-label={atKey ? t('inKfDel') : t('inKfAdd')}
+        onClick={() => toggleKeyAt(clip.id, k, useEditor.getState().playhead)}
+      >
+        <Icon name="diamond" size={12} />
+      </button>
+    </div>
   )
 }
 
@@ -414,6 +710,7 @@ function EffectsSection({ clip }: { clip: Clip }) {
             <input
               value={name}
               placeholder={t('presetName')}
+              aria-label={t('presetName')}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') saveFx()

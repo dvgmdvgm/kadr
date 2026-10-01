@@ -16,8 +16,9 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { createHash } from 'crypto'
 import { FFMPEG, FFPROBE, atempoChain, audioCodecArgs } from './ffmpeg'
+import { said, saidError } from '@shared/said'
 import type {
-  TtsParams, TtsRequest, TtsResult, TtsVoice, PhraseSynthRequest, PhraseSynthResult
+  TtsParams, TtsRequest, TtsResult, TtsVoice, PhraseSynthRequest, PhraseSynthResult, Said
 } from '@shared/types'
 import { normalizeScript, chunkText, sentenceEnds } from '@shared/ttsText'
 import { apiProxy, proxyRules } from '@shared/proxy'
@@ -65,9 +66,9 @@ async function writeKey(key: string): Promise<void> {
 
 let job: { cancelled: boolean; abort: AbortController | null; ff: ReturnType<typeof spawn> | null } | null = null
 
-function proxyNote(explicit?: string): string {
+function proxyNote(explicit?: string): Said {
   const p = apiProxy(explicit, process.env)
-  return p ? ` (через прокси ${p})` : ' (без прокси)'
+  return p ? { key: 'eTtsViaProxy', args: { proxy: p } } : { key: 'eTtsNoProxy' }
 }
 
 /**
@@ -105,7 +106,7 @@ async function callApi(path: string,
     resp = await ses.fetch(API + path, { ...rest, headers })
   } catch (e) {
     // never let the key reach a message: only the transport failure does
-    throw new Error(`ElevenLabs недоступен${proxyNote(proxy)}: ${(e as Error).message}`)
+    throw saidError('eTtsUnreachable', { via: proxyNote(proxy), msg: (e as Error).message })
   }
   if (!resp.ok) {
     const body = await resp.text().catch(() => '')
@@ -115,7 +116,7 @@ async function callApi(path: string,
       detail = typeof j?.detail === 'string' ? j.detail
         : j?.detail?.message ? String(j.detail.message) : detail
     } catch { /* not json */ }
-    throw new Error(`ElevenLabs HTTP ${resp.status}${proxyNote(proxy)}: ${detail}`)
+    throw saidError('eTtsHttp', { status: resp.status, via: proxyNote(proxy), detail })
   }
   // A proxy that cannot reach the API answers with its own HTML page, sometimes
   // with a 2xx. Parsing that as JSON produced «Unexpected token '<'», which says
@@ -127,19 +128,18 @@ async function callApi(path: string,
     : false
   if (bad) {
     const head = (await resp.text().catch(() => '')).replace(/\s+/g, ' ').slice(0, 160)
-    throw new Error(`вместо ответа ElevenLabs пришло «${type || 'без типа'}»${proxyNote(proxy)}. ` +
-      `Похоже, запрос перехватил прокси. Начало ответа: ${head}`)
+    throw saidError('eTtsNotApi', { type: type || { key: 'eTtsNoType' }, via: proxyNote(proxy), head })
   }
   return resp
 }
 
 async function listVoices(proxy?: string): Promise<TtsVoice[]> {
   if (MOCK) {
-    return [{ id: 'mock-voice-1', name: 'Мок-голос 1', category: 'mock' },
-            { id: 'mock-voice-2', name: 'Мок-голос 2', category: 'mock' }]
+    return [{ id: 'mock-voice-1', name: 'Mock voice 1', category: 'mock' },
+            { id: 'mock-voice-2', name: 'Mock voice 2', category: 'mock' }]
   }
   const key = await readKey()
-  if (!key) throw new Error('API-ключ не задан')
+  if (!key) throw saidError('eTtsNoKey')
   const resp = await callApi('/v1/voices', { key, method: 'GET', proxy, expect: 'json' })
   const data = await resp.json() as { voices?: Array<Record<string, unknown>> }
   return (data.voices ?? []).map((v) => ({
@@ -194,7 +194,7 @@ async function synthChunk(key: string, params: TtsParams, text: string,
     // dropped half the sentence
     const j = await resp.json() as Record<string, unknown>
     const audio = Buffer.from(String(j.audio_base64 ?? ''), 'base64')
-    if (!audio.length) throw new Error('ElevenLabs вернул пустой ответ')
+    if (!audio.length) throw saidError('eTtsEmptyReply')
     const a = j.alignment as Record<string, unknown> | undefined
     const alignment = a && Array.isArray(a.characters) ? {
       chars: a.characters as string[],
@@ -204,7 +204,7 @@ async function synthChunk(key: string, params: TtsParams, text: string,
     return { audio, requestId, alignment }
   }
   const audio = Buffer.from(await resp.arrayBuffer())
-  if (!audio.length) throw new Error('ElevenLabs вернул пустой ответ')
+  if (!audio.length) throw saidError('eTtsEmptyReply')
   return { audio, requestId }
 }
 
@@ -271,9 +271,9 @@ async function speechBounds(file: string, duration: number): Promise<[number, nu
  * controlled amount (otherwise every patch would add a pause).
  */
 async function speakPhrase(req: PhraseSynthRequest): Promise<PhraseSynthResult> {
-  if (job) throw new Error('синтез уже идёт')
+  if (job) throw saidError('eTtsBusy')
   const text = req.text.trim()
-  if (!text) throw new Error('текст фразы пуст')
+  if (!text) throw saidError('eTtsPhraseEmpty')
   const tempo = req.tempo > 0 ? req.tempo : 1
   // хотим получить keepLead/keepTail ПОСЛЕ ускорения, значит в исходном
   // времени резать и добивать надо на tempo больше
@@ -294,7 +294,7 @@ async function speakPhrase(req: PhraseSynthRequest): Promise<PhraseSynthResult> 
       await fs.rename(rawFile.replace(/\.(mp3|pcm)$/, '.wav'), join(dir, 'phrase.wav'))
     } else {
       const key = await readKey()
-      if (!key) throw new Error('API-ключ не задан')
+      if (!key) throw saidError('eTtsNoKey')
       let got
       try {
         got = await synthChunk(key, req.params, text, req.previousText || '', req.nextText || '',
@@ -303,28 +303,28 @@ async function speakPhrase(req: PhraseSynthRequest): Promise<PhraseSynthResult> 
       } catch (e) {
         // the timestamped endpoint is not available everywhere; the plain one
         // still gives usable audio, we just lose the truncation guard
-        warnings.push('без выравнивания: ' + String((e as Error).message).slice(0, 120))
+        warnings.push(said('eTtsNoAlign', { msg: String((e as Error).message).slice(0, 120) }))
         got = await synthChunk(key, req.params, text, req.previousText || '', req.nextText || '',
           req.previousRequestIds ?? [], j.abort.signal, { seed: req.seed, proxy: req.proxy })
       }
       requestId = got.requestId
       if (got.alignment) {
-        const said = got.alignment.chars.join('')
+        const heard = got.alignment.chars.join('')
         const norm = (x: string) => x.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase()
-        if (norm(said) !== norm(text)) {
-          warnings.push('синтез прочитал не то, что просили')
+        if (norm(heard) !== norm(text)) {
+          warnings.push(said('eTtsMisread'))
         }
         const t0 = got.alignment.t0, t1 = got.alignment.t1
         let worst = 0
         for (let i = 1; i < t0.length; i++) worst = Math.max(worst, t0[i] - t1[i - 1])
-        if (worst > 0.7) warnings.push(`внутри фразы пауза ${worst.toFixed(2)} с`)
+        if (worst > 0.7) warnings.push(said('eTtsInnerPause', { s: worst.toFixed(2) }))
       }
       await fs.writeFile(rawFile, got.audio)
     }
 
     const decoded = MOCK ? join(dir, 'phrase.wav') : rawFile
     const full = await probeDuration(decoded)
-    if (!full) throw new Error('синтез вернул пустой звук')
+    if (!full) throw saidError('eTtsEmptySound')
     const [sp0, sp1] = await speechBounds(decoded, full)
     const a = Math.max(0, sp0 - wantLead)
     const b = Math.min(full, sp1 + wantTail)
@@ -349,7 +349,7 @@ async function speakPhrase(req: PhraseSynthRequest): Promise<PhraseSynthResult> 
     if (j.cancelled) throw new Error('cancelled')
 
     const duration = await probeDuration(req.outPath)
-    if (!duration) throw new Error('после обрезки не осталось звука')
+    if (!duration) throw saidError('eTtsTrimmedEmpty')
     return { path: req.outPath, duration, requestId, warnings }
   } finally {
     job = null
@@ -438,10 +438,10 @@ async function mockSpeech(script: string, tempo: number, out: string,
 // ---------------------------------------------------------------------------
 
 async function speak(win: BrowserWindow, req: TtsRequest): Promise<TtsResult> {
-  if (job) throw new Error('синтез уже идёт')
+  if (job) throw saidError('eTtsBusy')
   const tempo = req.tempo && req.tempo > 0 ? req.tempo : 1
   const script = normalizeScript(req.text)
-  if (!script.trim()) throw new Error('текст пуст')
+  if (!script.trim()) throw saidError('eTtsTextEmpty')
   const dir = await fs.mkdtemp(join(tmpdir(), 'kadr-tts-'))
 
   // the busy flag goes up only once nothing between here and the try/finally
@@ -469,7 +469,7 @@ async function speak(win: BrowserWindow, req: TtsRequest): Promise<TtsResult> {
       await mockSpeech(script, tempo, req.outPath, (c) => { j.ff = c })
     } else {
       const key = await readKey()
-      if (!key) throw new Error('API-ключ не задан')
+      if (!key) throw saidError('eTtsNoKey')
       const limit = MODEL_CHAR_LIMIT[req.params.modelId] ?? 10000
       const parts = chunkText(script, Math.floor(limit * 0.9))
       for (let i = 0; i < parts.length; i++) {
@@ -494,7 +494,7 @@ async function speak(win: BrowserWindow, req: TtsRequest): Promise<TtsResult> {
     if (j.cancelled) throw new Error('cancelled')
 
     const duration = await probeDuration(req.outPath)
-    if (!duration) throw new Error('получился пустой аудиофайл')
+    if (!duration) throw saidError('eTtsEmptyFile')
     send(1, 'done')
     return { path: req.outPath, duration, scriptPath, scriptHash,
              chunks: Math.max(1, files.length), requestIds, tempo }
@@ -517,7 +517,7 @@ export function registerTtsIpc(getWin: () => BrowserWindow | null) {
     // секрет пользователя. Именно так его один раз и потеряли (мой же тест
     // перебирал все методы со словом key и вызывал их без аргументов).
     if (typeof key !== 'string') {
-      throw new Error('tts:set-key ждёт строку; чтобы удалить ключ, передайте пустую строку')
+      throw new Error('tts:set-key takes a string; pass an empty string to delete the key')
     }
     return writeKey(key.trim())
   })

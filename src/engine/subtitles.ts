@@ -1,35 +1,38 @@
 // Subtitle utilities: SRT parse/serialize and the transcription flow shared
 // by the UI dialog and the kadr MCP tool (window.kadrEditor.transcribe).
 import type {
-  Project, Track, SubCue, TextDoc, TranscribeResult, TranscribeSegment, AudioSegment
+  Project, Track, Clip, SubCue, TextDoc, TranscribeResult, TranscribeSegment, AudioSegment
 } from '@shared/types'
 import { useEditor, uid } from '@/state/store'
 import { dirOf, baseOf } from '@shared/paths'
-import { overlapFades } from './player'
+import { audioFollowsSpeed } from '@shared/audioSpeed'
+import { hasRamp, relAtOffset, sourceOffset } from '@shared/speedRamp'
+import { gainKeys as gainKeysOf } from '@shared/gainKeys'
+import { dspFx, denoiseOf } from '@shared/audioFx'
+import { overlapFades, trackHeard, panAt } from './player'
+import { flattenProject } from './nesting'
 import { evalAnim } from './anim'
+import { logInfo } from './log'
+import { docWords, glueWords } from './words'
+import { tr } from '../i18n'
+import {
+  srtTime, cuesToSrt, cuesInRange, chaptersInRange, chapterMarks, type ExportExtras
+} from '@shared/exportExtras'
+
+/** L3: timeline seconds per constant-speed audio chunk of a ramped clip */
+const RAMP_AUDIO_CHUNK = 0.1
 
 // ------------------------------------------------------------------ SRT
 
 const pad = (n: number, w: number) => String(n).padStart(w, '0')
 
-export function srtTime(t: number): string {
-  const ms = Math.max(0, Math.round(t * 1000))
-  const h = Math.floor(ms / 3600000)
-  const m = Math.floor((ms % 3600000) / 60000)
-  const s = Math.floor((ms % 60000) / 1000)
-  return `${pad(h, 2)}:${pad(m, 2)}:${pad(s, 2)},${pad(ms % 1000, 3)}`
-}
+// the writers live in shared/exportExtras.ts — the export's sidecar uses them too
+export { srtTime, cuesToSrt }
 
 export function parseSrtTime(s: string): number {
   const m = s.trim().match(/(\d+):(\d+):(\d+)[,.](\d+)/)
   if (!m) return 0
   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000
-}
-
-export function cuesToSrt(cues: SubCue[]): string {
-  return cues
-    .map((c, i) => `${i + 1}\n${srtTime(c.start)} --> ${srtTime(c.end)}\n${c.text.trim()}\n`)
-    .join('\n') + (cues.length ? '' : '')
 }
 
 export function parseSrt(content: string): SubCue[] {
@@ -108,19 +111,9 @@ export function segmentsToRichCues(
     }
   }
   for (const seg of segments) {
-    const raw = seg.words?.filter((w) => w.word.trim() !== '') ?? []
     // whisper splits compounds into continuation tokens without a leading
     // space ("мини" + "-программами") — glue them back into one word
-    const words: { start: number; end: number; word: string }[] = []
-    for (const w of raw) {
-      const prev = words[words.length - 1]
-      if (prev && !w.word.startsWith(' ')) {
-        prev.word += w.word
-        prev.end = w.end
-      } else {
-        words.push({ start: w.start, end: w.end, word: w.word })
-      }
-    }
+    const words = glueWords(seg)
     if (!words.length) {
       cues.push({
         start: Math.max(0, seg.start + offset),
@@ -186,45 +179,100 @@ export function collectRangeAudio(
   filter?: RangeAudioFilter
 ): AudioSegment[] {
   const segs: AudioSegment[] = []
+  // L6: a compound clip is heard through its contents; their ids are the
+  // compound's (and its track's) followed by '/', so a filter naming the
+  // compound or its track takes them along
+  project = flattenProject(project)
+  const named = (ids: string[], id: string) => ids.some((x) => id === x || id.startsWith(x + '/'))
   for (const track of project.tracks) {
-    if (track.muted) continue
-    if (filter?.trackIds && !filter.trackIds.includes(track.id)) continue
+    // an analysis aimed at tracks or clips hears them whatever is soloed
+    if (filter?.trackIds || filter?.clipIds ? track.muted : !trackHeard(project, track)) continue
+    if (filter?.trackIds && !named(filter.trackIds, track.id)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted) continue
-      if (filter?.clipIds && !filter.clipIds.includes(clip.id)) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
+      if (filter?.clipIds && !named(filter.clipIds, clip.id)) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (!asset?.hasAudio) continue
-      const speed = clip.speed || 1
+      const ramped = hasRamp(clip)
+      const base = clip.speed || 1
+      if (!ramped && !audioFollowsSpeed(base)) continue // silent, as in the preview
       const span = Math.max(0.05, asset.duration - clip.inPoint)
       const from = Math.max(clip.start, start)
       const to = Math.min(clip.start + clip.duration, end)
       if (to - from < 0.001) continue
-      const gain = evalAnim(clip.gain, 0) * track.gain
       const { fadeIn, fadeOut } = overlapFades(track, clip)
+      // K9: what the preview runs on this clip's element and on its track's bus
+      const fx = dspFx(clip.audioFx)
+      const denoise = track.kind === 'audio' ? denoiseOf(clip.audioFx) : null
+      const busFx = track.kind === 'audio' ? dspFx(track.audioFx) : []
       let local = from - clip.start
       const localEnd = to - clip.start
       while (local < localEnd - 0.001) {
-        const srcOff = (local * speed) % span
-        const untilWrap = (span - srcOff) / speed
-        const segDur = Math.min(untilWrap, localEnd - local)
-        const fiLocal = local < fadeIn ? Math.min(fadeIn - local, segDur) : 0
+        let srcOff: number
+        let segDur: number
+        let speed = base
+        if (!ramped) {
+          srcOff = (local * speed) % span
+          const untilWrap = (span - srcOff) / speed
+          segDur = Math.min(untilWrap, localEnd - local)
+        } else {
+          // L3: a ramp is cut into short constant-speed chunks whose ends sit
+          // exactly on the curve (atempo per chunk); inside one the sound runs
+          // linearly — a few ms off the picture at the steepest preset
+          const off = sourceOffset(clip, local)
+          srcOff = off % span
+          const untilWrap = relAtOffset(clip, off - srcOff + span) - local
+          segDur = Math.min(untilWrap, localEnd - local, RAMP_AUDIO_CHUNK)
+          speed = (sourceOffset(clip, local + segDur) - off) / segDur
+          if (!audioFollowsSpeed(speed)) { local += segDur; continue } // silent, as in the preview
+        }
+        // the WHOLE fade window goes with the segment, and where it stands in it
+        // (K2: a range or a source loop entering a fade part-way used to restart it)
+        const fi = local < fadeIn - 0.0005
         const tail = clip.duration - (local + segDur)
-        const foLocal = tail < fadeOut ? Math.min(fadeOut - tail, segDur) : 0
+        const fo = tail < fadeOut - 0.0005
+        const gainKeys = gainKeysOf(clip.gain, local, local + segDur, (t) => evalAnim(clip.gain, t))
+        const pan = segmentPan(clip, track, local, local + segDur)
         segs.push({
           path: asset.path,
           inPoint: clip.inPoint + srcOff,
           duration: segDur * speed,
           start: clip.start + local - start,
-          gain,
+          gain: (gainKeys ? 1 : evalAnim(clip.gain, local)) * track.gain,
+          ...(gainKeys ? { gainKeys } : {}),
+          ...pan,
+          ...(asset.channels ? { channels: asset.channels } : {}),
           speed,
-          fadeIn: fiLocal,
-          fadeOut: foLocal
+          fadeIn: fi ? fadeIn : 0,
+          fadeOut: fo ? fadeOut : 0,
+          ...(fi && local > 0.0005 ? { fadeInFrom: local } : {}),
+          ...(fo && tail > 0.0005 ? { fadeOutPast: tail } : {}),
+          ...(fi && clip.fadeInCurve ? { fadeInCurve: clip.fadeInCurve } : {}),
+          ...(fo && clip.fadeOutCurve ? { fadeOutCurve: clip.fadeOutCurve } : {}),
+          ...(fx.length ? { fx } : {}),
+          ...(denoise !== null ? { denoise } : {}),
+          ...(busFx.length ? { bus: { id: track.id, fx: busFx } } : {})
         })
         local += segDur
       }
     }
   }
   return segs
+}
+
+/**
+ * K4: the pan of clip-local [from, to] — the clip's keys (clip-local) and the
+ * track's (project time) sampled with the preview's own panAt, merged into one
+ * curve; a pan that never leaves centre carries nothing.
+ */
+function segmentPan(clip: Clip, track: Track, from: number, to: number): Pick<AudioSegment, 'pan' | 'panKeys'> {
+  const at = (t: number) => evalAnim(clip.pan, t) + evalAnim(track.pan, clip.start + t) // unclamped: the filter clamps
+  const trackLocal = track.pan && { ...track.pan, keyframes: track.pan.keyframes?.map((k) => ({ ...k, time: k.time - clip.start })) }
+  const lists = [clip.pan && gainKeysOf(clip.pan, from, to, at, -Infinity), trackLocal && gainKeysOf(trackLocal, from, to, at, -Infinity)]
+    .filter((l): l is NonNullable<typeof l> => !!l)
+  if (lists.length) return { panKeys: lists.flat().sort((a, b) => a.t - b.t) }
+  const p = panAt(clip, track, clip.start + from)
+  return p ? { pan: p } : {}
 }
 
 /** Tracks that contribute at least one audible segment to [start, end). */
@@ -318,6 +366,7 @@ export async function transcribeFlow(opts: TranscribeFlowOpts): Promise<Transcri
   const result: TranscribeResult = await window.kadr.transcribe({
     audioSegments, duration, model, language
   })
+  if (result.python) logInfo(tr('lgSpeech'), `${result.python} · ${result.device ?? 'cpu'} · ${model}`)
 
   const cues = segmentsToCues(result.segments, cueOffset, opts.maxWords ?? 3)
   const known = (st().project.texts ?? []).map((t) => t.path)
@@ -335,7 +384,8 @@ export async function transcribeFlow(opts: TranscribeFlowOpts): Promise<Transcri
     offset: docOffset,
     language: result.language
   })
-  const doc = mkDoc(srtPath, 'srt')
+  // the words ride on the SRT doc only: the TXT twin would double the bytes
+  const doc: TextDoc = { ...mkDoc(srtPath, 'srt'), words: docWords(result.segments, cueOffset) }
   const txtDoc = mkDoc(txtPath, 'txt')
   st().addTexts([doc, txtDoc])
   return { doc, txtDoc, srtPath, txtPath, segments: result.segments, language: result.language }
@@ -349,8 +399,7 @@ export function docTimeToProject(project: Project, doc: TextDoc, t: number): num
     for (const track of project.tracks) {
       for (const clip of track.clips) {
         if (clip.assetId !== doc.assetId) continue
-        const speed = clip.speed || 1
-        const rel = (t - clip.inPoint) / speed
+        const rel = relAtOffset(clip, t - clip.inPoint)
         if (rel >= -0.5 && rel <= clip.duration + 0.5) {
           return clip.start + Math.max(0, Math.min(clip.duration, rel))
         }
@@ -360,4 +409,37 @@ export function docTimeToProject(project: Project, doc: TextDoc, t: number): num
     return null
   }
   return t
+}
+
+/** What the export dialog's «Дополнительно» asked for (G7). */
+export interface ExtrasChoice {
+  title?: string
+  /** the transcript the subtitles come from */
+  subsDoc?: TextDoc
+  sidecar?: 'srt' | 'vtt'
+  embedSubs?: boolean
+  chapters?: 'markers' | 'sections'
+  /** the first chapter's title when no marker precedes the range */
+  lead?: string
+}
+
+/** The extras in EXPORT time: the doc's cues mapped to the timeline, then into [start, end). */
+export async function rangeExtras(project: Project, start: number, end: number, x?: ExtrasChoice): Promise<ExportExtras | undefined> {
+  if (!x) return undefined
+  let cues: SubCue[] | undefined
+  const doc = x.subsDoc
+  if (doc && (x.sidecar || x.embedSubs)) {
+    const text = await window.kadr.readTextFile(doc.path)
+    if (text == null) throw new Error(`${tr('exSubsMissing')}: ${doc.path}`)
+    const onTimeline = parseSrt(text).flatMap((c) => {
+      const s = docTimeToProject(project, doc, c.start)
+      const e = docTimeToProject(project, doc, c.end)
+      return s == null || e == null ? [] : [{ start: s, end: e, text: c.text }]
+    })
+    cues = cuesInRange(onTimeline, start, end)
+  }
+  const chapters = x.chapters
+    ? chaptersInRange(chapterMarks(project.markers ?? [], x.chapters), start, end, x.lead ?? '')
+    : undefined
+  return { title: x.title, chapters, cues, sidecar: cues && x.sidecar, embedSubs: !!cues && x.embedSubs }
 }

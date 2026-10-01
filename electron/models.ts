@@ -29,6 +29,7 @@ import { promises as fs, existsSync } from 'fs'
 import { join, basename, extname, dirname } from 'path'
 import { unzipSync, strFromU8 } from 'fflate'
 import type { ModelInfo } from '@shared/types'
+import { saidError } from '@shared/said'
 
 export interface MeshPart {
   name: string
@@ -121,7 +122,7 @@ function parseSTL(buf: Buffer, name: string): MeshPart[] {
   // binary when the size matches the triangle count (an ASCII file may begin with "solid" too)
   if (buf.length >= 84) {
     const n = buf.readUInt32LE(80)
-    if (84 + n * 50 === buf.length) {
+    if (n > 0 && 84 + n * 50 === buf.length) {
       const pos = new Float32Array(n * 9)
       for (let i = 0; i < n; i++) {
         const o = 84 + i * 50 + 12
@@ -134,7 +135,7 @@ function parseSTL(buf: Buffer, name: string): MeshPart[] {
   const text = buf.toString('utf8')
   const vs: number[] = []
   for (const m of text.matchAll(/vertex\s+([-+\d.eE]+)\s+([-+\d.eE]+)\s+([-+\d.eE]+)/g)) vs.push(Number(m[1]), Number(m[2]), Number(m[3]))
-  if (!vs.length || vs.length % 9) throw new Error('STL: не удалось прочитать треугольники')
+  if (!vs.length || vs.length % 9) throw saidError('eMdStl')
   return [{ name, ...weld(Float32Array.from(vs), null) }]
 }
 
@@ -155,7 +156,7 @@ function parse3MF(buf: Buffer, fallbackName: string): MeshPart[] {
     const hit = files.get(key)
     if (hit) return hit
     const data = zip[key]
-    if (!data) throw new Error(`3MF: в пакете нет ${key}`)
+    if (!data) throw saidError('eMd3mfMissing', { part: key })
     const xml = strFromU8(data)
     const modelTag = xml.match(/<model\b[^>]*>/)?.[0] ?? ''
     const scale = UNIT[attrs(modelTag).unit ?? 'millimeter'] ?? 1
@@ -208,10 +209,10 @@ function parse3MF(buf: Buffer, fallbackName: string): MeshPart[] {
   const main = load('3D/3dmodel.model')
   const parts: MeshPart[] = []
   const expand = (file: string, id: string, T: M4, label: string, depth: number) => {
-    if (depth > 16) throw new Error('3MF: слишком глубокая вложенность компонентов')
+    if (depth > 16) throw saidError('eMd3mfDeep')
     const f = load(file)
     const o = f.objects.get(id)
-    if (!o) throw new Error(`3MF: нет объекта ${id} в ${file}`)
+    if (!o) throw saidError('eMd3mfNoObject', { id, file })
     if (o.mesh && o.mesh.t.length) {
       const src = o.mesh.v
       const pos = new Float32Array(src.length)
@@ -227,7 +228,7 @@ function parse3MF(buf: Buffer, fallbackName: string): MeshPart[] {
   }
   const items = main.build.length ? main.build : [...main.objects.keys()].map((id) => ({ objectid: id, transform: IDENT, partnumber: undefined }))
   items.forEach((it, i) => expand('3D/3dmodel.model', it.objectid, it.transform, it.partnumber || `${fallbackName}-${i + 1}`, 0))
-  if (!parts.length) throw new Error('3MF: в сборке нет сеток')
+  if (!parts.length) throw saidError('eMd3mfNoMesh')
   return parts
 }
 
@@ -256,7 +257,7 @@ function parseOBJ(text: string, fallbackName: string): MeshPart[] {
   const pos = Float32Array.from(v)
   const out: MeshPart[] = []
   for (const [name, idx] of groups) if (idx.length) out.push({ name, ...compact(pos, Uint32Array.from(idx)) })
-  if (!out.length) throw new Error('OBJ: нет граней')
+  if (!out.length) throw saidError('eMdObjNoFaces')
   return out
 }
 
@@ -364,7 +365,7 @@ async function parseGLTF(buf: Buffer, path: string, fallbackName: string): Promi
   const scene = json.scenes?.[json.scene ?? 0]
   const roots: number[] = scene?.nodes ?? json.nodes?.map((_: unknown, i: number) => i) ?? []
   for (const r of roots) visit(r, I)
-  if (!parts.length) throw new Error('glTF: нет треугольных сеток')
+  if (!parts.length) throw saidError('eMdGltfNoMesh')
   return parts
 }
 
@@ -372,14 +373,14 @@ async function parseSTEP(buf: Buffer, fallbackName: string): Promise<MeshPart[]>
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const occt = await (require('occt-import-js') as () => Promise<any>)()
   const r = occt.ReadStepFile(new Uint8Array(buf), null)
-  if (!r.success) throw new Error('STEP: файл не прочитан')
+  if (!r.success) throw saidError('eMdStepUnread')
   const parts: MeshPart[] = []
   r.meshes.forEach((m: any, i: number) => {
     const pos = Float32Array.from(m.attributes.position.array as number[])
     const idx = Uint32Array.from(m.index.array as number[])
     parts.push({ name: m.name || `${fallbackName}-${i + 1}`, ...weld(pos, idx) })
   })
-  if (!parts.length) throw new Error('STEP: нет тел')
+  if (!parts.length) throw saidError('eMdStepNoBodies')
   return parts
 }
 
@@ -584,7 +585,7 @@ export async function readModel(path: string, opts: { upAxis?: 'y' | 'z' } = {})
     case '.step': case '.stp': parts = await parseSTEP(buf, base); up = 'z'; break
     case '.obj': parts = parseOBJ(buf.toString('utf8'), base); up = 'y'; break
     case '.glb': case '.gltf': parts = await parseGLTF(buf, path, base); up = 'y'; break
-    default: throw new Error(`формат ${ext} не поддерживается (${MODEL_EXTS.join(', ')})`)
+    default: throw saidError('eMdFormat', { ext, known: MODEL_EXTS.join(', ') })
   }
   const upAxis = opts.upAxis ?? up
   if (upAxis === 'z') for (const p of parts) zUpToYUp(p.positions)
@@ -597,7 +598,7 @@ export async function readModel(path: string, opts: { upAxis?: 'y' | 'z' } = {})
  * kept (default 200 000).
  */
 export async function importModel(path: string, projectDir: string, opts: { name?: string; budget?: number; upAxis?: 'y' | 'z' } = {}): Promise<ModelInfo> {
-  if (!projectDir) throw new Error('3D-модели хранятся в папке проекта (kadr-lib/models) — сначала сохраните проект')
+  if (!projectDir) throw saidError('eMdSaveFirst')
   const { parts: raw } = await readModel(path, { upAxis: opts.upAxis })
   const trianglesIn = raw.reduce((s, p) => s + p.indices.length / 3, 0)
   const parts = await decimate(raw, Math.max(1000, opts.budget ?? 200_000))

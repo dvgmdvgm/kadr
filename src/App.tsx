@@ -17,17 +17,28 @@ import { TtsSettingsDialog, SpeakDialog, refreshTtsKey } from './components/TtsD
 import { DefectsDialog } from './components/DefectsDialog'
 import { DebugPanel } from './components/DebugPanel'
 import { StoragePanel } from './components/StoragePanel'
+import { SettingsDialog, useSettingsUi } from './components/SettingsDialog'
+import { CommandPalette } from './components/CommandPalette'
+import { RelinkDialog } from './components/RelinkDialog'
+import { RecentMenuButton } from './components/RecentProjects'
+import { TemplateMenuButton, TemplatePicker, useTemplatePick } from './components/Templates'
+import { CollectDialog } from './components/CollectDialog'
+import { ImportSummary } from './components/ImportSummary'
+import { checkOfflineOnOpen } from './engine/offline'
 import { Icon } from './components/icons'
-import { modalsOpen } from './components/Modal'
+import { Modal } from './components/Modal'
+import { appCommands, loadKeymap, onEditorKey } from './engine/actions'
+import { needsConfirm } from './engine/discardGuard'
 import { rememberProject } from './engine/storage'
-import { usePopout, previewHost, setPreviewSlot, dockPreviewWindow } from './engine/popout'
+import { usePopout, useMixerPopout, previewHost } from './engine/popout'
+import { ViewerSlot } from './components/SourceViewer'
 import { useEditor, newProject } from './state/store'
-import { dropPayload, dropUsable, importDrop, importFiles } from './engine/mediaImport'
+import { dropPayload, dropUsable, importDrop } from './engine/mediaImport'
 import { syncProjectFragments } from './engine/fragments'
-import { useT, type TKey } from './i18n'
+import { useT, tr, trf, type TKey } from './i18n'
 import { create } from 'zustand'
 import { baseOf } from '@shared/paths'
-import type { Project } from '@shared/types'
+import type { BackupOffer, Project } from '@shared/types'
 import { logError, useLog } from '@/engine/log'
 
 // Save feedback: which project snapshot is on disk (the dirty dot) and a
@@ -49,7 +60,7 @@ export function markProjectSaved(p: Project) {
   useSaveUi.setState({ savedProject: p })
 }
 
-async function writeAndConfirm(path: string) {
+async function writeAndConfirm(path: string): Promise<boolean> {
   const s = useEditor.getState()
   try {
     await window.kadr.writeProject(path, s.project)
@@ -60,19 +71,120 @@ async function writeAndConfirm(path: string) {
     // fragments follow the project: loose workspace folders move next to
     // the .kadr file (first save, save-as to a new place)
     void syncProjectFragments(s.project, path)
+    return true
   } catch (err) {
     flashSave('saveError', String(err), true)
+    logError(tr('lgSave'), trf('lmSaveFail', { path }), err)
+    return false
   }
 }
 
-async function saveProject() {
+/** true once the project is on disk; false when the dialog was cancelled or the write failed */
+async function saveProject(): Promise<boolean> {
   const s = useEditor.getState()
   let path = s.projectPath
   if (!path) {
     path = await window.kadr.saveProjectDialog(s.project.name)
-    if (!path) return
+    if (!path) return false
   }
-  await writeAndConfirm(path)
+  return writeAndConfirm(path)
+}
+
+// The question New, Open and closing the window ask when there is unsaved
+// work: Save / Don't save / Cancel. `answer` is set while it is on screen.
+const useDiscardUi = create<{ answer: ((go: boolean) => void) | null }>(() => ({ answer: null }))
+let pendingDiscard: Promise<boolean> | null = null
+
+/** true → go ahead (saved, or «Не сохранять»); false → keep the project as it is */
+export function confirmDiscard(): Promise<boolean> {
+  if (!needsConfirm(useEditor.getState().project, useSaveUi.getState().savedProject)) return Promise.resolve(true)
+  // a second request while the question is up (two clicks on ×) waits for the same answer
+  return (pendingDiscard ??= new Promise<boolean>((resolve) => {
+    useDiscardUi.setState({
+      answer: (go) => {
+        pendingDiscard = null
+        useDiscardUi.setState({ answer: null })
+        resolve(go)
+      }
+    })
+  }))
+}
+
+function DiscardPrompt() {
+  const t = useT()
+  const answer = useDiscardUi((s) => s.answer)
+  if (!answer) return null
+  return (
+    <Modal
+      title={t('discardTitle')}
+      onClose={() => answer(false)}
+      actions={
+        <>
+          <button onClick={() => answer(false)} data-act="discard-cancel">{t('cancel')}</button>
+          <button onClick={() => answer(true)} data-act="discard-drop">{t('dontSave')}</button>
+          <button className="primary" onClick={async () => answer(await saveProject())} data-act="discard-save">{t('save')}</button>
+        </>
+      }
+    >
+      <p>{t('discardBody')}</p>
+    </Modal>
+  )
+}
+
+// After an unclean exit main offers the newest backup of the session that died
+// (electron/backups.ts). Restore opens it as a copy — no path, so it is unsaved
+// and the next Ctrl+S asks where; the backup itself is never written over.
+// Asked once per page: main hands the offer out only once, and StrictMode runs
+// the effect twice in dev — a second ask would answer null over the first.
+let offerAsk: Promise<BackupOffer | null> | null = null
+function RestorePrompt() {
+  const t = useT()
+  const [offer, setOffer] = useState<BackupOffer | null>(null)
+  useEffect(() => { void (offerAsk ??= window.kadr.backupOffer()).then(setOffer, () => {}) }, [])
+  if (!offer) return null
+  const restore = async () => {
+    setOffer(null)
+    if (!(await confirmDiscard())) return
+    try {
+      useEditor.getState().setProject(await window.kadr.readProject(offer.file), null)
+      checkOfflineOnOpen()
+    } catch (err) {
+      logError(tr('lgRestore'), trf('lmOpenFail', { path: offer.file }), err)
+    }
+  }
+  return (
+    <Modal
+      title={t('restoreTitle')}
+      onClose={() => setOffer(null)}
+      actions={
+        <>
+          <button onClick={() => setOffer(null)} data-act="restore-dismiss">{t('restoreDismiss')}</button>
+          <button onClick={() => void window.kadr.revealBackup(offer.file)} data-act="restore-folder">{t('restoreFolder')}</button>
+          <button className="primary" onClick={() => void restore()} data-act="restore-open">{t('restoreOpen')}</button>
+        </>
+      }
+    >
+      <p>{t('restoreBody')}</p>
+      <p>
+        <b>{offer.name}</b> · {new Date(offer.time).toLocaleString()}
+        <br />
+        {offer.projectPath ?? t('restoreUnsaved')}
+      </p>
+    </Modal>
+  )
+}
+
+/** «Новый проект»: with templates on disk the picker asks which (H3); without, the empty default as before */
+async function newProjectGuarded() {
+  const list = await window.kadr.listTemplates().catch(() => [])
+  if (list.length) useTemplatePick.setState({ list })
+  else await startProject(newProject())
+}
+
+async function startProject(p: Project) {
+  if (!(await confirmDiscard())) return
+  useEditor.getState().setProject(p)
+  markProjectSaved(useEditor.getState().project)
 }
 
 /** Always ask for a (new) location; the project lives there from now on. */
@@ -89,16 +201,29 @@ async function openProject() {
   await openProjectAt(path)
 }
 
-/** Open a .kadr file exactly as «Открыть проект» does (also kadrEditor.openProject). */
-export async function openProjectAt(path: string) {
+/**
+ * Open a .kadr file exactly as «Открыть проект» does (also kadrEditor.openProject).
+ * Unsaved work is asked about first; `force` skips the question (tests, the gate).
+ * Resolves false when the user chose to keep the open project.
+ */
+export async function openProjectAt(path: string, { force = false }: { force?: boolean } = {}): Promise<boolean> {
+  if (!force && !(await confirmDiscard())) return false
   const p = await window.kadr.readProject(path)
   useEditor.getState().setProject(p, path)
   markProjectSaved(useEditor.getState().project)
+  checkOfflineOnOpen()
   void rememberProject(path)
   // restore workspace symlinks for fragments living next to the .kadr file
   // (project moved from another machine / cleaned workspace)
   void syncProjectFragments(useEditor.getState().project, path)
+  return true
 }
+
+const openRecent = (path: string) => {
+  openProjectAt(path).catch((err) => logError(tr('lgProject'), trf('lmOpenFail', { path }), err))
+}
+
+Object.assign(appCommands, { save: saveProject, saveAs: saveProjectAs, newProject: newProjectGuarded, openProject, openRecent })
 
 const TL_MIN = 160
 
@@ -114,6 +239,12 @@ export default function App() {
   useEffect(() => {
     if (useSaveUi.getState().savedProject === null) markProjectSaved(useEditor.getState().project)
   }, [])
+  // closing the window (×, Alt+F4, the app quitting) asks like New and Open do
+  useEffect(() => window.kadr.onCloseRequest(() => {
+    void confirmDiscard().then((go) => go && window.kadr.closeWindow())
+  }), [])
+  // a .kadr from the command line, or from a second launch (single instance)
+  useEffect(() => window.kadr.onOpenProject(openRecent), [])
   const dirty = savedProject !== null && project !== savedProject
   const undoLabel = useEditor((s) => s.past[s.past.length - 1]?.label)
   const redoLabel = useEditor((s) => s.future[0]?.label)
@@ -121,9 +252,14 @@ export default function App() {
     Math.min(Number(localStorage.getItem('kadr.tlh')) || 330, window.innerHeight - 220)
   )
   const [claudeOpen, setClaudeOpen] = useState(false)
-  const [debugOpen, setDebugOpen] = useState(false)
-  const [storageOpen, setStorageOpen] = useState(false)
+  // the log and the storage panel float in the same corner: one at a time
+  const [panel, setPanel] = useState<'log' | 'storage' | null>(null)
+  const debugOpen = panel === 'log'
+  const storageOpen = panel === 'storage'
+  const togglePanel = (p: 'log' | 'storage') => setPanel((v) => (v === p ? null : p))
+  const settingsOpen = useSettingsUi((s) => s.open)
   const popWin = usePopout((s) => s.win)
+  const mixWin = useMixerPopout((s) => s.win)
   // the log button stays quiet until something actually fails
   const logUnseen = useLog((s) => s.unseen)
   const [sideW, setSideW] = useState(() =>
@@ -150,77 +286,19 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => { void loadKeymap() }, [])
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      // a dialog owns the keyboard while it is open: Space on one of its
-      // buttons used to press the button AND start playback behind it
-      if (modalsOpen()) return
-      const s = useEditor.getState()
-      // e.code is keyboard-layout independent (works for ru/en)
-      if (e.code === 'Space') {
-        e.preventDefault()
-        s.setPlaying(!s.playing)
-      } else if (e.code === 'KeyS') {
-        if (e.ctrlKey) {
-          e.preventDefault()
-          if (e.shiftKey) saveProjectAs()
-          else saveProject()
-        } else s.splitAtPlayhead()
-      } else if (e.code === 'KeyD' || e.code === 'Delete' || e.code === 'Backspace') {
-        if (s.selection.length) s.deleteSelection()
-        else if (s.range) s.deleteRange()
-      } else if (e.code === 'KeyZ' && e.ctrlKey) {
-        e.preventDefault()
-        if (e.shiftKey) s.redo()
-        else s.undo()
-      } else if (e.code === 'KeyY' && e.ctrlKey) {
-        e.preventDefault()
-        s.redo()
-      } else if (e.code === 'KeyC' && e.ctrlKey) {
-        if (s.selection.length) s.copySelection()
-        else if (s.range) s.copyRange()
-      } else if (e.code === 'KeyV' && e.ctrlKey) {
-        if (s.clipboard.length) {
-          s.pasteAtPlayhead()
-        } else {
-          // nothing copied inside the editor — try the OS clipboard:
-          // copied files or a copied image (e.g. from Telegram/browser)
-          void window.kadr.clipboardMedia().then((paths) => {
-            if (paths.length) {
-              return importFiles(paths, { trackId: null, at: useEditor.getState().playhead })
-            }
-          }).catch((err) => logError('буфер обмена', 'вставить не удалось', err))
-        }
-      } else if (e.code === 'KeyU') {
-        s.toggleLinkSelection()
-      } else if (e.code === 'KeyM' && !e.ctrlKey && !e.altKey) {
-        s.addMarker(s.playhead)
-      } else if (e.code === 'ArrowLeft') {
-        // step the playhead by frames; preventDefault keeps the timeline from scrolling
-        e.preventDefault()
-        s.setPlayhead(s.playhead - (e.shiftKey ? 1 : 1 / s.project.fps))
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault()
-        s.setPlayhead(s.playhead + (e.shiftKey ? 1 : 1 / s.project.fps))
-      } else if (e.code === 'Home') {
-        e.preventDefault()
-        s.setPlayhead(0)
-      } else if (e.code === 'Escape') {
-        if (s.animClipId) s.setAnimClip(null)
-        else s.setRange(null)
-      }
-    }
-    window.addEventListener('keydown', onKey)
+    window.addEventListener('keydown', onEditorKey)
     // the detached preview is a window of its own: with the focus there,
     // Space and the arrows must still drive the same transport
-    popWin?.addEventListener('keydown', onKey)
+    popWin?.addEventListener('keydown', onEditorKey)
+    mixWin?.addEventListener('keydown', onEditorKey) // K12: the mixer's own window too
     return () => {
-      window.removeEventListener('keydown', onKey)
-      popWin?.removeEventListener('keydown', onKey)
+      window.removeEventListener('keydown', onEditorKey)
+      popWin?.removeEventListener('keydown', onEditorKey)
+      mixWin?.removeEventListener('keydown', onEditorKey)
     }
-  }, [popWin])
+  }, [popWin, mixWin])
 
   const startSideResize = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -301,22 +379,24 @@ export default function App() {
           </button>
         </span>
         <span className="bar-group">
+          {/* in a narrow window the three keep their icons and lose their words (the title says them) */}
           <button
             data-act="new-project"
-            onClick={() => {
-              useEditor.getState().setProject(newProject())
-              markProjectSaved(useEditor.getState().project)
-            }}
+            title={t('newProject')}
+            aria-label={t('newProject')}
+            onClick={newProjectGuarded}
           >
-            <Icon name="filePlus" /> {t('newProject')}
+            <Icon name="filePlus" /> <span className="bar-label">{t('newProject')}</span>
           </button>
-          <button data-act="open-project" onClick={openProject}>
-            <Icon name="folderOpen" /> {t('open')}
+          <button data-act="open-project" onClick={openProject} title={t('open')} aria-label={t('open')}>
+            <Icon name="folderOpen" /> <span className="bar-label">{t('open')}</span>
           </button>
-          <button data-act="save" onClick={saveProject} title="Ctrl+S">
-            <Icon name="save" /> {t('save')}
+          <RecentMenuButton />
+          <button data-act="save" onClick={saveProject} title={`${t('save')} · Ctrl+S`} aria-label={t('save')}>
+            <Icon name="save" /> <span className="bar-label">{t('save')}</span>
           </button>
           <button data-act="save-as" onClick={saveProjectAs} title="Ctrl+Shift+S">{t('saveAs')}</button>
+          <TemplateMenuButton onSaved={(n, err) => n ? flashSave('tplSaved', n) : flashSave('tplSaveFail', String(err), true)} />
         </span>
         <button className="primary" data-act="export"
                 onClick={() => useEditor.getState().setExportOpen(true)}>
@@ -327,16 +407,25 @@ export default function App() {
           data-act="storage"
           title={t('stBtn')}
           aria-label={t('stBtn')}
-          onClick={() => setStorageOpen((v) => !v)}
+          onClick={() => togglePanel('storage')}
         >
           <Icon name="layers" />
+        </button>
+        <button
+          className={`icon-only log-btn${settingsOpen ? ' active' : ''}`}
+          data-act="settings"
+          title={t('setBtn')}
+          aria-label={t('setBtn')}
+          onClick={() => useSettingsUi.getState().setOpen(!settingsOpen)}
+        >
+          <Icon name="settings" />
         </button>
         <button
           className={`icon-only log-btn${logUnseen ? ' has-news' : ''}${debugOpen ? ' active' : ''}`}
           data-act="debug"
           title={t('logBtn')}
           aria-label={t('logBtn')}
-          onClick={() => setDebugOpen((v) => !v)}
+          onClick={() => togglePanel('log')}
         >
           <Icon name="terminal" />
           {logUnseen > 0 && <span className="log-badge">{logUnseen > 99 ? '99+' : logUnseen}</span>}
@@ -355,16 +444,8 @@ export default function App() {
         <SidePanel width={sideW} />
         <div className="h-resizer" onPointerDown={startSideResize} title={t('resizeCols')} />
         <div className="center-col">
-          <div className={`preview-slot${popWin ? ' empty' : ''}`} ref={setPreviewSlot} />
-          {popWin && (
-            <div className="preview-detached">
-              <Icon name="popout" size={30} />
-              <span>{t('popoutHere')}</span>
-              <button onClick={() => dockPreviewWindow()} data-act="popin">
-                <Icon name="popin" /> {t('popoutBack')}
-              </button>
-            </div>
-          )}
+          {/* L5: the preview's slot, with the source viewer's tabs once a source is open */}
+          <ViewerSlot />
           <TransportBar />
         </div>
         <Inspector />
@@ -383,9 +464,20 @@ export default function App() {
       <SpeakDialog />
       <DefectsDialog />
       {/* keyed by project: another project brings up ITS chats */}
+      <DiscardPrompt />
+      <RestorePrompt />
+      <TemplatePicker onPick={(p) => void startProject(p)} />
+      <CollectDialog />
+      <ImportSummary />
+      <RelinkDialog />
       {claudeOpen && <ClaudePanel key={project.id} onClose={() => setClaudeOpen(false)} />}
-      {debugOpen && <DebugPanel onClose={() => setDebugOpen(false)} />}
-      {storageOpen && <StoragePanel onClose={() => setStorageOpen(false)} />}
+      {debugOpen && <DebugPanel onClose={() => setPanel(null)} />}
+      {storageOpen && <StoragePanel onClose={() => setPanel(null)} />}
+      <SettingsDialog
+        onOpenStorage={() => setPanel('storage')}
+        onRelaunch={() => void confirmDiscard().then((go) => go && window.kadr.relaunch())}
+      />
+      <CommandPalette />
       {/* The preview renders into one host div for the whole session; popping
           it out moves that div into another window's document, and the portal
           container never changes identity — so the GL canvas, its context and

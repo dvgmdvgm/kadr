@@ -160,7 +160,7 @@ const cap = await evalJs(`(async () => {
   await new Promise(r => setTimeout(r, 2500)) // hot reload of the entry
   return { fragId: frag.id, clipId: frag.clipId,
     overlay: !!document.querySelector('.frag-frame'),
-    gizmo: !!document.querySelector('.frag-gizmo') }
+    gizmo: !!document.querySelector('.clip-gizmo polygon') }
 })()`)
 check('caption fragment overlays live + gizmo on selection', cap.overlay && cap.gizmo,
   JSON.stringify(cap))
@@ -170,7 +170,7 @@ const drag = await evalJs(`(async () => {
   const st = () => window.kadrEditor.useEditor.getState()
   const clip = () => st().project.tracks.flatMap(t => t.clips).find(c => c.id === ${JSON.stringify(cap.clipId)})
   const before = { x: clip().transform.x.value, y: clip().transform.y.value }
-  const g = document.querySelector('.frag-gizmo')
+  const g = document.querySelector('.clip-gizmo polygon')
   const r = g.getBoundingClientRect()
   const cx = r.left + r.width / 2, cy = r.top + r.height / 2
   const opts = { bubbles: true, pointerId: 1, isPrimary: true }

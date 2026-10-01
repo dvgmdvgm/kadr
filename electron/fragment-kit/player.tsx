@@ -127,6 +127,9 @@ function App() {
         } else {
           if (!startedAt) startedAt = performance.now()
           const drift = cur - m.frame // >0 = we are ahead of the editor
+          // the editor's J/L rate (2×, 4×…); the Player takes at most 4×, past
+          // that the drift check below keeps it on the clock by seeking
+          const base = Math.min(4, Math.max(1, typeof m.rate === 'number' ? m.rate : 1))
           // The player takes ~70 ms to get going and was then 3 frames behind
           // for a good while (a few percent of rate recovers that slowly) —
           // measured right after every cut. While playback has only just
@@ -136,11 +139,11 @@ function App() {
           // frames instead of playing (measured as a new stall at +0.5 s).
           const catchUp = !caughtUp && performance.now() - startedAt < 500 && drift < -1
           if (catchUp) caughtUp = true
-          if (Math.abs(drift) > 6 || catchUp) {
+          if (Math.abs(drift) > 6 * base || catchUp) {
             p.seekTo(m.frame)
-            setRate(1)
+            setRate(base)
           } else {
-            setRate(Math.max(0.92, Math.min(1.08, 1 - drift * 0.03)))
+            setRate(base * Math.max(0.92, Math.min(1.08, 1 - (drift / base) * 0.03)))
           }
           if (!p.isPlaying()) p.play()
         }

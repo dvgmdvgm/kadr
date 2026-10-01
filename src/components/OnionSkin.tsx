@@ -57,11 +57,11 @@ export function OnionSkin({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
       const f = onionFrame(st.project, useOnion.getState().clipId, st.playhead)
       if (!f || el.readyState < 1) return
       const inside = st.playhead >= f.clip.start && st.playhead < f.clip.start + f.clip.duration
-      if (st.playing && inside) {
+      if (st.playing && st.playRate > 0 && inside) {
         // Chromium throws outside [0.0625, 16]; beyond it the resync below seeks
-        el.playbackRate = Math.max(0.0625, Math.min(16, f.speed))
+        el.playbackRate = Math.max(0.0625, Math.min(16, f.speed * st.playRate))
         if (el.paused) void el.play().catch(() => { /* a seek interrupted it: the next sync retries */ })
-        if (!el.seeking && Math.abs(el.currentTime - f.time) > 0.2) el.currentTime = f.time + 0.08 * f.speed
+        if (!el.seeking && Math.abs(el.currentTime - f.time) > 0.2) el.currentTime = f.time + 0.08 * f.speed * st.playRate
       } else {
         if (!el.paused) el.pause()
         if (!el.seeking && Math.abs(el.currentTime - f.time) > 1 / 240) el.currentTime = f.time
@@ -71,7 +71,7 @@ export function OnionSkin({ canvas }: { canvas: React.RefObject<HTMLCanvasElemen
     el.addEventListener('loadedmetadata', sync)
     el.addEventListener('seeked', sync) // the playhead moved on while it was seeking
     const unsub = useEditor.subscribe((st, prev) => {
-      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.project !== prev.project) sync()
+      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.playRate !== prev.playRate || st.project !== prev.project) sync()
     })
     const unsubOnion = useOnion.subscribe((s, p) => { if (s.clipId !== p.clipId) sync() })
     return () => {

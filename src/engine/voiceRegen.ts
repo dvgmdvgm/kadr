@@ -12,6 +12,7 @@ import { useTtsSettings, ttsParams } from './tts'
 import { useVoiceUi, checkVoice, setVerdict } from './voiceCheck'
 import { flushVerdicts } from './voiceLearn'
 import type { AudioDefect, MediaAsset, VoiceRun } from '@shared/types'
+import { tr, trf, spoken } from '../i18n'
 
 /** phrases closer than this are regenerated as one: a seam between two patches
     with almost no original audio between them would be audible */
@@ -113,8 +114,8 @@ async function freeFixPath(base: string): Promise<string> {
 
 export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResult> {
   const st = () => useEditor.getState()
-  if (activity.exporting) throw new Error('идёт экспорт — дождитесь его конца')
-  if (useVoiceUi.getState().phase !== 'idle') throw new Error('модуль озвучки занят')
+  if (activity.exporting) throw new Error(tr('eVrExporting'))
+  if (useVoiceUi.getState().phase !== 'idle') throw new Error(tr('eVrBusy'))
 
   const runs = st().project.voiceRuns ?? []
   const run: VoiceRun | undefined = opts.runId ? runs.find((r) => r.id === opts.runId)
@@ -124,20 +125,20 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
     : runs.find((r) => (st().project.defects ?? []).some(
         (d) => d.runId === r.id && d.state === 'confirmed')) ??
       (runs.length === 1 ? runs[0] : undefined)
-  if (!run) throw new Error('не найдена озвучка для перегенерации')
+  if (!run) throw new Error(tr('eVrNoRun'))
 
   const all = (st().project.defects ?? []).filter((d) => d.runId === run.id)
   const picked = opts.ids?.length ? all.filter((d) => opts.ids!.includes(d.id))
     : all.filter((d) => d.state === 'confirmed')
-  if (!picked.length) throw new Error('нет подтверждённых дефектов: отметьте их ЛКМ по маркеру')
+  if (!picked.length) throw new Error(tr('eVrNoConfirmed'))
 
   const lost = picked.find((d) => d.phrase.charFrom < 0 || d.phrase.charTo <= d.phrase.charFrom)
-  if (lost) throw new Error('у одного из дефектов потеряны границы фразы — пересчитайте разбор')
+  if (lost) throw new Error(tr('eVrLostPhrase'))
 
   const asset = st().project.assets.find((a) => a.id === run.assetId)
-  if (!asset) throw new Error('аудио озвучки пропало из проекта')
+  if (!asset) throw new Error(tr('eVcAudioGone'))
   const script = await window.kadr.readTextFile(run.scriptPath)
-  if (script === null) throw new Error(`не найден сценарий озвучки: ${run.scriptPath}`)
+  if (script === null) throw new Error(trf('eVcNoScript', { path: run.scriptPath }))
 
   // склейка сдвинет все времена правее реза, а обучение сопоставляет вердикт
   // с находкой по времени — выгружаем корпус, пока координаты ещё совпадают
@@ -156,7 +157,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
     for (let i = 0; i < units.length; i++) {
       const u = units[i]
       const text = script.slice(u.charFrom, u.charTo).trim()
-      if (!text) throw new Error('пустой текст фразы — сценарий не совпадает с разбором')
+      if (!text) throw new Error(tr('eVrEmptyPhrase'))
       useVoiceUi.setState({ progress: i / units.length, stage: 'synth' })
 
       // сколько тишины было в ИСХОДНИКЕ по обе стороны реза — столько же должно
@@ -183,7 +184,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
         seed: Math.floor(Math.random() * 2 ** 31),
         proxy: useTtsSettings.getState().settings.proxy
       })
-      warnings.push(...patch.warnings.map((w) => `фраза ${i + 1}: ${w}`))
+      warnings.push(...patch.warnings.map((w) => trf('eVrPhraseWarn', { i: i + 1, w: spoken(w) })))
       u.patchPath = patch.path
       u.patchDur = patch.duration
 
@@ -193,8 +194,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
       let gain = before - after
       if (!Number.isFinite(gain)) gain = 0
       if (Math.abs(gain) > GAIN_CLAMP_DB) {
-        warnings.push(`фраза ${i + 1}: уровень отличается на ${gain.toFixed(1)} дБ — ` +
-          `поправлено только на ${GAIN_CLAMP_DB}`)
+        warnings.push(trf('eVrLevel', { i: i + 1, db: gain.toFixed(1), max: GAIN_CLAMP_DB }))
         gain = Math.sign(gain) * GAIN_CLAMP_DB
       }
       // и потолок: подъём уровня не должен загнать заплатку в клиппинг
@@ -218,8 +218,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
       // предупреждаем о РАЗРЫВЕ волны, а не о перепаде уровня: на стыке
       // предложений уровень скачет на 20 дБ и в нетронутой записи
       if (!s.clean) {
-        warnings.push(`шов на ${s.at.toFixed(2)} с слышен: разрыв ${s.step} ` +
-          `при ${s.stepAround} в секунде вокруг`)
+        warnings.push(trf('eVrSeam', { t: s.at.toFixed(2), step: s.step, around: s.stepAround }))
       }
     }
 
@@ -236,9 +235,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
           units: units.map((u) => ({ cut0: u.cut0, cut1: u.cut1, patchDur: u.patchDur }))
         })
       } catch (e) {
-        warnings.push('разбор не удалось перенести на новый файл ' +
-          `(${String((e as Error)?.message ?? e)}) — перед новыми отметками ` +
-          'запустите поиск дефектов заново')
+        warnings.push(trf('eVrReindex', { err: String((e as Error)?.message ?? e) }))
       }
     }
 
@@ -247,7 +244,7 @@ export async function regenerateDefects(opts: RegenOpts = {}): Promise<RegenResu
     // the synthesis took a while — the clip may be gone by now (reverseClip's
     // discipline: do the slow work, re-check, only then touch the project)
     if (!(st().project.voiceRuns ?? []).some((r) => r.id === run.id)) {
-      throw new Error('озвучка удалена из проекта, пока шла перегенерация')
+      throw new Error(tr('eVrDeletedDuring'))
     }
     const applied = st().applyVoiceSplice({
       runId: run.id,

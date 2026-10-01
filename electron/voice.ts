@@ -9,7 +9,7 @@
 // holds several GB of VRAM and the next run would OOM behind it.
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
 import { join, basename, extname, dirname, resolve } from 'path'
 import { createHash } from 'crypto'
 import type {
@@ -19,20 +19,32 @@ import type {
   VoiceVersionsRequest, VoiceVersionsResult
 } from '@shared/types'
 import { spliceForward, toAnalysisTime, type SpliceUnitMap } from '@shared/voiceMap'
+import { saidError } from '@shared/said'
 import { FFMPEG, FFPROBE, audioCodecArgs } from './ffmpeg'
+import { speechPython } from './transcribe'
+import { setting } from './appSettings'
+import { pyLabel, detectorPython, type PyCmd } from './speechPython'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 
 /** python 3.11+ with torch and faster-whisper. Distributions still ship 3.9
     as `python3`, which cannot even import the package (tomllib), and the wheels
     are usually in a venv — hence the setting (voice-over settings → «Python»)
-    and KADR_TTSQC_PYTHON. This default is only the last resort. */
+    and KADR_TTSQC_PYTHON. Without either, the interpreter speech-to-text
+    resolved if it is >= 3.11 and imports torch, else this default. */
 const DEFAULT_PYTHON = 'python3.11'
 const CACHE_DAYS = 14
 
 const driver = () => join(app.getAppPath(), 'scripts', 'ttsqc_run.py')
-const pythonFor = (want?: string) =>
-  (want && want.trim()) || process.env.KADR_TTSQC_PYTHON || DEFAULT_PYTHON
+let detector: Promise<PyCmd> | null = null
+export async function pythonFor(want?: string): Promise<PyCmd> {
+  // «Инструменты» → Python for the voice-over check (env KADR_TTSQC_PYTHON wins)
+  const set = (want && want.trim()) || setting<string>('tools.detectorPython')
+  if (set) return { command: set, args: [] }
+  // probed once per launch (importing torch takes seconds)
+  detector ??= detectorPython(process.env, speechPython, DEFAULT_PYTHON)
+  return detector
+}
 
 /** One run directory per (audio, script) pair, so two analyses never land on
     top of each other — the trap ttsqc's own _protect() exists for. */
@@ -56,10 +68,14 @@ interface RunOpts {
 /** Spawn the driver and parse its NDJSON. Resolves with the last `done`-ish
     line's payload; rejects with stderr on a non-zero exit. */
 function runDriver(opts: RunOpts): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const py = spawn(pythonFor(opts.python), [driver(), ...opts.args], {
+  return pythonFor(opts.python).then((python) => new Promise((resolve, reject) => {
+    // python's own «can't open file» would reach the UI in English whatever its language
+    if (!existsSync(driver())) return reject(saidError('eDrvMissing', { path: driver() }))
+    const py = spawn(python.command, [...python.args, driver(), ...opts.args], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, KADR_TTSQC_HOME: join(app.getAppPath(), 'python') }
+      // utf-8 pipes: on Windows python writes the ANSI code page (cp1251 here), and the
+      // script's words in every defect arrived as U+FFFD
+      env: { ...process.env, KADR_TTSQC_HOME: join(app.getAppPath(), 'python'), PYTHONIOENCODING: 'utf-8' }
     })
     if (opts.cancellable && current) current.py = py
     let buf = ''
@@ -83,7 +99,7 @@ function runDriver(opts: RunOpts): Promise<void> {
       else if (code === 0) resolve()
       else reject(new Error(err.slice(-800).trim() || `ttsqc_run.py exited ${code}`))
     })
-  })
+  }))
 }
 
 async function selfTest(python?: string): Promise<VoiceSelfTest> {
@@ -95,13 +111,13 @@ async function selfTest(python?: string): Promise<VoiceSelfTest> {
     // exit code 2 is the documented "environment is not ready" answer, and the
     // report it printed on stdout is exactly what the user needs to see
     if (!box.report) {
-      return { ok: false, python: pythonFor(python), problems: [String((e as Error).message)] }
+      return { ok: false, python: pyLabel(await pythonFor(python)), problems: [String((e as Error).message)] }
     }
   }
   const r = (box.report ?? {}) as Record<string, unknown>
   return {
     ok: !!r.ok,
-    python: String(r.executable ?? pythonFor(python)),
+    python: String(r.executable ?? pyLabel(await pythonFor(python))),
     problems: (r.problems as string[]) ?? [],
     cuda: r.cuda as VoiceSelfTest['cuda'],
     modules: r.modules as Record<string, string | null>,
@@ -114,7 +130,7 @@ async function selfTest(python?: string): Promise<VoiceSelfTest> {
 }
 
 async function check(win: BrowserWindow, req: VoiceCheckRequest): Promise<VoiceCheckResult> {
-  if (current) throw new Error('разбор уже идёт')
+  if (current) throw saidError('eVoBusy')
   const job = { py: null as ChildProcess | null, cancelled: false }
   current = job
   const runDir = runDirFor(req.audioPath, req.scriptPath)
@@ -145,7 +161,7 @@ async function check(win: BrowserWindow, req: VoiceCheckRequest): Promise<VoiceC
       }
     })
     const done = box.done
-    if (!done) throw new Error('разбор не сообщил о завершении')
+    if (!done) throw saidError('eVoNoDone')
     send(1, 'done')
     return {
       runDir,
@@ -177,7 +193,7 @@ async function phraseAt(req: VoicePhraseRequest):
     onLine: (m) => { if (m.type === 'phrase') box.out = m }
   })
   const o = box.out
-  if (!o) throw new Error('не удалось посчитать фразу')
+  if (!o) throw saidError('eVoPhraseFail')
   return { words: o.words as [number, number], phrase: o.phrase as DefectPhrase }
 }
 
@@ -220,8 +236,7 @@ function plan(units: SpliceRequest['units'], duration: number):
       pieces.push({ kind: 'orig', a, b })
       fades.push(u.fade)
     } else if (i > 0) {
-      throw new Error(`фразы ${i} и ${i + 1} слишком близко (${(b - a).toFixed(3)} с) — ` +
-        'их нужно было объединить в одну')
+      throw saidError('eVoTooClose', { a: i, b: i + 1, gap: (b - a).toFixed(3) })
     }
     // cut0 at the very start of the file leaves no head to fade from: the
     // patch simply begins the output
@@ -241,9 +256,9 @@ function plan(units: SpliceRequest['units'], duration: number):
 }
 
 async function splice(req: SpliceRequest): Promise<SpliceResult> {
-  if (!req.units.length) throw new Error('нечего вставлять')
+  if (!req.units.length) throw saidError('eVoNothing')
   const duration = await probeDuration(req.src)
-  if (!duration) throw new Error('исходный файл озвучки не читается')
+  if (!duration) throw saidError('eVoSrcUnreadable')
   const { pieces, fades } = plan(req.units, duration)
 
   // Раскладку каналов берём У ИСХОДНИКА, а не навязываем стерео. Моно, поднятое
@@ -307,12 +322,12 @@ async function splice(req: SpliceRequest): Promise<SpliceResult> {
     child.stderr.on('data', (c) => { err += c })
     child.on('error', reject)
     child.on('close', (code) => code === 0 ? resolve()
-      : reject(new Error(`склейка не удалась: ${err.slice(-400)}`)))
+      : reject(saidError('eVoSpliceFail', { err: err.slice(-400) })))
   })
 
   // measured, never computed: resampling, atempo and mp3 padding move it by ms
   const outDur = await probeDuration(req.out)
-  if (!outDur) throw new Error('склейка дала пустой файл')
+  if (!outDur) throw saidError('eVoSpliceEmpty')
 
   // where each joint ended up, and how big a level step it left
   const seams: SpliceResult['seams'] = []
@@ -507,7 +522,7 @@ async function chainFor(runDir: string, duration?: number):
  */
 async function reindex(req: VoiceReindexRequest): Promise<{ duration: number; splices: number }> {
   const idx = (await readIndex(req.runDir, CUR_INDEX)) ?? (await readIndex(req.runDir, BASE_INDEX))
-  if (!idx) throw new Error('в прогоне нет разбора — переразберите озвучку')
+  if (!idx) throw saidError('eVoNoIndex')
   const units: SpliceUnitMap[] = req.units.map((u) => ({
     cut0: u.cut0, cut1: u.cut1, patchDur: u.patchDur
   }))
@@ -552,7 +567,7 @@ async function writeVerdicts(req: VoiceVerdictsRequest):
   const dir = req.runDir
   const payload = JSON.parse(await fs.readFile(join(dir, 'defects.json'), 'utf8'))
   const audio = String(payload.audio || '')
-  if (!audio) throw new Error('в разборе нет копии звука — переразберите озвучку')
+  if (!audio) throw saidError('eVoNoAudioCopy')
 
   // Строка корпуса указывает на КОПИЮ РАЗОБРАННОГО звука, а времена в проекте
   // живут в координатах текущего файла. После каждой склейки они расходятся,
@@ -668,7 +683,7 @@ async function learn(dry: boolean, python?: string): Promise<VoiceLearnResult> {
   if (dry) args.push('--dry')
   await runDriver({ args, python, onLine: (m) => { if (m.type === 'learn') box.r = m } })
   const r = box.r
-  if (!r) throw new Error('обучение не вернуло отчёт')
+  if (!r) throw saidError('eVoLearnNoReport')
   return {
     ok: !!r.ok,
     examples: Number(r.examples) || 0,

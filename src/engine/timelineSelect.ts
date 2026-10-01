@@ -2,7 +2,7 @@
 // the model — the pixels are converted to a track list and a time span by the
 // caller, so this file has nothing to do with the DOM and can be checked
 // without the app: node scripts/check-select.mjs
-import type { Project } from '@shared/types'
+import type { Clip, Project, Track } from '@shared/types'
 
 /** Clips of the given tracks that overlap (t0, t1) — what a rubber band drawn
     over those lanes catches. Touching an edge does not count, so a band that
@@ -52,4 +52,22 @@ export function clipsBetween(p: Project, aId: string, bId: string): string[] {
     Math.min(a.start, b.start),
     Math.max(a.start + a.duration, b.start + b.duration)
   )
+}
+
+/** The ids that still name a clip in `p` — what an undo or a redo keeps selected. */
+export function existingClips(p: Project, ids: string[]): string[] {
+  const live = new Set(p.tracks.flatMap((t) => t.clips.map((c) => c.id)))
+  return ids.filter((id) => live.has(id))
+}
+
+/** A video clip's sound on its linked audio clip (an AV import), with that clip's track. */
+export function audioTwin(p: Project, clip: Clip): { clip: Clip; track: Track } | null {
+  if (!clip.linkId) return null
+  if (!p.tracks.some((t) => t.kind === 'video' && t.clips.includes(clip))) return null
+  for (const track of p.tracks) {
+    if (track.kind !== 'audio') continue
+    const twin = track.clips.find((c) => c.linkId === clip.linkId)
+    if (twin) return { clip: twin, track }
+  }
+  return null
 }

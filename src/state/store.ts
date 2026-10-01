@@ -3,31 +3,62 @@ import type {
   Project, Track, Clip, Anim, MediaAsset, TrackKind, TextStyle, TextDoc, FragmentSpec,
   VoiceRun, AudioDefect, DefectState, TimelineMarker, MusicSectionLabel
 } from '@shared/types'
-import { isMusicMarker } from '@shared/types'
+import { isMusicMarker, LABEL_COLORS } from '@shared/types'
+import { saveUserStore } from '../engine/userStore'
+import { logWarn } from '../engine/log'
+import { tr, trf } from '../i18n'
+import { toFrame, nextEdit, clipSourceTime, MAX_ZOOM, MIN_ZOOM } from '../engine/timelineMath'
+import { evalAnim } from '../engine/anim'
+import { existingClips } from '../engine/timelineSelect'
+import {
+  SETTINGS, effective, fromLegacy, healValue,
+  type SettingDef, type SettingKey, type SettingSource, type SettingValue, type SettingsDiff, type SettingsSnapshot
+} from '@shared/settings'
 
 export const uid = () => Math.random().toString(36).slice(2, 10)
 
-export const defaultTextStyle = (): TextStyle => ({
-  fontFamily: 'sans-serif',
-  fontSize: 72,
-  color: '#ffffff',
-  bold: true,
-  italic: false,
-  align: 'center',
-  outlineColor: '#000000',
-  outlineWidth: 4,
-  background: ''
-})
+/** The end of a clip that starts at `start` (already on a frame), quantised
+    from the RAW end and at least one frame after the start. Edits quantise
+    starts and ends, never the speed or the in-point (card E1). */
+const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) => number) =>
+  Math.max(toFrame(end, fps, snap), toFrame(start + 1 / fps, fps))
+
+
+import { defaultTextStyle } from '@/engine/text'
+import { exactFps } from '@shared/projectFormat'
+import { healBins, moveInto, dissolveBin } from '@shared/bins'
+import { nextMarkerTime } from '@shared/markers'
+import { resolveThreePoint } from '@shared/threePoint'
+import { activeTimelineId, allTracks, healTimelines, isCompound, nestsInto, timelineDuration, timelineTracks, timelinesOf } from '@shared/timelines'
+import { sourceOffset, relAtOffset, scaleRampValues, rampAnim, rampMean, type RampPreset } from '@shared/speedRamp'
+import { layoutSpeeds, type SpeedItem } from '../engine/speedLayout'
+import { mapPaths, projectPaths } from '@shared/projectPaths'
+import { said } from '@shared/said'
+import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
+import { sanitizeWheels, sanitizeCurves } from '@shared/curves'
+import { blendOf } from '@shared/blend'
+import { hexRgb } from '@shared/key'
+import type { FadeCurve } from '@shared/fadeCurves'
+import { cleanFx } from '@shared/audioFx'
+export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
   Clip,
-  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut'
+  'speed' | 'gain' | 'muted' | 'transform' | 'mask' | 'effects' | 'fadeIn' | 'fadeOut' | 'fadeInCurve' | 'fadeOutCurve' | 'transitionIn'
 > => ({
+  // «Переход по умолчанию»: stamped into the clip (duration 0 = the overlap blend), so the
+  // project renders the same everywhere; crossfade is what a clip without one gets anyway
+  ...(setting('editing.transition') !== 'crossfade'
+    ? { transitionIn: { type: String(setting('editing.transition')), duration: 0 } } : {}),
   speed: 1,
   gain: { value: 1 },
   muted: false,
   fadeIn: 0,
   fadeOut: 0,
+  // «Кривая затухания»: stamped like the transition, so an overlap made with this clip
+  // crossfades at equal power while clips of older projects keep their linear fades (K2)
+  fadeInCurve: setting<FadeCurve>('editing.fadeCurve'),
+  fadeOutCurve: setting<FadeCurve>('editing.fadeCurve'),
   transform: {
     x: { value: 0 },
     y: { value: 0 },
@@ -44,22 +75,48 @@ export const newClipDefaults = (): Pick<
   effects: []
 })
 
+/** a new project from the «Новые проекты» settings (the open project keeps its own) */
+/** «Затухание звука на краях клипа»: a new clip on an audio track fades in and out */
+const audioFade = () => {
+  const f = setting<number>('editing.fade')
+  return { fadeIn: f, fadeOut: f }
+}
+
 export function newProject(): Project {
   return {
     version: 1,
     id: uid(),
     name: 'Untitled',
-    width: 1920,
-    height: 1080,
-    fps: 30,
-    background: '#000000',
-    tracks: [
-      { id: uid(), kind: 'video', name: 'V2', muted: false, locked: false, gain: 1, clips: [] },
-      { id: uid(), kind: 'video', name: 'V1', muted: false, locked: false, gain: 1, clips: [] },
-      { id: uid(), kind: 'audio', name: 'A1', muted: false, locked: false, gain: 1, clips: [] }
-    ],
+    width: setting<number>('newProject.width'),
+    height: setting<number>('newProject.height'),
+    // D's settings list 29.97 as a decimal; the project stores 30000/1001 (H2)
+    fps: exactFps(setting<number>('newProject.fps')),
+    background: setting<string>('newProject.background'),
+    tracks: defaultTracks(),
     assets: []
   }
+}
+
+/** L6: the timelines list as it is saved once there are several — every one named */
+function namedTimelines(p: Project): import('@shared/types').Timeline[] {
+  return timelinesOf(p).map((t, i) => (t.name ? t : { ...t, name: trf('tlNth', { n: i + 1 }) }))
+}
+
+/** L6: a clip that plays timeline `timelineId` from its start; no fades, curves or transition — the expansion has none */
+function compoundClip(id: string, timelineId: string, start: number, duration: number, label: string): Clip {
+  const { speed, gain, muted, transform, effects } = newClipDefaults()
+  return { id, kind: 'timeline', timelineId, start, duration, inPoint: 0, label, speed, gain, muted, transform, effects }
+}
+
+/** the «Новые проекты» track layout: V2, V1 over A1 — tracks[0] is the top video track */
+function defaultTracks(): Track[] {
+  const nv = setting<number>('newProject.videoTracks')
+  const na = setting<number>('newProject.audioTracks')
+  const track = (kind: TrackKind, name: string): Track => ({ id: uid(), kind, name, muted: false, locked: false, gain: 1, clips: [] })
+  return [
+    ...Array.from({ length: nv }, (_, i) => track('video', `V${nv - i}`)),
+    ...Array.from({ length: na }, (_, i) => track('audio', `A${i + 1}`))
+  ]
 }
 
 export function projectDuration(p: Project): number {
@@ -94,19 +151,30 @@ export function sanitizeProject(p: Project): Project {
     if (!Number.isFinite(o.value)) o.value = o.keyframes?.[0]?.value ?? fallback
     return o
   }
+  // a hex, or 'transparent' (H2's «Прозрачный», honoured by the compositor and the alpha export)
   if (typeof p.background !== 'string') p.background = '#000000'
+  // K4: the master fader is optional (absent = 1); junk is dropped, never clamped into a level
+  if (p.masterGain !== undefined && !(Number.isFinite(p.masterGain) && p.masterGain >= 0)) delete p.masterGain
   if (!Number.isFinite(p.width) || p.width <= 0) p.width = 1920
   if (!Number.isFinite(p.height) || p.height <= 0) p.height = 1080
   if (!Number.isFinite(p.fps) || p.fps <= 0) p.fps = 30
   p.assets ??= []
+  healBins(p)
   p.claudeChats = (p.claudeChats ?? []).filter((id) => typeof id === 'string' && id.length > 0)
   p.markers = (p.markers ?? []).filter(
     (m) => m && typeof m.id === 'string' && Number.isFinite(m.time)
   )
+  // L1: a note is a non-empty string, a colour a label index
+  const noteColour = (m: { note?: unknown; color?: unknown }) => {
+    if (m.note !== undefined && (typeof m.note !== 'string' || !m.note)) delete m.note
+    if (m.color !== undefined && !(Number.isInteger(m.color) && (m.color as number) >= 1 && (m.color as number) <= LABEL_COLORS)) delete m.color
+  }
   for (const m of p.markers) {
+    noteColour(m)
     // the analysis' markers are the ones that legitimately have no label
-    if (m.kind !== undefined && !isMusicMarker(m)) delete m.kind
-    if (typeof m.label !== 'string' || (!m.label && !isMusicMarker(m))) m.label = isMusicMarker(m) ? '' : '•'
+    const found = isMusicMarker(m) || m.kind === 'scene'
+    if (m.kind !== undefined && !found) delete m.kind
+    if (typeof m.label !== 'string' || (!m.label && !found)) m.label = found ? '' : '•'
     if (m.time < 0) m.time = 0
     if (m.kind === 'section' || m.kind === 'pause') {
       if (!Number.isFinite(m.end) || m.end! < m.time) m.end = m.time
@@ -158,28 +226,97 @@ export function sanitizeProject(p: Project): Project {
         wordFrom: -1, wordTo: -1, charFrom: -1, charTo: -1, text: '',
         cut: ['fallback', 'fallback']
       }
-      d.note = 'границы фразы потеряны — пересчитайте разбор'
+      d.note = said('eStPhraseLost')
     } else {
       if (!Array.isArray(ph.cut) || ph.cut.length !== 2) ph.cut = ['fallback', 'fallback']
       if (ph.t0 > d.src[0]) ph.t0 = d.src[0]
       if (ph.t1 < d.src[1]) ph.t1 = d.src[1]
     }
   }
-  for (const track of p.tracks) {
+  // E9: a colour is a label index, solo/disabled are booleans; junk is dropped
+  const label = (o: { color?: number }) => {
+    if (o.color !== undefined && !(Number.isInteger(o.color) && o.color >= 1 && o.color <= LABEL_COLORS)) delete o.color
+  }
+  // L6: the timelines list is healed first, then the tracks of every timeline
+  healTimelines(p)
+  for (const track of allTracks(p)) {
     if (!Number.isFinite(track.gain)) track.gain = 1
+    // K4: centre is the implicit default; a pan that is there is an Anim
+    if (track.pan !== undefined) track.pan = anim(track.pan, 0)
+    // K9: well-formed effects or none
+    if (track.audioFx !== undefined) { const fx = cleanFx(track.audioFx); if (fx) track.audioFx = fx; else delete track.audioFx }
+    label(track)
+    if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
+      label(c)
+      if (c.markers !== undefined) {
+        c.markers = Array.isArray(c.markers)
+          ? c.markers.filter((m) => m && typeof m.id === 'string' && Number.isFinite(m.source)) : []
+        for (const m of c.markers) {
+          noteColour(m)
+          if (typeof m.label !== 'string' || !m.label) m.label = '•'
+        }
+        if (!c.markers.length) delete c.markers
+      }
+      if (c.disabled !== undefined) { if (c.disabled) c.disabled = true; else delete c.disabled }
+      if (c.freezeAt !== undefined && !(Number.isFinite(c.freezeAt) && c.freezeAt >= 0)) delete c.freezeAt
+      // F4: contain is the default and stays implicit; flips are booleans
+      if (c.fit !== 'cover' && c.fit !== 'stretch') delete c.fit
+      for (const k of ['flipX', 'flipY'] as const) { if (c[k]) c[k] = true; else delete c[k] }
       for (const k of ['start', 'duration', 'inPoint'] as const)
         if (!Number.isFinite(c[k])) c[k] = 0
       if (!Number.isFinite(c.speed) || c.speed <= 0) c.speed = 1
       c.transform = { ...newClipDefaults().transform, ...(c.transform ?? {}) }
       c.gain = anim(c.gain, 1)
       c.effects ??= []
+      if (c.audioFx !== undefined) { const fx = cleanFx(c.audioFx); if (fx) c.audioFx = fx; else delete c.audioFx }
+      // J1: a grade that is there has every control; one that is not stays absent
+      if (c.grade !== undefined) {
+        if (!c.grade || typeof c.grade !== 'object') delete c.grade
+        else for (const k of GRADE_KEYS) c.grade[k] = anim(c.grade[k], 0)
+      }
+      // J2: a LUT needs a path; its intensity defaults to full
+      if (c.lut !== undefined) {
+        if (!c.lut || typeof c.lut.path !== 'string' || !c.lut.path) delete c.lut
+        else c.lut.intensity = anim(c.lut.intensity, 1)
+      }
+      // J7: wheels complete and clamped, curves sorted; junk or nothing = absent
+      if (c.wheels !== undefined) { const w = sanitizeWheels(c.wheels); if (w) c.wheels = w; else delete c.wheels }
+      if (c.curves !== undefined) { const v = sanitizeCurves(c.curves); if (v) c.curves = v; else delete c.curves }
+      // J3: normal is the implicit default; an unknown mode is dropped
+      if (c.blend !== undefined && !blendOf(c.blend)) delete c.blend
+      // J4: a key needs a mode; a bad colour falls back to green / black
+      if (c.key !== undefined) {
+        const k = c.key
+        if (!k || (k.mode !== 'chroma' && k.mode !== 'luma')) delete c.key
+        else {
+          if (!hexRgb(k.colour)) k.colour = k.mode === 'chroma' ? '#00ff00' : '#000000'
+          k.tolerance = anim(k.tolerance, 0.1)
+          k.softness = anim(k.softness, 0.1)
+          k.spill = anim(k.spill, 0)
+        }
+      }
       if (c.audioBake !== undefined && !(c.audioBake && typeof c.audioBake.hash === 'string' &&
           typeof c.audioBake.source === 'string')) delete c.audioBake
       forEachAnim(c, (a) => anim(a, Number.isFinite((a as Anim)?.value) ? (a as Anim).value : 0))
+      if (c.kind === 'text') c.textStyle = textStyleOf(c.textStyle)
     }
   }
   return p
+}
+
+/** F2: a text style with every field present and of its type — the fields
+    added later default to what the renderer drew before them. */
+function textStyleOf(raw: unknown): TextStyle {
+  const d = defaultTextStyle() as unknown as Record<string, unknown>
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const out: Record<string, unknown> = {}
+  for (const k of Object.keys(d))
+    out[k] = typeof o[k] === typeof d[k] && (typeof d[k] !== 'number' || Number.isFinite(o[k])) ? o[k] : d[k]
+  if (!['left', 'center', 'right'].includes(out.align as string)) out.align = d.align
+  for (const k of ['fontSize', 'wrapWidth', 'shadowBlur', 'outlineWidth', 'backgroundPad', 'lineHeight'])
+    if ((out[k] as number) < 0) out[k] = d[k]
+  return out as unknown as TextStyle
 }
 
 /** All animatable scalars of a clip (transform, gain, mask, shape). */
@@ -193,6 +330,15 @@ export function forEachAnim(c: Clip, fn: (a: Anim) => Anim) {
     z: tr.z ? fn(tr.z) : undefined
   }
   c.gain = fn(c.gain)
+  if (c.pan) c.pan = fn(c.pan)
+  if (c.speedRamp) c.speedRamp = fn(c.speedRamp)
+  if (c.grade) {
+    const g: Partial<ClipGrade> = { ...c.grade }
+    for (const k of GRADE_KEYS) if (g[k]) g[k] = fn(g[k]!)
+    c.grade = g as ClipGrade
+  }
+  if (c.lut) c.lut = { ...c.lut, intensity: fn(c.lut.intensity) }
+  if (c.key) c.key = { ...c.key, tolerance: fn(c.key.tolerance), softness: fn(c.key.softness), spill: fn(c.key.spill) }
   if (c.mask) {
     c.mask = {
       left: fn(c.mask.left), top: fn(c.mask.top),
@@ -241,6 +387,249 @@ export function rescaleClipAnims(c: Clip, factor: number) {
   if (c.fadeOut) c.fadeOut *= factor
 }
 
+/** THE ripple primitive: every clip on `trackIds` (minus `skip`) whose start
+    is at or right of `t` moves by `dt`. A clip spanning t does not move —
+    callers trim it. Lock-agnostic: callers pass the tracks they may move. */
+export function shiftAfter(p: Project, t: number, dt: number, trackIds: Iterable<string>, skip?: Set<string>) {
+  const ids = new Set(trackIds)
+  for (const tr of p.tracks) {
+    if (!ids.has(tr.id)) continue
+    for (const c of tr.clips) if (c.start >= t - 1e-6 && !skip?.has(c.id)) c.start += dt
+  }
+}
+
+/** Gaps between the clips of one track, left to right (not the lead-in). */
+function gapsOf(clips: Clip[]): Array<[number, number]> {
+  const out: Array<[number, number]> = []
+  let end = -Infinity
+  for (const c of [...clips].sort((a, b) => a.start - b.start)) {
+    if (c.start > end + 1e-6 && end > -Infinity) out.push([end, c.start])
+    end = Math.max(end, c.start + c.duration)
+  }
+  return out
+}
+
+/** What deleting `gone` leaves EMPTY: their spans minus what `kept` still covers. */
+function freedSpans(gone: Clip[], kept: Clip[]): Array<[number, number]> {
+  let spans: Array<[number, number]> = []
+  for (const c of [...gone].sort((a, b) => a.start - b.start)) {
+    const last = spans[spans.length - 1]
+    if (last && c.start <= last[1] + 1e-6) last[1] = Math.max(last[1], c.start + c.duration)
+    else spans.push([c.start, c.start + c.duration])
+  }
+  for (const k of kept) {
+    const ka = k.start, kb = k.start + k.duration
+    spans = spans.flatMap(([a, b]): Array<[number, number]> =>
+      kb <= a + 1e-6 || ka >= b - 1e-6 ? [[a, b]]
+        : [...(ka > a + 1e-6 ? [[a, ka] as [number, number]] : []), ...(kb < b - 1e-6 ? [[kb, b] as [number, number]] : [])])
+  }
+  return spans
+}
+
+/** Lift a range off every unlocked track: clips inside go, clips across it
+    are trimmed or split. Leaves the hole (extractRange closes it). */
+/** trimClip's edit on a cloned project: the clip and its unlocked twins
+    (returned); null when the clip is missing or on a locked track. */
+function trimInPlace(p: Project, clipId: string, edge: 'in' | 'out', time: number) {
+  const first = findClip(p, clipId)
+  if (!first || first.track.locked) return null
+  // linked partners trim together
+  const targets = withLinked(p, [clipId])
+    .map((id) => findClip(p, id))
+    .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)
+  for (const f of targets) {
+    const c = f.clip
+    const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
+    // L6: a compound's source is its timeline
+    const srcLen = asset && asset.kind !== 'image' ? asset.duration
+      : isCompound(c) && c.timelineId ? timelineDuration(p, c.timelineId) : undefined
+    if (edge === 'in') {
+      const end = c.start + c.duration
+      let ns = Math.min(toFrame(Math.max(0, time), p.fps), toFrame(end - 0.05, p.fps, Math.floor))
+      let delta = ns - c.start
+      // can't reveal media before the source start: the first frame inside it
+      if (c.inPoint + sourceOffset(c, delta) < 0) {
+        ns = toFrame(c.start + relAtOffset(c, -c.inPoint), p.fps, Math.ceil)
+        delta = ns - c.start
+      }
+      c.inPoint = Math.max(0, c.inPoint + sourceOffset(c, delta))
+      c.start = ns
+      c.duration = end - ns
+      shiftClipAnims(c, -delta) // keyframes stay glued to the content
+    } else {
+      let nd = frameEnd(p.fps, c.start, c.start + Math.max(0.05, time - c.start)) - c.start
+      if (srcLen !== undefined && c.freezeAt === undefined) {
+        // edge trim never reveals more than the source (unless already looping; a freeze is not bound by it)
+        const maxOut = Math.max(relAtOffset(c, srcLen - c.inPoint), c.duration)
+        if (nd > maxOut + 1e-9) nd = frameEnd(p.fps, c.start, c.start + maxOut, Math.floor) - c.start
+      }
+      c.duration = nd
+    }
+  }
+  return targets
+}
+
+/** The largest part of `want` that every edge of `apply` can take: it runs on
+    a scratch copy and returns how far each edge really moved (a trim clamps at
+    the source and at one frame); the edit then runs once with that. */
+function settle(p: Project, want: number, apply: (q: Project, d: number) => number[]): number {
+  let d = want
+  for (const g of apply(cloneProject(p), want)) d = want > 0 ? Math.min(d, Math.max(0, g)) : Math.max(d, Math.min(0, g))
+  return Math.abs(d) < 1e-9 ? 0 : d
+}
+
+/** Roll the cut after `leftId` by `d`: left's end and right's start (and their
+    twins') move together; returns how far each actually went. */
+function rollIn(p: Project, leftId: string, rightId: string, d: number): number[] {
+  const L = findClip(p, leftId)?.clip
+  const R = findClip(p, rightId)?.clip
+  if (!L || !R) return [0]
+  const le = L.start + L.duration
+  const rs = R.start
+  if (!trimInPlace(p, leftId, 'out', le + d) || !trimInPlace(p, rightId, 'in', rs + d)) return [0]
+  return [L.start + L.duration - le, R.start - rs]
+}
+
+/** Slide `clipId` (and its twins) by `d` with their source: the butted
+    neighbours' facing edges follow; with no neighbour the gap takes it, down
+    to the next clip or 0. Returns how far each edge could go. */
+function slideIn(p: Project, clipId: string, d: number): number[] {
+  const own = new Set(withLinked(p, [clipId]))
+  const targets = [...own].map((id) => findClip(p, id)).filter((x): x is NonNullable<typeof x> => !!x)
+  if (targets.some((f) => f.track.locked)) return [0]
+  // neighbours are found before anything moves: a trim takes the twins along
+  const plan = targets.map(({ track, clip: c }) => {
+    const a = c.start, b = c.start + c.duration
+    const others = track.clips.filter((o) => !own.has(o.id))
+    return {
+      c, a, b,
+      left: others.find((o) => Math.abs(o.start + o.duration - a) < 1e-6),
+      right: others.find((o) => Math.abs(o.start - b) < 1e-6),
+      floor: Math.max(0, ...others.filter((o) => o.start + o.duration <= a + 1e-6).map((o) => o.start + o.duration)),
+      ceil: Math.min(Infinity, ...others.filter((o) => o.start >= b - 1e-6).map((o) => o.start))
+    }
+  })
+  const got: number[] = []
+  for (const { c, a, b, left, right, floor, ceil } of plan) {
+    if (left) { trimInPlace(p, left.id, 'out', a + d); got.push(left.start + left.duration - a) }
+    else got.push(Math.max(d, floor - a))
+    if (right) { trimInPlace(p, right.id, 'in', b + d); got.push(right.start - b) }
+    else got.push(Math.min(d, ceil - b))
+    c.start = a + d
+  }
+  return got
+}
+
+/** Cut `c` at `t` in place and push the right half onto `track`; halves of a
+    linked pair stay linked pairwise through `rightLinks` (linkId → new one). */
+function splitClipAt(track: Track, c: Clip, t: number, rightLinks: Map<string, string>): Clip {
+  const offset = t - c.start
+  let linkId: string | undefined
+  if (c.linkId) {
+    if (!rightLinks.has(c.linkId)) rightLinks.set(c.linkId, uid())
+    linkId = rightLinks.get(c.linkId)
+  }
+  const right: Clip = {
+    ...clone(c),
+    id: uid(),
+    start: t,
+    duration: c.duration - offset,
+    inPoint: c.inPoint + sourceOffset(c, offset),
+    fadeIn: 0,
+    linkId
+  }
+  shiftClipAnims(right, -offset)
+  c.duration = offset
+  c.fadeOut = 0
+  track.clips.push(right)
+  return right
+}
+
+/** `trackIds` plus the unlocked tracks of the twins of every clip that ends
+    right of `t` on them — a ripple there must take the other half of each
+    A/V pair along, or the pair desyncs. */
+function rippleTracks(p: Project, trackIds: Iterable<string>, t: number): string[] {
+  const ids = new Set(trackIds)
+  for (let grew = true; grew;) {
+    grew = false
+    const links = new Set(p.tracks.filter((tr) => ids.has(tr.id))
+      .flatMap((tr) => tr.clips.filter((c) => c.linkId && c.start + c.duration > t + 1e-6).map((c) => c.linkId)))
+    for (const tr of p.tracks) {
+      if (tr.locked || ids.has(tr.id) || !tr.clips.some((c) => c.linkId && links.has(c.linkId))) continue
+      ids.add(tr.id)
+      grew = true
+    }
+  }
+  return [...ids]
+}
+
+/** Make room for `len` at `t` on the receiving tracks (and their twins'):
+    a clip across t is split, everything from t on moves right. */
+function openGap(p: Project, t: number, len: number, trackIds: Iterable<string>, skip: Set<string>) {
+  const ids = rippleTracks(p, trackIds, t)
+  const rightLinks = new Map<string, string>()
+  for (const tr of p.tracks) {
+    if (!ids.includes(tr.id)) continue
+    for (const c of [...tr.clips]) {
+      if (!skip.has(c.id) && c.start < t - 1e-6 && c.start + c.duration > t + 1e-6) splitClipAt(tr, c, t, rightLinks)
+    }
+  }
+  shiftAfter(p, t, len, ids, skip)
+}
+
+/** Copies of the clips `ids` (unlocked tracks only) moved by `dt` on their own
+    tracks; the copies of a pair are a pair of their own. Returns the new ids. */
+function copyClips(p: Project, ids: string[], dt: number): string[] {
+  const want = new Set(ids)
+  const links = new Map<string, string>()
+  const out: string[] = []
+  for (const tr of p.tracks) {
+    if (tr.locked) continue
+    for (const c of tr.clips.filter((x) => want.has(x.id))) {
+      const copy: Clip = { ...clone(c), id: uid(), start: c.start + dt }
+      if (c.linkId) {
+        if (!links.has(c.linkId)) links.set(c.linkId, uid())
+        copy.linkId = links.get(c.linkId)
+      }
+      tr.clips.push(copy)
+      out.push(copy.id)
+    }
+  }
+  return out
+}
+
+function liftRange(p: Project, r: { start: number; end: number }, only?: Set<string>) {
+  const rightLinks = new Map<string, string>()
+  for (const tr of p.tracks) {
+    if (tr.locked || (only && !only.has(tr.id))) continue
+    const out: Clip[] = []
+    for (const c of [...tr.clips]) {
+      const end = c.start + c.duration
+      if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
+        out.push(c) // outside
+      } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
+        // fully inside — drop
+      } else if (c.start < r.start && end > r.end) {
+        // covers the range — split into two; right halves of a pair stay linked pairwise
+        const right = splitClipAt(tr, c, r.end, rightLinks)
+        c.duration = r.start - c.start
+        out.push(c, right)
+      } else if (c.start < r.start) {
+        c.duration = r.start - c.start
+        out.push(c)
+      } else {
+        const cut = r.end - c.start
+        c.inPoint += sourceOffset(c, cut)
+        c.duration = end - r.end
+        c.start = r.end
+        shiftClipAnims(c, -cut)
+        out.push(c)
+      }
+    }
+    tr.clips = out
+  }
+}
+
 /** Expand clip ids with their linked partners (video + its audio). */
 export function withLinked(p: Project, ids: string[]): string[] {
   const out = new Set(ids)
@@ -255,10 +644,10 @@ export function withLinked(p: Project, ids: string[]): string[] {
 }
 
 /**
- * Snap targets for dragging: edges of all clips, the playhead, the user's
- * markers, and — unless switched off (the magnet next to «Биты») — the detected
- * beats. `exclude` takes clip AND marker ids (a dragged marker must not stick
- * to where it started).
+ * Snap targets for dragging, each switchable in the magnet's menu: edges of all
+ * clips (and 0), the playhead, the user's markers, the detected beats.
+ * `exclude` takes clip AND marker ids (a dragged marker must not stick to where
+ * it started). The magnet itself (N) is read live by `snapTo`, so N mid-drag works.
  */
 export function snapPoints(
   p: Project,
@@ -266,9 +655,13 @@ export function snapPoints(
   playhead: number,
   beats: boolean = useSettings.getState().snapBeats
 ): number[] {
+  const on = (k: SettingKey) => setting<boolean>(k)
   const ex = Array.isArray(exclude) ? exclude : [exclude]
-  const pts = [0, playhead]
-  for (const t of p.tracks) {
+  const edges = on('editing.snapEdges')
+  const marks = on('editing.snapMarkers')
+  const pts = edges ? [0] : []
+  if (on('editing.snapPlayhead')) pts.push(playhead)
+  for (const t of edges ? p.tracks : []) {
     for (const c of t.clips) {
       if (ex.includes(c.id)) continue
       pts.push(c.start, c.start + c.duration)
@@ -276,7 +669,7 @@ export function snapPoints(
   }
   for (const m of p.markers ?? []) {
     if (ex.includes(m.id)) continue
-    if (isMusicMarker(m) && !beats) continue
+    if (isMusicMarker(m) ? !beats : !marks) continue
     pts.push(m.time)
     // a pause is snapped to at both ends (a cut lands where the music returns)
     if (m.kind === 'pause' && m.end !== undefined) pts.push(m.end)
@@ -284,34 +677,112 @@ export function snapPoints(
   return pts
 }
 
+/**
+ * The nearest point within «Радиус прилипания» (screen px → seconds at `zoom`),
+ * else `t`. Nothing snaps while the magnet (N) is off.
+ */
+export function snapTo(t: number, points: number[], zoom: number): number {
+  if (!setting<boolean>('editing.snap')) return t
+  let best = t
+  let bestD = setting<number>('editing.snapRadius') / zoom
+  for (const p of points) {
+    const d = Math.abs(p - t)
+    if (d < bestD) {
+      bestD = d
+      best = p
+    }
+  }
+  return best
+}
+
 interface SettingsState {
+  /** main's copy (shared/settings.ts): the file's diff and the env overrides */
+  snap: SettingsSnapshot
   lang: 'ru' | 'en'
   /** uniform lane height for all tracks, px */
   trackH: number
   /** clips, the range and markers snap to detected beats (default on) */
   snapBeats: boolean
+  /** «Подтверждать удаление»: deleting a track with clips asks first (default on; D5 row) */
+  confirmDelete: boolean
+  /** «Лимитер в превью»: the preview's master is limited at −1 dBFS like the export (default on; D5 row) */
+  previewLimiter: boolean
+  effective(key: SettingKey): { value: SettingValue; source: SettingSource }
+  /** change one setting (null = back to its default); main writes it to userData/settings.json */
+  set(key: SettingKey, value: SettingValue | null): void
   setLang(l: 'ru' | 'en'): void
   setTrackH(h: number): void
   setSnapBeats(v: boolean): void
+  setConfirmDelete(v: boolean): void
+  setPreviewLimiter(v: boolean): void
 }
 
-export const useSettings = create<SettingsState>((set) => ({
-  lang: (localStorage.getItem('kadr.lang') as 'ru' | 'en') || 'ru',
-  trackH: Math.min(140, Math.max(32, Number(localStorage.getItem('kadr.trackh')) || 56)),
-  snapBeats: localStorage.getItem('kadr.snapBeats') !== '0',
-  setLang: (lang) => {
-    localStorage.setItem('kadr.lang', lang)
-    set({ lang })
-  },
-  setTrackH: (h) => {
-    const trackH = Math.min(140, Math.max(32, h))
-    localStorage.setItem('kadr.trackh', String(trackH))
-    set({ trackH })
-  },
-  setSnapBeats: (snapBeats) => {
-    localStorage.setItem('kadr.snapBeats', snapBeats ? '1' : '0')
-    set({ snapBeats })
+/** the named fields the components read, from the effective values */
+const settingFields = (snap: SettingsSnapshot) => {
+  const v = (k: SettingKey) => effective(k, snap).value
+  return {
+    snap,
+    lang: v('general.lang') as 'ru' | 'en',
+    trackH: v('editing.trackHeight') as number,
+    snapBeats: v('editing.snapBeats') as boolean,
+    confirmDelete: v('editing.confirmDelete') as boolean,
+    previewLimiter: v('playback.previewLimiter') as boolean
   }
+}
+
+/**
+ * Main's settings, read synchronously on boot. The values that used to live in
+ * localStorage move over once: a legacy key main has no value for is sent to
+ * main, and removed here only after main has written it.
+ */
+// node checks bundle this store without a window
+const kadrApi = () => (typeof window === 'undefined' ? undefined : window.kadr)
+
+function bootSettings(): SettingsSnapshot {
+  const snap: SettingsSnapshot = kadrApi()?.settingsGet?.() ?? { user: {}, env: {} }
+  const ls = typeof localStorage === 'undefined' ? null : localStorage
+  if (!ls) return snap
+  const patch: SettingsDiff = {}
+  const legacy: string[] = []
+  for (const [k, d] of Object.entries(SETTINGS) as [SettingKey, SettingDef][]) {
+    const raw = d.legacy ? ls.getItem(d.legacy) : null
+    if (raw === null) continue
+    legacy.push(d.legacy!)
+    const v = fromLegacy(k, raw)
+    if (snap.user[k] === undefined && v !== undefined && v !== d.default) patch[k] = v
+  }
+  if (!legacy.length) return snap
+  const user = { ...snap.user, ...patch }
+  void kadrApi()?.settingsSet?.(patch)
+    .then(() => legacy.forEach((k) => ls.removeItem(k)))
+    .catch((err) => logWarn(tr('logStore'), `${tr('storeWriteFail')}: settings.json`, err))
+  return { ...snap, user }
+}
+
+/** a setting's value now (shared/settings.ts) — for code outside React */
+export const setting = <T extends SettingValue = SettingValue>(key: SettingKey): T =>
+  useSettings.getState().effective(key).value as T
+
+export const useSettings = create<SettingsState>((set, get) => ({
+  ...settingFields(bootSettings()),
+  effective: (key) => effective(key, get().snap),
+  set: (key, value) => {
+    const cur = get().snap
+    const h = value === null ? undefined : healValue(key, value)
+    if (value !== null && h === undefined) return
+    const user = { ...cur.user }
+    if (h === undefined || h === SETTINGS[key].default) delete user[key]
+    else user[key] = h
+    set(settingFields({ ...cur, user }))
+    // the write can fail (read-only userData): the value holds for this session, the log says why
+    kadrApi()?.settingsSet?.({ [key]: value })
+      .catch((err) => logWarn(tr('logStore'), `${tr('storeWriteFail')}: settings.json`, err))
+  },
+  setPreviewLimiter: (v) => get().set('playback.previewLimiter', v),
+  setConfirmDelete: (v) => get().set('editing.confirmDelete', v),
+  setLang: (l) => get().set('general.lang', l),
+  setTrackH: (h) => get().set('editing.trackHeight', h),
+  setSnapBeats: (v) => get().set('editing.snapBeats', v)
 }))
 
 // ---------------------------------------------------------------------------
@@ -347,7 +818,7 @@ function loadPoseCache(): PosePreset[] {
 }
 
 function persistPosePresets(presets: PosePreset[]) {
-  window.kadr.writeUserStore(POSE_FILE, presets).catch(() => { /* disk hiccup */ })
+  void saveUserStore(POSE_FILE, presets)
   try {
     localStorage.setItem(POSE_LS_KEY, JSON.stringify(presets))
   } catch { /* cache only */ }
@@ -380,7 +851,7 @@ export const usePosePresets = create<PosePresetState>((set) => ({
       } catch { /* cache only */ }
     } else {
       const cached = loadPoseCache()
-      if (cached.length) window.kadr.writeUserStore(POSE_FILE, cached).catch(() => { /* keep cache */ })
+      if (cached.length) void saveUserStore(POSE_FILE, cached)
     }
   } catch { /* file store unavailable — cache keeps working */ }
 })()
@@ -410,7 +881,7 @@ function loadFxCache(): FxPreset[] {
 }
 
 function persistFxPresets(presets: FxPreset[]) {
-  window.kadr.writeUserStore(FX_FILE, presets).catch(() => { /* disk hiccup */ })
+  void saveUserStore(FX_FILE, presets)
   try {
     localStorage.setItem(FX_LS_KEY, JSON.stringify(presets))
   } catch { /* cache only */ }
@@ -444,12 +915,22 @@ export const useFxPresets = create<FxPresetState>((set) => ({
   } catch { /* file store unavailable — cache keeps working */ }
 })()
 
-export const MAX_ZOOM = 4000
+export { MAX_ZOOM, MIN_ZOOM }
+/** The mounted timeline's view commands (Shift+Z, Alt+Z, -/=), set by Timeline.tsx:
+    both go through its zoom-gesture commit, so culling and the anchor stay right. */
+export const timelineView: {
+  fit: ((a: number, b: number) => void) | null
+  zoomBy: ((k: number) => void) | null
+} = { fit: null, zoomBy: null }
 
 export interface TimeRange {
   start: number
   end: number
 }
+
+/** what «Вставить атрибуты» (Ctrl+Alt+V) can carry over */
+export type AttrPart = 'transform' | 'effects' | 'volume' | 'speed' | 'masks' | 'colour'
+export const ATTR_PARTS: AttrPart[] = ['transform', 'effects', 'volume', 'speed', 'masks', 'colour']
 
 interface ClipboardItem {
   kind: TrackKind
@@ -458,10 +939,25 @@ interface ClipboardItem {
 }
 
 /** A history entry remembers the state before the action plus its name (i18n key). */
-interface HistEntry {
+export interface HistEntry {
   project: Project
   label: string
+  /** pushed by the embedded Claude (inside an /eval): when its turn began (card B8) — the list marks it */
+  turn?: number
 }
+
+/** /evals of the embedded Claude in flight (electron/claude.ts brackets each one) */
+let agentEvals = 0
+
+/** the project as it was when an agent turn began (card B8) */
+export interface AgentCheckpoint {
+  project: Project
+  path: string | null
+  at: number
+  /** the live object it was copied from: an unchanged project is not checkpointed twice */
+  source: Project
+}
+const AGENT_CHECKPOINTS = 10
 
 interface EditorState {
   project: Project
@@ -469,6 +965,12 @@ interface EditorState {
   selection: string[]
   playhead: number
   playing: boolean
+  /** the clock's signed rate: L/J step it through 1, 2, 4, 8 (player.ts); a pause brings it back to 1 */
+  playRate: number
+  /** Ctrl+L: playback wraps inside the range, or the whole timeline */
+  loop: boolean
+  /** play in→out (/): where playback stops; a pause forgets it */
+  playEnd: number | null
   previewLoading: boolean
   /** the preview's GL context died (GPU reset); nothing can be drawn until it is back */
   previewGpuLost: boolean
@@ -479,6 +981,9 @@ interface EditorState {
   range: TimeRange | null
   /** clip whose animation/mask panel is open (double-click) */
   animClipId: string | null
+  /** «Привязка к таймлайну»: editing a static parameter records a key at the
+      playhead — the animation editor and the preview gizmo alike */
+  animLinked: boolean
   /** video track whose Track Motion editor is open */
   motionTrackId: string | null
   /** absolute time of a keyframe being dragged in a mini-timeline,
@@ -487,6 +992,11 @@ interface EditorState {
   clipboard: ClipboardItem[]
   past: HistEntry[]
   future: HistEntry[]
+  /** ring of pre-turn snapshots of the embedded Claude, OUTSIDE the undo stack:
+      a turn of more than 50 edits pushes its own start out of undo */
+  agentCheckpoints: AgentCheckpoint[]
+  /** when the agent's current (or last) turn began; 0 before any */
+  agentTurnAt: number
 
   setProject(p: Project, path?: string | null): void
   setProjectPath(path: string | null): void
@@ -498,11 +1008,45 @@ interface EditorState {
   pushHistory(label: string): void
   undo(): void
   redo(): void
+  /** the history list (L2): n > 0 is n undos, n < 0 is −n redos — exactly that, clamped to the stacks */
+  jumpHistory(n: number): void
+  /** +1 / −1 around each agent /eval: history pushed in between carries the turn */
+  agentEval(d: 1 | -1): void
+  /** an agent turn begins (main calls it before the turn's first /eval) */
+  agentCheckpoint(): void
+  /** restore the newest checkpoint as one undo entry and drop it; false when there is none */
+  revertAgentTurn(): boolean
 
   addAsset(a: MediaAsset): void
   /** Remove media files from the bin AND every timeline clip that uses them
       (linked twins share the assetId) — one undo entry. */
   removeAssets(assetIds: string[]): void
+  /** L6 timelines. `setActiveTimeline` opens one (its tracks become project.tracks;
+      not an undo step — a view, like scrolling); the rest are one undo step each.
+      `addTimeline` → the new, empty, open timeline's id. `removeTimeline` refuses
+      the last one and one a compound clip plays (false). `nestClips` puts the
+      clips (and their linked twins) into a new timeline and leaves one compound
+      clip in their place → its id. `insertTimelineClip` lays a timeline into the
+      open one → the clip id, or null when that would make a loop. */
+  setActiveTimeline(id: string): void
+  addTimeline(name?: string): string
+  renameTimeline(id: string, name: string): void
+  removeTimeline(id: string): boolean
+  nestClips(ids: string[]): string | null
+  insertTimelineClip(timelineId: string, trackId: string | null, at: number): string | null
+  /** H5 bin folders, one undo step each: a new folder (holding these assets) → its id;
+      rename; move assets/folders into a folder (null = root); delete a folder — what it
+      held goes to the root, never away (shared/bins.ts) */
+  addBin(name: string, parentId: string | null, assetIds: string[]): string
+  renameBin(id: string, name: string): void
+  moveToBin(assetIds: string[], binIds: string[], target: string | null): void
+  removeBin(id: string): void
+  /** Point assets at other files (relink of offline media): each given asset
+      replaces the one with its id — one undo entry. */
+  relinkAssets(fresh: MediaAsset[]): void
+  /** «Собрать проект» (H8): every path found in `map` (old → new) rewritten — media, transcripts,
+      voice-over scripts and runs — one undo step; nothing to rewrite pushes none */
+  relocatePaths(map: Record<string, string>): void
   /** register transcript/text docs in the sources (one undo entry) */
   addTexts(docs: TextDoc[]): void
   /** Land a finished voice-over — asset, script docs, run record and clip — as
@@ -545,16 +1089,40 @@ interface EditorState {
   removeTrack(trackId: string): void
   moveTrack(trackId: string, toIndex: number): void
   updateTrack(trackId: string, patch: Partial<Track>): void
+  /** K4/K6: the master fader, linear (no history: callers push once per gesture) */
+  setMasterGain(gain: number): void
 
-  insertClipFromAsset(assetId: string, trackId: string | null, at: number): void
+  insertClipFromAsset(assetId: string, trackId: string | null, at: number, ripple?: boolean): void
   /** Place several assets back-to-back starting at `at` (one undo entry);
-      audio assets go to an audio track regardless of the drop lane. */
-  insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number): void
+      audio assets go to an audio track regardless of the drop lane. `ripple`
+      (a Shift-drop) inserts: what is right of `at` on the receiving tracks and
+      their twins' moves right by the inserted length, a clip across `at` is split. */
+  insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number, ripple?: boolean): void
+  /** L5: a three-point edit from the source viewer. The fourth point comes from
+      shared/threePoint (source marks, the timeline range or the playhead).
+      `insert` opens the gap on the target tracks (and their twins'); `overwrite`
+      LIFTS what the span covers on the target tracks — never an overlap, which
+      would play as a crossfade. A target is a track id, 'new', or null = not
+      taken. One undo step; the playhead goes to the edit's end and the range is
+      cleared. Returns the new clip ids ([] = refused: a locked or missing target,
+      nothing taken, nothing to take). */
+  threePointEdit(mode: 'insert' | 'overwrite', src: { assetId: string; in?: number | null; out?: number | null },
+    targets: { video: string | null; audio: string | null }): string[]
   insertTextClip(at: number): void
-  /** Add a track-independent timeline marker (auto-numbered); returns id. */
-  addMarker(time: number): string
+  /** Add a track-independent timeline marker (auto-numbered unless `opts.label`); returns id.
+      `opts.kind`/`end` make a music marker (the agent's kadr_marker). One undo step. */
+  addMarker(time: number, opts?: { label?: string; kind?: TimelineMarker['kind']; end?: number }): string
   moveMarker(id: string, time: number): void
-  removeMarker(id: string): void
+  /** a timeline marker, or with `clipId` that clip's marker; one undo step */
+  removeMarker(id: string, clipId?: string): void
+  /** L1: a marker on the clip at project second `time`, stored at its SOURCE second
+      (shared/markers.ts); auto-numbered unless `label`. One undo step; '' when the clip is not there. */
+  addClipMarker(clipId: string, time: number, opts?: { label?: string }): string
+  /** L1: name, note, colour of a timeline marker or (with `clipId`) a clip marker — one undo step;
+      a blank label is ignored, an empty note or an undefined colour takes it off, no change no step */
+  updateMarker(ref: { id: string; clipId?: string }, patch: { label?: string; note?: string; color?: number }): void
+  /** L1: the playhead to the next (1) / previous (−1) user or clip marker */
+  goToMarker(dir: 1 | -1): void
   /**
    * Replace the music markers (beats, sections, pauses) inside
    * [range.start, range.end] with `beats` and `extra` (project seconds) — one
@@ -569,6 +1137,9 @@ interface EditorState {
     }): number
   /** Remove the music markers (inside `range`, or all of them) — one undo entry; returns the count. */
   clearBeatMarkers(range?: { start: number; end: number }): number
+  /** I6: replace the scene-cut markers inside [range] with `times` (project s,
+      landed on frames) — one undo entry, none when nothing changes. */
+  setSceneMarkers(times: number[], range: { start: number; end: number }): void
   /**
    * Put an audio asset on the timeline at `at` WITHOUT touching anything that
    * is already there: the first unlocked audio track that is free over the
@@ -578,14 +1149,37 @@ interface EditorState {
    * one with the same path is already in the bin. One undo entry.
    */
   placeAudio(asset: Omit<MediaAsset, 'id'>, at: number,
-    opts?: { gain?: number; label?: string; history?: string }): { clipId: string; trackId: string; assetId: string }
+    opts?: {
+      gain?: number; label?: string
+      /** the undo label; null = the caller pushed one already (K8: several takes, one step) */
+      history?: string | null
+      /** K8: this track when it is free over the span; else the usual choice */
+      trackId?: string
+      /** K8: a take starts part-way into its file and may end before it */
+      inPoint?: number; duration?: number
+    }): { clipId: string; trackId: string; assetId: string }
+  /** Change the project's name, size or fps. One undo step per `session`
+   *  (the Inspector passes one per focus of a field, so typing "1080" is one
+   *  step); a call without a session is a step of its own. A patch that
+   *  changes nothing pushes nothing. */
+  updateProjectSettings(patch: ProjectSettingsPatch, session?: number): void
   updateClip(clipId: string, patch: Partial<Clip>): void
+  /** the same patch on several clips, one update (the caller pushes history) */
+  setClipProps(ids: string[], patch: Partial<Clip>): void
+  /** Shift+E: switch the selection off, or back on when all of it is off;
+      one undo step; locked tracks are left alone */
+  toggleDisabled(): void
   /** Change speed/duration, rescaling keyframes and fades to stay on content.
       Optional `start` moves the clip too (a speed drag from the LEFT edge
       keeps the right edge anchored). */
   setClipSpeed(clipId: string, speed: number, duration: number, start?: number): void
   /** setClipSpeed for several clips in one update (group speed change). */
   setClipSpeeds(entries: { id: string; speed: number; duration: number; start?: number }[]): void
+  /** L3: ramp the clips' speed with a preset (null = constant base speed
+      again). Each keeps its source span — the duration becomes the span over
+      the preset's mean speed — and the group stays a chain, like the speed
+      dial; linked partners follow. One undo step. */
+  setSpeedRamp(clipIds: string[], preset: RampPreset | null): void
   /** Change duration (loop-extend); linked partners follow. */
   setClipDuration(clipId: string, duration: number): void
   /** Pick the transition for a clip's incoming overlap ('none' = hard cut). */
@@ -600,14 +1194,71 @@ interface EditorState {
   /** Batch-update clip positions (group drag), optionally across tracks. */
   setClipStarts(entries: { id: string; start: number; trackId?: string }[]): void
   trimClip(clipId: string, edge: 'in' | 'out', time: number): void
+  /** trimClip that moves what follows (Shift+drag of an edge): 'out' puts the
+      end at `time`; 'in' takes `time − start` off the head (negative gives it
+      back) and KEEPS the start. Everything right of the old end on the clip's
+      and its twins' tracks moves by the length change. No history (the gesture
+      pushes once, like trimClip). */
+  rippleTrim(clipId: string, edge: 'in' | 'out', time: number): void
+  /** Roll: the cut between `leftId` and the clip after it moves to `t` —
+      left's end and right's start together, with their twins; the sum of
+      both lengths stays. Stops where EITHER side hits a limit. No history. */
+  rollEdit(leftId: string, rightId: string, t: number): void
+  /** Slip: the clip shows its source `dt` timeline seconds later (earlier if
+      negative), start and length kept, twins along; a still is a no-op. No history. */
+  slip(clipId: string, dt: number): void
+  /** Slide: the clip moves by `dt` with its source; the butted neighbours'
+      facing edges follow, their outer edges stay. No history. */
+  slide(clipId: string, dt: number): void
+  /** Q ('in') / W ('out'): ripple-trim the clip under the playhead to it — the
+      selected one, else the top track's — one undo step. Q parks the playhead
+      at the clip's start, where the cut now is. */
+  trimToPlayhead(edge: 'in' | 'out'): void
   splitAtPlayhead(): void
+  /** Cut every unlocked clip across `t` on `trackIds` (default: every track), the
+      twins of those clips too — one undo step; returns the right halves' ids. */
+  splitAt(t: number, trackIds?: string[]): string[]
   deleteSelection(): void
+  /** Delete clips (default: the selection) with their linked twins and close
+      what they leave empty on their tracks — one undo step. */
+  rippleDelete(ids?: string[]): void
   /** Close the gap between clips around `time` on a track (Ctrl+click). */
   closeGapAt(trackId: string, time: number): void
+  /** Close every gap between clips on these unlocked tracks (the lead-in stays). */
+  closeGaps(trackIds: string[] | 'all'): void
   copySelection(): void
   copyRange(): void
   deleteRange(): void
-  pasteAtPlayhead(): void
+  /** Delete a range (default: the current one) on every unlocked track and
+      close it everywhere; markers right of it follow — one undo step. */
+  extractRange(range?: { start: number; end: number }): void
+  /** extractRange over several ranges (silence removal, proposals) — still ONE
+      undo step; overlapping ranges merge. */
+  extractRanges(ranges: { start: number; end: number }[]): void
+  /** `ripple` (Ctrl+Shift+V) inserts, like a Shift-drop. */
+  pasteAtPlayhead(ripple?: boolean): void
+  /** Ctrl+X: copy the selection (else the range) and lift it — one undo step, no ripple. */
+  cut(): void
+  /** Copies of the clips left where they are (the copy-drag moves the originals
+      off them); no undo step of its own — the drag pushed one. Returns the new ids. */
+  duplicateInPlace(ids: string[]): string[]
+  /** «Дублировать»: a copy of the selection right after it, selected — one undo step. */
+  duplicateSelection(): void
+  /** Ctrl+Alt+V: the chosen parts of the copied clip onto the selection — one undo step. */
+  pasteAttributes(parts: AttrPart[]): void
+  /** Shift+F: split the footage under the playhead (the selected clip, else the top
+      unlocked video track's) and insert a `len` s still of that frame, rippling what follows. */
+  freezeFrame(len?: number): void
+  /** I / O: the range's in / out at the playhead; the other end is kept while it
+      still lies on its side, else it becomes the timeline's end / 0. */
+  markIn(): void
+  markOut(): void
+  /** X: the range = the clip under the playhead (the selected one, else the top unlocked track's). */
+  markClip(): void
+  /** Up (-1) / Down (1): the playhead to the previous / next clip edge on the unlocked tracks. */
+  goToEdit(dir: 1 | -1): void
+  /** Ctrl+A: every clip on the unlocked tracks. */
+  selectAll(): void
 
   select(ids: string[]): void
   toggleSelect(id: string): void
@@ -616,6 +1267,11 @@ interface EditorState {
   setKfMarker(t: number | null): void
   setPlayhead(t: number): void
   setPlaying(p: boolean): void
+  /** L (1) / J (-1): play that way, or double the rate up to 8× if already playing that way */
+  shuttle(dir: 1 | -1): void
+  toggleLoop(): void
+  /** / : play the range (or the whole timeline) from its in, stopping at its out */
+  playInOut(): void
   setPreviewLoading(l: boolean): void
   setPreviewGpuLost(lost: boolean): void
   setZoom(z: number): void
@@ -679,28 +1335,66 @@ const cloneProject = (p: Project): Project => {
   return out as unknown as Project
 }
 
+export type ProjectSettingsPatch = Partial<Pick<Project, 'name' | 'width' | 'height' | 'fps' | 'background'>>
+/** the undo step the last settings session pushed: merge only while it is
+ *  still the top of the stack (any other edit or an undo splits the session) */
+const settingsMark: { session?: number; entry?: unknown } = {}
+
+/** Ids of the unlocked clips across `t` (a frame) that `want` keeps, on `onTracks` if given. */
+function splitTargets(p: Project, t: number, want: (c: Clip) => boolean, onTracks?: Set<string>): string[] {
+  return p.tracks.flatMap((tr) =>
+    tr.locked || (onTracks && !onTracks.has(tr.id)) ? [] : tr.clips.filter((c) =>
+      want(c) && t > c.start + 0.02 && t < c.start + c.duration - 0.02).map((c) => c.id))
+}
+
+/** Split `ids` at `t` as one undo step; halves of a linked pair stay linked pairwise. */
+function splitClips(
+  get: () => EditorState,
+  set: (fn: (s: EditorState) => Partial<EditorState>) => void,
+  t: number, ids: string[]
+): string[] {
+  get().pushHistory('hSplit')
+  const newIds: string[] = []
+  set((st) => {
+    const p = cloneProject(st.project)
+    const rightLinks = new Map<string, string>()
+    for (const id of ids) {
+      const f = findClip(p, id)
+      if (f) newIds.push(splitClipAt(f.track, f.clip, t, rightLinks).id)
+    }
+    return { project: p }
+  })
+  return newIds
+}
+
 export const useEditor = create<EditorState>((set, get) => ({
   project: newProject(),
   projectPath: null,
   selection: [],
   playhead: 0,
   playing: false,
+  playRate: 1,
+  loop: false,
+  playEnd: null,
   previewLoading: false,
   previewGpuLost: false,
   zoom: 60,
   exportOpen: false,
   range: null,
   animClipId: null,
+  animLinked: false,
   motionTrackId: null,
   kfMarker: null,
   clipboard: [],
   past: [],
   future: [],
+  agentCheckpoints: [],
+  agentTurnAt: 0,
 
   setProject: (project, path = null) =>
     set({
       project: sanitizeProject(project), projectPath: path, past: [], future: [],
-      selection: [], playhead: 0, playing: false, range: null
+      selection: [], playhead: 0, playing: false, playRate: 1, playEnd: null, range: null
     }),
   setProjectPath: (projectPath) => set({ projectPath }),
   noteClaudeChat: (id) =>
@@ -710,7 +1404,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   pushHistory: (label) =>
     set((s) => ({
-      past: [...s.past.slice(-49), { project: cloneProject(s.project), label }],
+      past: [...s.past.slice(-49), { project: cloneProject(s.project), label, ...(agentEvals > 0 && s.agentTurnAt ? { turn: s.agentTurnAt } : {}) }],
       future: []
     })),
   undo: () =>
@@ -722,8 +1416,9 @@ export const useEditor = create<EditorState>((set, get) => ({
         past,
         // chats are not an edit: undoing the clip before one must not drop it
         project: { ...entry.project, claudeChats: s.project.claudeChats },
-        future: [{ project: cloneProject(s.project), label: entry.label }, ...s.future],
-        selection: []
+        future: [{ ...entry, project: cloneProject(s.project) }, ...s.future],
+        // what is still there stays selected: the gizmo and the Inspector survive a Ctrl+Z
+        selection: existingClips(entry.project, s.selection)
       }
     }),
   redo: () =>
@@ -733,13 +1428,205 @@ export const useEditor = create<EditorState>((set, get) => ({
       return {
         future,
         project: { ...entry.project, claudeChats: s.project.claudeChats },
-        past: [...s.past, { project: cloneProject(s.project), label: entry.label }],
-        selection: []
+        past: [...s.past, { ...entry, project: cloneProject(s.project) }],
+        selection: existingClips(entry.project, s.selection)
       }
     }),
+  jumpHistory: (n) => {
+    for (let i = 0; i < n && get().past.length; i++) get().undo()
+    for (let i = 0; i > n && get().future.length; i--) get().redo()
+  },
+  agentEval: (d) => { agentEvals = Math.max(0, agentEvals + d) },
+
+  agentCheckpoint: () =>
+    set((s) => {
+      // ponytail: "unchanged" is object identity — an in-place mutation between two
+      // turns (off-convention) keeps the older checkpoint; a JSON compare costs ~250 ms on big projects
+      const at = Date.now()
+      if (s.agentCheckpoints.at(-1)?.source === s.project) return { agentTurnAt: at }
+      const cp = { project: cloneProject(s.project), path: s.projectPath, at, source: s.project }
+      return { agentTurnAt: at, agentCheckpoints: [...s.agentCheckpoints.slice(1 - AGENT_CHECKPOINTS), cp] }
+    }),
+  revertAgentTurn: () => {
+    const cp = get().agentCheckpoints.at(-1)
+    if (!cp) return false
+    get().pushHistory('hAgentRevert')
+    set((s) => ({
+      // chats are not an edit (as in undo): the conversation stays in the project
+      project: s.project.claudeChats === cp.project.claudeChats ? cp.project : { ...cp.project, claudeChats: s.project.claudeChats },
+      projectPath: cp.path,
+      agentCheckpoints: s.agentCheckpoints.slice(0, -1),
+      selection: []
+    }))
+    return true
+  },
 
   addAsset: (a) =>
     set((s) => ({ project: { ...s.project, assets: [...s.project.assets, a] } })),
+
+  relinkAssets: (fresh) => {
+    const byId = new Map(fresh.map((a) => [a.id, a]))
+    if (!get().project.assets.some((a) => byId.has(a.id))) return
+    get().pushHistory('hRelink')
+    set((st) => {
+      const p = cloneProject(st.project)
+      // a relinked file stays in its bin folder (H5); the fresh probe knows nothing of it
+      p.assets = p.assets.map((a) => {
+        const f = byId.get(a.id)
+        return !f ? a : a.binId ? { ...f, binId: a.binId } : f
+      })
+      return { project: p }
+    })
+  },
+  relocatePaths: (map) => {
+    const next = mapPaths(get().project, (path, kind) => (kind === 'proxy' ? path : map[path] ?? path))
+    if (JSON.stringify(projectPaths(next)) === JSON.stringify(projectPaths(get().project))) return
+    get().pushHistory('hCollect')
+    set({ project: next })
+  },
+  setActiveTimeline: (id) =>
+    set((s) => {
+      const p = s.project
+      const act = activeTimelineId(p)
+      const list = timelinesOf(p)
+      const target = list.find((t) => t.id === id)
+      if (!target || id === act) return s
+      // the open timeline's tracks go back into its entry, the target's come out of theirs
+      const timelines = list.map((t) =>
+        t.id === act ? { id: t.id, name: t.name, tracks: p.tracks } : t.id === id ? { id: t.id, name: t.name } : t)
+      return {
+        project: { ...p, tracks: target.tracks ?? [], timelines, activeTimeline: id },
+        selection: [], range: null, animClipId: null
+      }
+    }),
+  addTimeline: (name) => {
+    const id = uid()
+    get().pushHistory('hTimeline')
+    set((s) => ({
+      project: {
+        ...s.project,
+        timelines: [...namedTimelines(s.project), { id, name: name?.trim() || trf('tlNth', { n: timelinesOf(s.project).length + 1 }), tracks: defaultTracks() }],
+        activeTimeline: activeTimelineId(s.project)
+      }
+    }))
+    get().setActiveTimeline(id)
+    return id
+  },
+  renameTimeline: (id, name) => {
+    const next = name.trim()
+    const t = timelinesOf(get().project).find((x) => x.id === id)
+    if (!t || !next || t.name === next) return
+    get().pushHistory('hTimeline')
+    set((s) => ({
+      project: { ...s.project, timelines: namedTimelines(s.project).map((x) => (x.id === id ? { ...x, name: next } : x)), activeTimeline: activeTimelineId(s.project) }
+    }))
+  },
+  removeTimeline: (id) => {
+    const p = get().project
+    const list = timelinesOf(p)
+    if (list.length < 2 || !list.some((t) => t.id === id)) return false
+    if (allTracks(p).some((t) => t.clips.some((c) => isCompound(c) && c.timelineId === id))) return false
+    get().pushHistory('hTimeline')
+    if (activeTimelineId(p) === id) get().setActiveTimeline(list.find((t) => t.id !== id)!.id)
+    set((s) => ({ project: { ...s.project, timelines: timelinesOf(s.project).filter((t) => t.id !== id) } }))
+    return true
+  },
+  nestClips: (ids) => {
+    const p0 = get().project
+    const chosen = new Set(withLinked(p0, ids).filter((id) => {
+      const f = findClip(p0, id)
+      return !!f && !f.track.locked
+    }))
+    if (!chosen.size) return null
+    const tid = uid()
+    const cid = uid()
+    get().pushHistory('hNest')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const moved = p.tracks.flatMap((t) => t.clips.filter((c) => chosen.has(c.id)))
+      const a = Math.min(...moved.map((c) => c.start))
+      const b = Math.max(...moved.map((c) => c.start + c.duration))
+      const used = p.tracks.filter((t) => t.clips.some((c) => chosen.has(c.id)))
+      // the nest keeps the layout of the tracks it came from (their order, kinds and names)
+      const inner: Track[] = used.map((t) => ({
+        id: uid(), kind: t.kind, name: t.name, muted: false, locked: false, gain: 1,
+        ...(t.color ? { color: t.color } : {}),
+        clips: t.clips.filter((c) => chosen.has(c.id)).map((c) => ({ ...c, start: c.start - a }))
+      }))
+      for (const t of used) t.clips = t.clips.filter((c) => !chosen.has(c.id))
+      // the compound goes where the top picture was (the top track if all is sound);
+      // a track busy over the span gets a fresh one of its kind right above it
+      let host = used.find((t) => t.kind === 'video') ?? used[0]
+      if (host.clips.some((c) => c.start < b - 1e-6 && c.start + c.duration > a + 1e-6)) {
+        const fresh = makeTrack(p, host.kind)
+        p.tracks.splice(p.tracks.indexOf(host), 0, fresh)
+        host = fresh
+      }
+      const name = trf('tlCompound', { n: timelinesOf(p).length })
+      host.clips.push(compoundClip(cid, tid, a, b - a, name))
+      p.timelines = [...namedTimelines(p), { id: tid, name, tracks: inner }]
+      p.activeTimeline = activeTimelineId(s.project)
+      return { project: p, selection: [cid] }
+    })
+    return cid
+  },
+  insertTimelineClip: (timelineId, trackId, at) => {
+    const p0 = get().project
+    const len = timelineDuration(p0, timelineId)
+    if (!timelineTracks(p0, timelineId) || !(len > 0) || nestsInto(p0, activeTimelineId(p0), timelineId)) return null
+    const cid = uid()
+    const start = toFrame(Math.max(0, at), p0.fps)
+    get().pushHistory('hNest')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const free = (t: Track) => !t.locked && t.kind === 'video' &&
+        !t.clips.some((c) => c.start < start + len - 1e-6 && c.start + c.duration > start + 1e-6)
+      let track = trackId ? p.tracks.find((t) => t.id === trackId && !t.locked) : p.tracks.find(free)
+      if (!track) {
+        track = makeTrack(p, 'video')
+        p.tracks.unshift(track)
+      }
+      const name = timelinesOf(p).find((t) => t.id === timelineId)?.name || tr('tlMain')
+      track.clips.push(compoundClip(cid, timelineId, start, len, name))
+      return { project: p, selection: [cid] }
+    })
+    return cid
+  },
+  addBin: (name, parentId, assetIds) => {
+    const id = uid()
+    get().pushHistory('hBinNew')
+    set((st) => {
+      const p = cloneProject(st.project)
+      p.bins = [...(p.bins ?? []), { id, name, parentId }]
+      moveInto(p, assetIds, [], id)
+      return { project: p }
+    })
+    return id
+  },
+  renameBin: (id, name) => {
+    const next = name.trim()
+    const b = get().project.bins?.find((x) => x.id === id)
+    if (!b || !next || b.name === next) return
+    get().pushHistory('hBinRename')
+    set((st) => {
+      const p = cloneProject(st.project)
+      p.bins!.find((x) => x.id === id)!.name = next
+      return { project: p }
+    })
+  },
+  moveToBin: (assetIds, binIds, target) => {
+    // tried on a copy first: a drop that moves nothing leaves no undo step
+    const p = cloneProject(get().project)
+    if (!moveInto(p, assetIds, binIds, target)) return
+    get().pushHistory('hBinMove')
+    set({ project: p })
+  },
+  removeBin: (id) => {
+    const p = cloneProject(get().project)
+    if (!dissolveBin(p, id)) return
+    get().pushHistory('hBinDelete')
+    set({ project: p })
+  },
 
   removeAssets: (assetIds) => {
     const ids = new Set(assetIds)
@@ -754,8 +1641,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       p.voiceRuns = (p.voiceRuns ?? []).filter((r) => !ids.has(r.assetId))
       p.defects = (p.defects ?? []).filter((d) => !ids.has(d.assetId))
       const dead = new Set<string>()
-      // clips lose their source — drop them everywhere, locked tracks included
-      for (const tr of p.tracks) {
+      // clips lose their source — drop them everywhere, locked tracks and other timelines included
+      for (const tr of allTracks(p)) {
         tr.clips = tr.clips.filter((c) => {
           const doomed = !!c.assetId && ids.has(c.assetId)
           if (doomed) dead.add(c.id)
@@ -792,21 +1679,19 @@ export const useEditor = create<EditorState>((set, get) => ({
     for (const track of s.project.tracks) {
       for (const clip of track.clips) {
         if (clip.assetId !== oldAssetId) continue
-        const speed = clip.speed || 1
         const a = remap(clip.inPoint)
-        const b = remap(clip.inPoint + clip.duration * speed)
+        const b = remap(clip.inPoint + sourceOffset(clip, clip.duration))
         if (a === null || b === null || b <= a) {
           // a clip edge sits inside the phrase being replaced: there is no
           // honest answer for where it should land, so we refuse instead of
           // silently mangling the cut the user made
-          return { error: `клип «${clip.label}» разрезан внутри заменяемой фразы — ` +
-            'автоматически починить нельзя. Сведите озвучку в один клип или снимите разрез.' }
+          return { error: trf('eStCutInside', { label: clip.label ?? '' }) }
         }
         affected.push({ clip, track, oldStart: clip.start, oldEnd: clip.start + clip.duration,
-                        inPoint: a, duration: (b - a) / speed })
+                        inPoint: a, duration: relAtOffset(clip, b - a) })
       }
     }
-    if (!affected.length) return { error: 'на таймлайне нет клипов этой озвучки' }
+    if (!affected.length) return { error: tr('eStNoClips') }
 
     // Куда переехала каждая заменённая фраза: её начало на месте (remap не
     // двигает то, что до реза), а конец задаётся длиной вставки. Без этого
@@ -819,6 +1704,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     const warnings: string[] = []
     let dropped = 0
+    let straddles = false
     get().pushHistory('hVoiceFix')
     set((st) => {
       const p = cloneProject(st.project)
@@ -827,12 +1713,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       // shift events: after this clip ended, everything moves by d
       const events = affected.map((a) => ({ at: a.oldEnd, d: a.duration - (a.oldEnd - a.oldStart) }))
         .sort((x, y) => x.at - y.at)
-      const shiftFor = (start: number) =>
-        ripple ? events.reduce((n, e) => (e.at <= start + 1e-6 ? n + e.d : n), 0) : 0
       const tracksToRipple = new Set(
         rippleAllTracks ? p.tracks.filter((t) => !t.locked).map((t) => t.id)
                         : affected.map((a) => a.track.id))
 
+      // what does NOT ride the ripple: clips on other tracks, and a clip that
+      // STRADDLES the splice — it would have to stretch. Say so rather than pretend.
+      const skip = new Set<string>()
       for (const track of p.tracks) {
         for (const c of track.clips) {
           const mine = affected.find((a) => a.clip.id === c.id)
@@ -840,23 +1727,24 @@ export const useEditor = create<EditorState>((set, get) => ({
             c.assetId = newAsset.id
             c.inPoint = mine.inPoint
             c.duration = mine.duration
-            c.start = mine.oldStart + shiftFor(mine.oldStart)
             continue
           }
-          if (!ripple || !tracksToRipple.has(track.id)) continue
-          // a clip that STRADDLES the splice cannot be fixed by shifting: it
-          // would have to stretch. Say so rather than pretend.
-          const spans = events.some((e) => c.start < e.at - 1e-6 && c.start + c.duration > e.at + 1e-6)
-          if (spans) {
-            if (!warnings.length || !warnings.some((w) => w.includes('накрывает место склейки'))) {
-              warnings.push('часть клипов накрывает место склейки — их длину сдвиг не исправит')
-            }
-            continue
+          if (!tracksToRipple.has(track.id)) { skip.add(c.id); continue }
+          if (events.some((e) => c.start < e.at - 1e-6 && c.start + c.duration > e.at + 1e-6)) {
+            skip.add(c.id)
+            straddles = true
           }
-          c.start += shiftFor(c.start)
         }
       }
-      if (!ripple) warnings.push('сдвиг выключен: клипы правее могут наехать друг на друга')
+      // right to left, so an event's clips are judged where they stood before it.
+      // ponytail: a clip pulled left past an EARLIER event (voice copies overlapping
+      // on two tracks) would miss that event's shift; one-pass sum if that ever happens
+      if (ripple) {
+        const all = p.tracks.map((t) => t.id)
+        for (const e of [...events].reverse()) shiftAfter(p, e.at, e.d, all, skip)
+      }
+      if (ripple && straddles) warnings.push(tr('eStStraddle'))
+      if (!ripple) warnings.push(tr('eStNoRipple'))
 
       p.voiceRuns = (p.voiceRuns ?? []).map((r) =>
         r.id === runId ? { ...r, assetId: newAsset.id, duration: newDuration } : r)
@@ -897,16 +1785,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       p.defects = kept
       return { project: p }
     })
-    if (dropped) {
-      const n = dropped % 100
-      const word = n >= 11 && n <= 14 ? 'отметок'
-        : n % 10 === 1 ? 'отметка'
-        : n % 10 >= 2 && n % 10 <= 4 ? 'отметки'
-        : 'отметок'
-      const verb = n % 10 === 1 && n !== 11 ? 'снята' : 'сняты'
-      warnings.push(`внутри заменённых фраз ${verb} ещё ${dropped} ${word}: ` +
-        'этого звука больше нет, переспросите детектор')
-    }
+    if (dropped) warnings.push(trf('eStDropped', { n: dropped }))
     return { delta: total, warnings }
   },
 
@@ -1015,12 +1894,14 @@ export const useEditor = create<EditorState>((set, get) => ({
     }))
   },
 
-  insertFragmentClip: (fragmentId, meta, start, duration) => {
+  insertFragmentClip: (fragmentId, meta, at, rawDuration) => {
     const clipId = uid()
     get().pushHistory('hInsert')
     set((s) => {
       const p = cloneProject(s.project)
-      const end = start + duration
+      const start = Math.max(0, toFrame(at, p.fps))
+      const end = frameEnd(p.fps, start, start + rawDuration)
+      const duration = end - start
       // The topmost unlocked video track with the slot free — but never one
       // UNDER a track that already shows something in that span: a caption put
       // on a free track below the footage is covered by it (and goes through
@@ -1042,7 +1923,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         kind: 'remotion',
         fragmentId,
         fragmentMeta: meta,
-        start: Math.max(0, start),
+        start,
         duration,
         inPoint: 0,
         label: meta.name,
@@ -1072,14 +1953,17 @@ export const useEditor = create<EditorState>((set, get) => ({
     })
   },
 
-  addMarker: (time) => {
+  addMarker: (time, opts) => {
     get().pushHistory('hMarker')
     const id = uid()
     set((s) => {
       const p = cloneProject(s.project)
       p.markers ??= []
       const n = p.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
-      p.markers.push({ id, time: Math.max(0, time), label: String(n) })
+      const m: TimelineMarker = { id, time: Math.max(0, toFrame(time, p.fps)), label: opts?.label?.trim() || String(n) }
+      if (opts?.kind) m.kind = opts.kind
+      if (opts?.end !== undefined) m.end = Math.max(m.time, toFrame(opts.end, p.fps))
+      p.markers.push(m)
       return { project: p }
     })
     return id
@@ -1090,17 +1974,65 @@ export const useEditor = create<EditorState>((set, get) => ({
       const m0 = s.project.markers?.find((x) => x.id === id)
       if (!m0) return {}
       const p = cloneProject(s.project)
-      p.markers!.find((x) => x.id === id)!.time = Math.max(0, time)
+      p.markers!.find((x) => x.id === id)!.time = Math.max(0, toFrame(time, p.fps))
       return { project: p }
     }),
 
-  removeMarker: (id) => {
+  removeMarker: (id, clipId) => {
     get().pushHistory('hMarkerDelete')
     set((s) => {
       const p = cloneProject(s.project)
-      p.markers = (p.markers ?? []).filter((x) => x.id !== id)
+      if (clipId) {
+        const c = findClip(p, clipId)?.clip
+        if (c) c.markers = (c.markers ?? []).filter((x) => x.id !== id)
+      } else p.markers = (p.markers ?? []).filter((x) => x.id !== id)
       return { project: p }
     })
+  },
+
+  addClipMarker: (clipId, time, opts) => {
+    const c0 = findClip(get().project, clipId)?.clip
+    if (!c0) return ''
+    get().pushHistory('hMarker')
+    const id = uid()
+    set((s) => {
+      const p = cloneProject(s.project)
+      const c = findClip(p, clipId)!.clip
+      c.markers ??= []
+      const n = c.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
+      const rel = Math.min(c.duration, Math.max(0, toFrame(time, p.fps) - c.start))
+      c.markers.push({ id, source: c.inPoint + sourceOffset(c, rel), label: opts?.label?.trim() || String(n) })
+      return { project: p }
+    })
+    return id
+  },
+
+  updateMarker: (ref, patch) => {
+    const find = (p: Project) => ref.clipId
+      ? findClip(p, ref.clipId)?.clip.markers?.find((x) => x.id === ref.id)
+      : p.markers?.find((x) => x.id === ref.id)
+    const apply = (m: { label: string; note?: string; color?: number }) => {
+      if (patch.label !== undefined && patch.label.trim()) m.label = patch.label.trim()
+      if ('note' in patch) { const n = patch.note?.trim(); if (n) m.note = n; else delete m.note }
+      if ('color' in patch) { if (patch.color) m.color = patch.color; else delete m.color }
+    }
+    const m0 = find(get().project)
+    if (!m0) return
+    const probe = { ...m0 }
+    apply(probe)
+    if (JSON.stringify(probe) === JSON.stringify(m0)) return
+    get().pushHistory('hMarkerEdit')
+    set((s) => {
+      const p = cloneProject(s.project)
+      apply(find(p)!)
+      return { project: p }
+    })
+  },
+
+  goToMarker: (dir) => {
+    const s = get()
+    const t = nextMarkerTime(s.project, s.playhead, dir)
+    if (t !== null) s.setPlayhead(t)
   },
 
   setBeatMarkers: (beats, range, extra) => {
@@ -1154,8 +2086,24 @@ export const useEditor = create<EditorState>((set, get) => ({
     return doomed
   },
 
+  setSceneMarkers: (times, range) => {
+    const p0 = get().project
+    const inRange = (t: number) => t >= range.start - 1e-6 && t <= range.end + 1e-6
+    const next = [...new Set(times.map((t) => toFrame(t, p0.fps)))].filter((t) => t >= 0 && inRange(t)).sort((a, b) => a - b)
+    const old = (p0.markers ?? []).filter((m) => m.kind === 'scene' && inRange(m.time)).map((m) => m.time)
+    if (JSON.stringify(old) === JSON.stringify(next)) return
+    get().pushHistory('hScenes')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const kept = (p.markers ?? []).filter((m) => m.kind !== 'scene' || !inRange(m.time))
+      const added = next.map((time): TimelineMarker => ({ id: uid(), time, label: '', kind: 'scene' }))
+      p.markers = [...kept, ...added].sort((a, b) => a.time - b.time)
+      return { project: p }
+    })
+  },
+
   placeAudio: (asset, at, opts) => {
-    get().pushHistory(opts?.history ?? 'hInsert')
+    if (opts?.history !== null) get().pushHistory(opts?.history ?? 'hInsert')
     let result = { clipId: '', trackId: '', assetId: '' }
     set((s) => {
       const p = cloneProject(s.project)
@@ -1165,9 +2113,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         p.assets = [...p.assets, a]
       }
       const start = Math.max(0, at)
-      const end = start + Math.max(0.01, a.duration)
-      let track = p.tracks.find((t) => t.kind === 'audio' && !t.locked &&
-        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6))
+      const inPoint = opts?.inPoint ?? 0
+      const duration = opts?.duration ?? a.duration
+      const end = start + Math.max(0.01, duration)
+      const free = (t: Track) => t.kind === 'audio' && !t.locked &&
+        !t.clips.some((c) => c.start < end - 1e-6 && c.start + c.duration > start + 1e-6)
+      const want = p.tracks.find((t) => t.id === opts?.trackId)
+      let track = want && free(want) ? want : p.tracks.find(free)
       if (!track) {
         track = makeTrack(p, 'audio')
         p.tracks.push(track)
@@ -1179,8 +2131,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         assetId: a.id,
         kind: 'media',
         start,
-        duration: a.duration,
-        inPoint: 0,
+        duration,
+        inPoint,
         label: opts?.label ?? a.name,
         ...defaults,
         gain: Number.isFinite(gain) ? { value: Math.min(2, Math.max(0, gain as number)) } : defaults.gain
@@ -1235,10 +2187,12 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p }
     }),
 
-  insertClipFromAsset: (assetId, trackId, at) =>
-    get().insertClipsFromAssets([assetId], trackId, at),
+  setMasterGain: (gain) => set((s) => ({ project: { ...s.project, masterGain: gain } })),
 
-  insertClipsFromAssets: (assetIds, trackId, at) => {
+  insertClipFromAsset: (assetId, trackId, at, ripple) =>
+    get().insertClipsFromAssets([assetId], trackId, at, ripple),
+
+  insertClipsFromAssets: (assetIds, trackId, at, ripple) => {
     const s = get()
     const found = assetIds
       .map((id) => s.project.assets.find((a) => a.id === id))
@@ -1247,7 +2201,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     s.pushHistory('hInsert')
     set((st) => {
       const p = cloneProject(st.project)
-      let cursor = Math.max(0, at)
+      let cursor = Math.max(0, toFrame(at, p.fps))
       const ids: string[] = []
       for (const asset of found) {
         const wantKind: TrackKind = asset.kind === 'audio' ? 'audio' : 'video'
@@ -1256,7 +2210,9 @@ export const useEditor = create<EditorState>((set, get) => ({
           track = p.tracks.find((t) => t.kind === wantKind && !t.locked)
         }
         if (!track) continue
-        const duration = asset.kind === 'image' ? 5 : asset.duration
+        const raw = asset.kind === 'image' ? setting<number>('editing.stillDuration') : asset.duration
+        // the last whole frame of the source, never past it
+        const duration = frameEnd(p.fps, cursor, cursor + raw, Math.floor) - cursor
         const clip: Clip = {
           id: uid(),
           assetId: asset.id,
@@ -1265,7 +2221,8 @@ export const useEditor = create<EditorState>((set, get) => ({
           duration,
           inPoint: 0,
           label: asset.name,
-          ...newClipDefaults()
+          ...newClipDefaults(),
+          ...(wantKind === 'audio' ? audioFade() : {})
         }
         track.clips.push(clip)
         ids.push(clip.id)
@@ -1278,6 +2235,7 @@ export const useEditor = create<EditorState>((set, get) => ({
             clip.muted = true // sound comes from the audio-track twin
             const audioClip: Clip = {
               ...clone(clip),
+              ...audioFade(),
               id: uid(),
               muted: false,
               linkId
@@ -1289,8 +2247,73 @@ export const useEditor = create<EditorState>((set, get) => ({
         cursor += duration // next dropped file starts where this one ends
       }
       if (!ids.length) return st
+      if (ripple) {
+        const t0 = Math.max(0, toFrame(at, p.fps))
+        const mine = new Set(ids)
+        openGap(p, t0, cursor - t0, p.tracks.filter((t) => t.clips.some((c) => mine.has(c.id))).map((t) => t.id), mine)
+      }
       return { project: p, selection: ids }
     })
+  },
+
+  threePointEdit: (mode, src, targets) => {
+    const s = get()
+    const asset = s.project.assets.find((a) => a.id === src.assetId)
+    if (!asset) return []
+    // what the file has: a picture (video, image) and/or a sound (audio, video with sound)
+    const want = {
+      video: asset.kind !== 'audio' ? targets.video : null,
+      audio: asset.kind === 'audio' || (asset.kind === 'video' && asset.hasAudio) ? targets.audio : null
+    }
+    const kinds = (['video', 'audio'] as const).filter((k) => want[k] !== null)
+    if (!kinds.length) return []
+    for (const k of kinds) {
+      if (want[k] === 'new') continue
+      const t = s.project.tracks.find((x) => x.id === want[k])
+      if (!t || t.locked || t.kind !== k) return []
+    }
+    const fps = s.project.fps
+    const still = asset.kind === 'image'
+    const r = resolveThreePoint({
+      srcDur: still ? setting<number>('editing.stillDuration') : asset.duration,
+      srcIn: still ? null : src.in, srcOut: still ? null : src.out,
+      playhead: s.playhead, range: s.range
+    })
+    const at = Math.max(0, toFrame(r.at, fps))
+    // round the length to frames, never past the source's last whole frame
+    let len = frameEnd(fps, at, at + r.len) - at
+    if (!still && r.srcIn + len > asset.duration + 1e-9) len = frameEnd(fps, at, at + asset.duration - r.srcIn, Math.floor) - at
+    if (!(len > 0)) return []
+    s.pushHistory(mode === 'insert' ? 'hSrcInsert' : 'hSrcOverwrite')
+    const ids: string[] = []
+    set((st) => {
+      const p = cloneProject(st.project)
+      const dest: Partial<Record<TrackKind, Track>> = {}
+      for (const k of kinds) {
+        if (want[k] === 'new') {
+          const t = makeTrack(p, k)
+          p.tracks.splice(k === 'video' ? 0 : p.tracks.length, 0, t)
+          dest[k] = t
+        } else dest[k] = p.tracks.find((x) => x.id === want[k])!
+      }
+      const trackIds = kinds.map((k) => dest[k]!.id)
+      if (mode === 'insert') openGap(p, at, len, trackIds, new Set())
+      else liftRange(p, { start: at, end: at + len }, new Set(trackIds))
+      const linkId = kinds.length === 2 ? uid() : undefined
+      for (const k of kinds) {
+        const clip: Clip = {
+          id: uid(), assetId: asset.id, kind: 'media', start: at, duration: len, inPoint: still ? 0 : r.srcIn,
+          label: asset.name, ...newClipDefaults(), ...(k === 'audio' ? audioFade() : {}),
+          ...(linkId ? { linkId } : {}),
+          // a pair's sound comes from its audio twin
+          ...(linkId && k === 'video' ? { muted: true } : {})
+        }
+        dest[k]!.clips.push(clip)
+        ids.push(clip.id)
+      }
+      return { project: p, selection: [...ids], playhead: at + len, range: null }
+    })
+    return ids
   },
 
   setClipSpeed: (clipId, speed, duration, start) =>
@@ -1303,17 +2326,59 @@ export const useEditor = create<EditorState>((set, get) => ({
         // linked partners change tempo together
         for (const f of withLinked(p, [id])
           .map((cid) => findClip(p, cid))
-          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
+          // L6: a compound plays its timeline at 1× (the expansion has no speed)
+          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked && !isCompound(x.clip))) {
           const c = f.clip
           const oldSpeed = c.speed || 1
           rescaleClipAnims(c, oldSpeed / speed)
+          scaleRampValues(c, speed / oldSpeed) // a ramp keeps its shape around the new base
           c.speed = speed
-          c.duration = duration
-          if (start !== undefined) c.start = Math.max(0, start)
+          // the speed stays exact; the end is quantised from the raw end
+          const s0 = start !== undefined ? Math.max(0, start) : c.start
+          if (start !== undefined) c.start = Math.max(0, toFrame(s0, p.fps))
+          c.duration = frameEnd(p.fps, c.start, s0 + duration) - c.start
         }
       }
       return { project: p }
     }),
+
+  setSpeedRamp: (clipIds, preset) => {
+    const st = get()
+    const base = new Map<string, number>()
+    const items: SpeedItem[] = []
+    for (const id of clipIds) {
+      const f = findClip(st.project, id)
+      if (!f || f.track.locked || f.clip.kind !== 'media' || !(f.clip.duration > 0)) continue
+      base.set(id, f.clip.speed || 1)
+      // the clip's effective speed: what layoutSpeeds keeps is the source span
+      items.push({ id, trackId: f.track.id, start: f.clip.start, duration: f.clip.duration,
+        speed: sourceOffset(f.clip, f.clip.duration) / f.clip.duration })
+    }
+    if (!items.length) return
+    st.pushHistory('hSpeedRamp')
+    const plan = layoutSpeeds(items, (it) => (preset ? rampMean(preset, base.get(it.id)!) : base.get(it.id)!), 'start')
+    set((s) => {
+      const p = cloneProject(s.project)
+      const done = new Set<string>()
+      for (const e of plan) {
+        for (const f of withLinked(p, [e.id])
+          .map((cid) => findClip(p, cid))
+          .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
+          const c = f.clip
+          if (done.has(c.id)) continue
+          done.add(c.id)
+          const s0 = Math.max(0, e.start)
+          c.start = toFrame(s0, p.fps)
+          const d = frameEnd(p.fps, c.start, s0 + e.duration) - c.start
+          rescaleClipAnims(c, d / c.duration) // the clip's other keys stay glued to its length
+          c.duration = d
+          if (preset) c.speedRamp = rampAnim(preset, c.speed || 1, d)
+          else delete c.speedRamp
+        }
+      }
+      return { project: p }
+    })
+  },
 
   setClipDuration: (clipId, duration) =>
     set((s) => {
@@ -1321,7 +2386,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       for (const f of withLinked(p, [clipId])
         .map((id) => findClip(p, id))
         .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)) {
-        f.clip.duration = Math.max(0.05, duration)
+        f.clip.duration = frameEnd(p.fps, f.clip.start, f.clip.start + Math.max(0.05, duration)) - f.clip.start
       }
       return { project: p }
     }),
@@ -1347,7 +2412,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         const key = e.edge === 'in' ? 'transitionIn' : 'transitionOut'
         const prev = f.clip[key]
         // a previous overlap-style transition (duration 0) is not a tip length
-        const keep = prev && prev.duration > 0.001 ? prev.duration : 0.5
+        const keep = prev && prev.duration > 0.001 ? prev.duration : setting<number>('editing.edgeDuration')
         f.clip[key] = e.type
           ? { type: e.type, duration: Math.max(0.05, e.duration ?? keep) }
           : undefined
@@ -1390,13 +2455,14 @@ export const useEditor = create<EditorState>((set, get) => ({
       const p = cloneProject(st.project)
       const track = p.tracks.find((t) => t.kind === 'video' && !t.locked)
       if (!track) return st
+      const start = Math.max(0, toFrame(at, p.fps))
       const clip: Clip = {
         id: uid(),
         kind: 'text',
-        text: 'Текст',
+        text: tr('text'),
         textStyle: defaultTextStyle(),
-        start: Math.max(0, at),
-        duration: 4,
+        start,
+        duration: frameEnd(p.fps, start, start + setting<number>('editing.textDuration')) - start,
         inPoint: 0,
         label: 'Text',
         ...newClipDefaults()
@@ -1404,6 +2470,19 @@ export const useEditor = create<EditorState>((set, get) => ({
       track.clips.push(clip)
       return { project: p, selection: [clip.id] }
     })
+  },
+
+  updateProjectSettings: (patch, session) => {
+    const s = get()
+    const keys = Object.keys(patch) as (keyof ProjectSettingsPatch)[]
+    if (keys.every((k) => s.project[k] === patch[k])) return
+    const top = s.past[s.past.length - 1]
+    if (session === undefined || session !== settingsMark.session || top !== settingsMark.entry) {
+      s.pushHistory('projectSettings')
+      settingsMark.session = session
+      settingsMark.entry = get().past[get().past.length - 1]
+    }
+    set((st) => ({ project: { ...st.project, ...patch } }))
   },
 
   updateClip: (clipId, patch) =>
@@ -1414,13 +2493,33 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p }
     }),
 
+  setClipProps: (ids, patch) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      for (const id of ids) {
+        const f = findClip(p, id)
+        if (f) Object.assign(f.clip, patch)
+      }
+      return { project: p }
+    }),
+
+  toggleDisabled: () => {
+    const s = get()
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!own.length) return
+    const off = own.some((c) => !c.disabled)
+    s.pushHistory('hEdit')
+    s.setClipProps(own.map((c) => c.id), { disabled: off || undefined })
+  },
+
   setClipStarts: (entries) =>
     set((s) => {
       const p = cloneProject(s.project)
       for (const e of entries) {
         const f = findClip(p, e.id)
         if (!f || f.track.locked) continue
-        f.clip.start = Math.max(0, e.start)
+        f.clip.start = Math.max(0, toFrame(e.start, p.fps))
         if (e.trackId && e.trackId !== f.track.id) {
           const dst = p.tracks.find((t) => t.id === e.trackId)
           if (dst && dst.kind === f.track.kind && !dst.locked) {
@@ -1440,7 +2539,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (!f || !dst || dst.locked) return s
       if (dst.kind !== f.track.kind) return s
       f.track.clips = f.track.clips.filter((c) => c.id !== clipId)
-      f.clip.start = Math.max(0, start)
+      f.clip.start = Math.max(0, toFrame(start, p.fps))
       dst.clips.push(f.clip)
       return { project: p }
     }),
@@ -1448,86 +2547,98 @@ export const useEditor = create<EditorState>((set, get) => ({
   trimClip: (clipId, edge, time) =>
     set((s) => {
       const p = cloneProject(s.project)
-      const first = findClip(p, clipId)
-      if (!first || first.track.locked) return s
-      // linked partners trim together
-      const targets = withLinked(p, [clipId])
-        .map((id) => findClip(p, id))
-        .filter((x): x is NonNullable<typeof x> => !!x && !x.track.locked)
-      for (const f of targets) {
-        const c = f.clip
-        const speed = c.speed || 1
-        const asset = c.assetId ? p.assets.find((a) => a.id === c.assetId) : undefined
-        if (edge === 'in') {
-          const end = c.start + c.duration
-          let ns = Math.min(Math.max(0, time), end - 0.05)
-          let delta = ns - c.start
-          // can't reveal media before the source start
-          if (c.inPoint + delta * speed < 0) {
-            delta = -c.inPoint / speed
-            ns = c.start + delta
-          }
-          c.inPoint += delta * speed
-          c.start = ns
-          c.duration = end - ns
-          shiftClipAnims(c, -delta) // keyframes stay glued to the content
-        } else {
-          let nd = Math.max(0.05, time - c.start)
-          if (asset && asset.kind !== 'image') {
-            // edge trim never reveals more than the source (unless already looping)
-            const maxOut = Math.max((asset.duration - c.inPoint) / speed, c.duration)
-            if (nd > maxOut) nd = maxOut
-          }
-          c.duration = nd
-        }
+      return trimInPlace(p, clipId, edge, time) ? { project: p } : s
+    }),
+
+  rippleTrim: (clipId, edge, time) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const c0 = findClip(p, clipId)?.clip
+      if (!c0) return s
+      const start = c0.start
+      const end = c0.start + c0.duration
+      const targets = trimInPlace(p, clipId, edge, time)
+      if (!targets) return s
+      let dt = c0.start + c0.duration - end
+      if (edge === 'in') {
+        // the head came off the source; the clip keeps its place, the tail closes up
+        dt = start - c0.start
+        for (const f of targets) f.clip.start += dt
       }
+      shiftAfter(p, end, dt, rippleTracks(p, targets.map((f) => f.track.id), end),
+        new Set(targets.map((f) => f.clip.id)))
       return { project: p }
     }),
 
+  rollEdit: (leftId, rightId, t) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const L = findClip(p, leftId)?.clip
+      if (!L) return s
+      const d = settle(p, toFrame(t, p.fps) - (L.start + L.duration), (q, d) => rollIn(q, leftId, rightId, d))
+      if (!d) return s
+      rollIn(p, leftId, rightId, d)
+      return { project: p }
+    }),
+
+  slip: (clipId, dt) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const d = toFrame(dt, p.fps)
+      let changed = false
+      for (const id of withLinked(p, [clipId])) {
+        const f = findClip(p, id)
+        const asset = f?.clip.assetId ? p.assets.find((a) => a.id === f.clip.assetId) : undefined
+        if (!f || f.track.locked || !asset || asset.kind === 'image') continue
+        const c = f.clip
+        const speed = c.speed || 1
+        // a clip already longer than its source (looping) keeps what it has
+        const hi = Math.max(asset.duration - sourceOffset(c, c.duration), c.inPoint)
+        const ni = Math.min(hi, Math.max(0, c.inPoint + d * speed))
+        if (ni !== c.inPoint) changed = true
+        c.inPoint = ni
+      }
+      return changed ? { project: p } : s
+    }),
+
+  slide: (clipId, dt) =>
+    set((s) => {
+      const p = cloneProject(s.project)
+      const d = settle(p, toFrame(dt, p.fps), (q, d) => slideIn(q, clipId, d))
+      if (!d) return s
+      slideIn(p, clipId, d)
+      return { project: p }
+    }),
+
+  trimToPlayhead: (edge) => {
+    const s = get()
+    const t = toFrame(s.playhead, s.project.fps)
+    const under = s.project.tracks.flatMap((tr) =>
+      tr.locked ? [] : tr.clips.filter((c) => c.start < t - 1e-6 && c.start + c.duration > t + 1e-6))
+    const c = under.find((x) => s.selection.includes(x.id)) ?? under[0]
+    if (!c) return
+    s.pushHistory('hRippleTrim')
+    s.rippleTrim(c.id, edge, t)
+    if (edge === 'in') s.setPlayhead(c.start)
+  },
+
   splitAtPlayhead: () => {
     const s = get()
-    const t = s.playhead
-    const selIds = s.selection.length ? withLinked(s.project, s.selection) : []
-    const targets = s.project.tracks.flatMap((tr) =>
-      tr.locked ? [] : tr.clips.filter((c) =>
-        (selIds.length === 0 || selIds.includes(c.id)) &&
-        t > c.start + 0.02 && t < c.start + c.duration - 0.02
-      )
-    )
-    if (!targets.length) return
-    s.pushHistory('hSplit')
-    set((st) => {
-      const p = cloneProject(st.project)
-      const newIds: string[] = []
-      // halves of a linked pair stay linked pairwise
-      const rightLinks = new Map<string, string>()
-      for (const orig of targets) {
-        const f = findClip(p, orig.id)
-        if (!f) continue
-        const c = f.clip
-        const offset = t - c.start
-        let rightLink: string | undefined
-        if (c.linkId) {
-          if (!rightLinks.has(c.linkId)) rightLinks.set(c.linkId, uid())
-          rightLink = rightLinks.get(c.linkId)
-        }
-        const right: Clip = {
-          ...clone(c),
-          id: uid(),
-          start: t,
-          duration: c.duration - offset,
-          inPoint: c.inPoint + offset * (c.speed || 1),
-          fadeIn: 0,
-          linkId: rightLink
-        }
-        shiftClipAnims(right, -offset)
-        c.duration = offset
-        c.fadeOut = 0
-        f.track.clips.push(right)
-        newIds.push(right.id)
-      }
-      return { project: p, selection: newIds }
-    })
+    const t = toFrame(s.playhead, s.project.fps) // the cut lands on a frame, wherever the playhead sits
+    // «Разрез захватывает»: the selection (every track without one), or every unlocked track
+    const selIds = s.selection.length && setting('editing.splitScope') === 'selection' ? withLinked(s.project, s.selection) : []
+    const ids = splitTargets(s.project, t, (c) => selIds.length === 0 || selIds.includes(c.id))
+    if (ids.length) set({ selection: splitClips(get, set, t, ids) })
+  },
+
+  splitAt: (time, trackIds) => {
+    const s = get()
+    const t = toFrame(time, s.project.fps)
+    const on = new Set(trackIds ?? s.project.tracks.map((tr) => tr.id))
+    const own = splitTargets(s.project, t, () => true, on)
+    // a twin on another track goes too, or the pair's halves stop matching
+    const ids = splitTargets(s.project, t, (c) => withLinked(s.project, own).includes(c.id))
+    return ids.length ? splitClips(get, set, t, ids) : []
   },
 
   deleteSelection: () => {
@@ -1556,15 +2667,56 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (c.start >= time && c.start < nextStart) nextStart = c.start
     }
     if (!isFinite(nextStart) || nextStart - prevEnd < 1e-6) return
-    const shift = nextStart - prevEnd
     s.pushHistory('hCloseGap')
     set((st) => {
       const p = cloneProject(st.project)
-      const tr = p.tracks.find((t) => t.id === trackId)!
-      for (const c of tr.clips) {
-        if (c.start >= nextStart - 1e-6) c.start -= shift
+      shiftAfter(p, nextStart, prevEnd - nextStart, [trackId])
+      return { project: p }
+    })
+  },
+
+  closeGaps: (which) => {
+    const s = get()
+    const tracks = s.project.tracks.filter((t) => !t.locked && (which === 'all' || which.includes(t.id)))
+    if (!tracks.some((t) => gapsOf(t.clips).length)) return
+    s.pushHistory('hCloseGaps')
+    set((st) => {
+      const p = cloneProject(st.project)
+      for (const t of tracks) {
+        for (const [a, b] of gapsOf(t.clips).reverse()) shiftAfter(p, b, a - b, [t.id])
       }
       return { project: p }
+    })
+  },
+
+  rippleDelete: (ids) => {
+    const s = get()
+    const want = new Set(withLinked(s.project, ids ?? s.selection))
+    if (!s.project.tracks.some((t) => !t.locked && t.clips.some((c) => want.has(c.id)))) return
+    s.pushHistory('hRippleDelete')
+    set((st) => {
+      const p = cloneProject(st.project)
+      // every freed span in ORIGINAL positions, rippling its track plus the twins'
+      // tracks of what follows (or a pair desyncs); spans that overlap on shared
+      // tracks (the two halves of a deleted pair) merge, so nothing moves twice
+      const ev: Array<{ a: number; b: number; ids: Set<string> }> = []
+      for (const tr of p.tracks) {
+        if (tr.locked) continue
+        const gone = tr.clips.filter((c) => want.has(c.id))
+        if (!gone.length) continue
+        tr.clips = tr.clips.filter((c) => !want.has(c.id))
+        for (const [a, b] of freedSpans(gone, tr.clips)) ev.push({ a, b, ids: new Set([tr.id]) })
+      }
+      for (const e of ev) e.ids = new Set(rippleTracks(p, e.ids, e.b))
+      ev.sort((x, y) => x.a - y.a)
+      const merged: typeof ev = []
+      for (const e of ev) {
+        const m = merged.find((m) => e.a < m.b - 1e-6 && e.b > m.a + 1e-6 && [...e.ids].some((id) => m.ids.has(id)))
+        if (m) { m.a = Math.min(m.a, e.a); m.b = Math.max(m.b, e.b); e.ids.forEach((id) => m.ids.add(id)) }
+        else merged.push(e)
+      }
+      for (const e of merged.sort((x, y) => y.b - x.b)) shiftAfter(p, e.b, e.a - e.b, e.ids)
+      return { project: p, selection: st.selection.filter((id) => !want.has(id)) }
     })
   },
 
@@ -1602,50 +2754,44 @@ export const useEditor = create<EditorState>((set, get) => ({
     s.pushHistory('hDeleteRange')
     set((st) => {
       const p = cloneProject(st.project)
-      for (const tr of p.tracks) {
-        if (tr.locked) continue
-        const out: Clip[] = []
-        for (const c of tr.clips) {
-          const end = c.start + c.duration
-          const speed = c.speed || 1
-          if (end <= r.start + 1e-6 || c.start >= r.end - 1e-6) {
-            out.push(c) // outside
-          } else if (c.start >= r.start - 1e-6 && end <= r.end + 1e-6) {
-            // fully inside — drop
-          } else if (c.start < r.start && end > r.end) {
-            // covers the range — split into two
-            const right: Clip = {
-              ...clone(c),
-              id: uid(),
-              start: r.end,
-              duration: end - r.end,
-              inPoint: c.inPoint + (r.end - c.start) * speed,
-              fadeIn: 0,
-              linkId: undefined
-            }
-            shiftClipAnims(right, -(r.end - c.start))
-            c.duration = r.start - c.start
-            c.fadeOut = 0
-            out.push(c, right)
-          } else if (c.start < r.start) {
-            c.duration = r.start - c.start
-            out.push(c)
-          } else {
-            const cut = r.end - c.start
-            c.inPoint += cut * speed
-            c.duration = end - r.end
-            c.start = r.end
-            shiftClipAnims(c, -cut)
-            out.push(c)
-          }
-        }
-        tr.clips = out
-      }
+      liftRange(p, r)
       return { project: p, selection: [] }
     })
   },
 
-  pasteAtPlayhead: () => {
+  extractRange: (range) => {
+    const r = range ?? get().range
+    if (r) get().extractRanges([r])
+  },
+
+  extractRanges: (ranges) => {
+    // overlapping or touching ranges merge (cutting a shared stretch twice would
+    // eat what follows it); then latest first: extracting one never moves the ranges still to come
+    const rs: { start: number; end: number }[] = []
+    for (const r of ranges.filter((r) => r.end - r.start >= 1e-6).sort((a, b) => a.start - b.start)) {
+      const last = rs[rs.length - 1]
+      if (last && r.start <= last.end + 1e-6) last.end = Math.max(last.end, r.end)
+      else rs.push({ start: r.start, end: r.end })
+    }
+    rs.reverse()
+    if (!rs.length) return
+    get().pushHistory('hExtract')
+    set((st) => {
+      const p = cloneProject(st.project)
+      for (const r of rs) {
+        liftRange(p, r)
+        const len = r.end - r.start
+        shiftAfter(p, r.end, -len, p.tracks.filter((t) => !t.locked).map((t) => t.id))
+        // a ripple over every track moves the markers too; inside the range they land on its start
+        if (p.markers) {
+          p.markers = p.markers.map((m) => m.time > r.start ? { ...m, time: Math.max(r.start, m.time - len) } : m)
+        }
+      }
+      return { project: p, selection: [], range: null }
+    })
+  },
+
+  pasteAtPlayhead: (ripple) => {
     const s = get()
     if (!s.clipboard.length) return
     s.pushHistory('hPaste')
@@ -1664,18 +2810,152 @@ export const useEditor = create<EditorState>((set, get) => ({
           if (!linkMap.has(item.clip.linkId)) linkMap.set(item.clip.linkId, uid())
           linkId = linkMap.get(item.clip.linkId)
         }
+        const start = Math.max(0, toFrame(st.playhead + (item.clip.start - base), p.fps))
         const clip: Clip = {
           ...clone(item.clip),
           id: uid(),
-          start: Math.max(0, st.playhead + (item.clip.start - base)),
+          start,
+          duration: frameEnd(p.fps, start, start + item.clip.duration) - start,
           linkId
         }
         track.clips.push(clip)
         ids.push(clip.id)
       }
+      if (ripple && ids.length) {
+        const mine = new Set(ids)
+        const placed = p.tracks.flatMap((t) => t.clips.filter((c) => mine.has(c.id)))
+        const t0 = Math.min(...placed.map((c) => c.start))
+        openGap(p, t0, Math.max(...placed.map((c) => c.start + c.duration)) - t0,
+          p.tracks.filter((t) => t.clips.some((c) => mine.has(c.id))).map((t) => t.id), mine)
+      }
       return { project: p, selection: ids }
     })
   },
+
+  duplicateInPlace: (ids) => {
+    const out: string[] = []
+    set((st) => {
+      const p = cloneProject(st.project)
+      out.push(...copyClips(p, ids, 0))
+      return { project: p }
+    })
+    return out
+  },
+
+  duplicateSelection: () => {
+    const s = get()
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!own.length) return
+    const a = Math.min(...own.map((c) => c.start))
+    const b = Math.max(...own.map((c) => c.start + c.duration))
+    s.pushHistory('hDuplicate')
+    set((st) => {
+      const p = cloneProject(st.project)
+      return { project: p, selection: copyClips(p, own.map((c) => c.id), b - a) }
+    })
+  },
+
+  pasteAttributes: (parts) => {
+    const s = get()
+    const src = (s.clipboard.find((i) => i.kind === 'video') ?? s.clipboard[0])?.clip
+    const own = s.project.tracks.filter((t) => !t.locked).flatMap((t) => t.clips)
+      .filter((c) => s.selection.includes(c.id))
+    if (!src || !own.length || !parts.length) return
+    const has = (k: AttrPart) => parts.includes(k)
+    s.pushHistory('hPasteAttrs')
+    set((st) => {
+      const p = cloneProject(st.project)
+      if (has('speed')) {
+        // first, so the keyframes it rescales are the target's own; twins follow
+        const sp = src.speed || 1
+        for (const id of withLinked(p, own.map((c) => c.id))) {
+          const f = findClip(p, id)
+          if (!f || f.track.locked || f.clip.kind !== 'media') continue
+          const c = f.clip
+          const old = c.speed || 1
+          rescaleClipAnims(c, old / sp)
+          scaleRampValues(c, sp / old)
+          c.speed = sp
+          c.duration = frameEnd(p.fps, c.start, c.start + (c.duration * old) / sp) - c.start
+        }
+      }
+      for (const { id } of own) {
+        const c = findClip(p, id)!.clip
+        if (has('transform')) c.transform = clone(src.transform)
+        if (has('effects')) c.effects = clone(src.effects ?? [])
+        if (has('volume')) c.gain = clone(src.gain)
+        // J6: the colour section (grade, LUT, blend, key; J7 wheels, curves) as one part
+        if (has('colour')) {
+          for (const k of ['grade', 'lut', 'blend', 'key', 'wheels', 'curves'] as const) {
+            if (src[k] === undefined) delete c[k]
+            else (c as unknown as Record<string, unknown>)[k] = clone(src[k])
+          }
+        }
+        if (has('masks')) {
+          for (const k of ['mask', 'maskShape', 'maskShapes'] as const) {
+            if (src[k] === undefined) delete c[k]
+            else (c as unknown as Record<string, unknown>)[k] = clone(src[k])
+          }
+        }
+      }
+      return { project: p }
+    })
+  },
+
+  freezeFrame: (len = 2) => {
+    const s = get()
+    const p0 = s.project
+    const t = toFrame(s.playhead, p0.fps)
+    const under = p0.tracks.flatMap((tr) => tr.locked || tr.kind !== 'video' ? [] : tr.clips.filter((c) =>
+      c.kind === 'media' && !c.disabled && c.start <= t + 1e-6 && c.start + c.duration > t + 1e-6 &&
+      p0.assets.find((a) => a.id === c.assetId)?.kind === 'video'))
+    const c0 = under.find((c) => s.selection.includes(c.id)) ?? under[0]
+    if (!c0) return
+    s.pushHistory('hFreeze')
+    set((st) => {
+      const p = cloneProject(st.project)
+      const f = findClip(p, c0.id)!
+      const rel = t - f.clip.start
+      const at = clipSourceTime(f.clip, p.assets.find((a) => a.id === f.clip.assetId), rel)
+      const still: Clip = { ...clone(f.clip), id: uid(), start: t, inPoint: at, speed: 1, freezeAt: at, fadeIn: 0, fadeOut: 0 }
+      for (const k of ['linkId', 'transitionIn', 'transitionOut', 'audioBake'] as const) delete still[k]
+      // the look of that moment, held: every animated value taken at the frame
+      forEachAnim(still, (a) => ({ value: evalAnim(a, rel) }))
+      still.duration = frameEnd(p.fps, t, t + len) - t
+      openGap(p, t, still.duration, [f.track.id], new Set())
+      f.track.clips.push(still)
+      return { project: p, selection: [still.id] }
+    })
+  },
+
+  cut: () => {
+    const s = get()
+    if (s.selection.length) { s.copySelection(); s.deleteSelection() }
+    else if (s.range) { s.copyRange(); s.deleteRange() }
+  },
+  markIn: () => {
+    const { playhead: t, range, project } = get()
+    get().setRange({ start: t, end: range && range.end > t ? range.end : projectDuration(project) })
+  },
+  markOut: () => {
+    const { playhead: t, range } = get()
+    get().setRange({ start: range && range.start < t ? range.start : 0, end: t })
+  },
+  markClip: () => {
+    const s = get()
+    const t = s.playhead
+    const under = s.project.tracks.flatMap((tr) =>
+      tr.locked ? [] : tr.clips.filter((c) => c.start <= t + 1e-6 && c.start + c.duration > t + 1e-6))
+    const c = under.find((x) => s.selection.includes(x.id)) ?? under[0]
+    if (c) s.setRange({ start: c.start, end: c.start + c.duration })
+  },
+  goToEdit: (dir) => {
+    const s = get()
+    const t = nextEdit(s.project.tracks, s.playhead, dir)
+    if (t !== null) s.setPlayhead(t)
+  },
+  selectAll: () => set((s) => ({ selection: s.project.tracks.flatMap((tr) => tr.locked ? [] : tr.clips.map((c) => c.id)) })),
 
   select: (selection) => set({ selection }),
   toggleSelect: (id) =>
@@ -1690,13 +2970,26 @@ export const useEditor = create<EditorState>((set, get) => ({
     set((s) => ({ motionTrackId, animClipId: motionTrackId ? null : s.animClipId })),
   setKfMarker: (kfMarker) => set({ kfMarker }),
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
-  setPlaying: (playing) => set({ playing }),
+  setPlaying: (playing) => set(playing ? { playing } : { playing, playRate: 1, playEnd: null }),
+  shuttle: (dir) => {
+    const { playing, playRate } = get()
+    set({ playing: true, playEnd: null, playRate: playing && Math.sign(playRate) === dir ? dir * Math.min(8, Math.abs(playRate) * 2) : dir })
+  },
+  toggleLoop: () => set((s) => ({ loop: !s.loop })),
+  playInOut: () => {
+    const { range, project } = get()
+    const [a, b] = range ? [range.start, range.end] : [0, projectDuration(project)]
+    set({ playhead: a, playing: true, playRate: 1, playEnd: b })
+  },
   setPreviewLoading: (previewLoading) => set({ previewLoading }),
   setPreviewGpuLost: (previewGpuLost) => set({ previewGpuLost }),
-  setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(4, zoom)) }),
+  setZoom: (zoom) => set({ zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) }),
   setExportOpen: (exportOpen) => set({ exportOpen }),
-  setRange: (range) =>
-    set({ range: range && range.end - range.start > 0.01 ? range : null })
+  setRange: (range) => {
+    const fps = get().project.fps
+    const r = range && { start: toFrame(range.start, fps), end: toFrame(range.end, fps) }
+    set({ range: r && r.end - r.start > 0.01 ? r : null })
+  }
 }))
 
 function makeTrack(p: Project, kind: TrackKind): Track {
@@ -1713,16 +3006,15 @@ function makeTrack(p: Project, kind: TrackKind): Track {
 }
 
 /** The part of a clip inside [from..to], or null if they don't overlap. */
-function clipIntersection(c: Clip, from: number, to: number): Clip | null {
+export function clipIntersection(c: Clip, from: number, to: number): Clip | null {
   const end = c.start + c.duration
   const a = Math.max(c.start, from)
   const b = Math.min(end, to)
   if (b - a < 0.01) return null
-  const speed = c.speed || 1
   const piece: Clip = JSON.parse(JSON.stringify(c))
   piece.start = a
   piece.duration = b - a
-  piece.inPoint = c.inPoint + (a - c.start) * speed
+  piece.inPoint = c.inPoint + sourceOffset(c, a - c.start)
   if (a > c.start) {
     piece.fadeIn = 0
     shiftClipAnims(piece, -(a - c.start))

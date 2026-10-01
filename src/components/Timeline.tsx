@@ -1,16 +1,32 @@
-import { type WaveBins, waveColumns, trackOverlaps } from '@/engine/timelineMath'
+import { type WaveBins, type FollowMode, waveColumns, trackOverlaps, formatTime, fitZoom, followLeft } from '@/engine/timelineMath'
+import { SourceChip } from './SourceViewer'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
-import type { AudioDefect, Clip, MediaAsset, TimelineMarker, Track } from '@shared/types'
+import { LABEL_COLORS, type Anim, type AudioDefect, type Clip, type MediaAsset, type TimelineMarker, type Track } from '@shared/types'
 import {
-  useEditor, useSettings, projectDuration, snapPoints, findClip, withLinked, MAX_ZOOM
+  useEditor, useSettings, projectDuration, snapPoints, snapTo, findClip, withLinked, MAX_ZOOM, MIN_ZOOM, setting, timelineView
 } from '@/state/store'
-import { useT, type TKey } from '@/i18n'
+
+/** «Скорость клипа — перетаскивание с»: the modifier that turns an edge drag into a speed change */
+const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
+  const m = setting('mouse.speedModifier')
+  return m === 'ctrl' ? e.ctrlKey : m === 'alt' ? e.altKey : e.ctrlKey || e.altKey
+}
+/** «Радиус прилипания», in seconds at this zoom */
+const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
+import { useT, tr, trf, type TKey } from '@/i18n'
+import { duckHere, duckTargets } from '@/engine/duck'
+import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, proposalTip, playAround, type Silence } from '@/engine/silences'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
+import { FADE_CURVES, FADE_CURVE_NAME, type FadeCurve } from '@shared/fadeCurves'
 import { CtxMenu } from './CtxMenu'
+import { PasteAttrsMenu } from './PasteAttrsMenu'
+import { Modal } from './Modal'
+import { trackDeleteAsks } from '@/engine/discardGuard'
 import { reverseClip, useReverseUi } from '@/engine/reverse'
+import { useOffline } from '@/engine/offline'
 import { normalizeClip, useNormalizeUi } from '@/engine/normalize'
 import { dropPayload, dragHasMedia, dropUsable, importDrop } from '@/engine/mediaImport'
 import { useTextUi } from './TextTools'
@@ -21,15 +37,25 @@ import { useBeatsUi } from '@/engine/beats'
 import { useChecksUi } from '@/engine/checks'
 import { useTtsUi } from './TtsDialog'
 import { evalAnim } from '@/engine/anim'
+import { levelAt, addLevelPoint, moveLevelPoint, deleteLevelPoint, shiftLevel, sortedKfs, type LevelLine } from './animUtils'
 import { spanToProject, projectToSrc, type VisibleSpan } from '@/engine/voiceDefects'
 import { clipsInSpan, clipsBetween, unlocked } from '@/engine/timelineSelect'
 import { layoutSpeeds, SPEED_MIN, SPEED_MAX, type SpeedItem } from '@/engine/speedLayout'
+import { RAMP_PRESETS, rampPresetOf, relAtOffset, sourceOffset, type RampPreset } from '@shared/speedRamp'
 import { useVoiceUi, setVerdict, clearVerdict, addUserDefect, setDefectsHidden } from '@/engine/voiceCheck'
 import { confirmDefect } from '@/engine/voiceRegen'
 import { useDefectsUi, targetRun } from './DefectsDialog'
-import { Icon, Spinner } from './icons'
+import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
+import { scrub } from '@/engine/scrubAudio'
+import { clipMarkerTime } from '@shared/markers'
+import { isCompound } from '@shared/timelines'
+import { TimelineTabs, openCompound } from './TimelineTabs'
+import { keyRun, toggleTrack, useMixerUi } from '@/engine/mixer'
+import { ArmButton, MixerDock } from './Mixer'
+import { useMixerPopout, mixerHost, dockMixerWindow } from '@/engine/popout'
+import { dbText, gainToDb } from '@shared/fader'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -81,19 +107,9 @@ function tickLabel(t: number): string {
   return `${parseFloat(t.toFixed(2))}s`
 }
 
-function snapTime(t: number, points: number[], zoom: number): number {
-  const threshold = 10 / zoom
-  let best = t
-  let bestD = threshold
-  for (const p of points) {
-    const d = Math.abs(p - t)
-    if (d < bestD) {
-      bestD = d
-      best = p
-    }
-  }
-  return best
-}
+/** Ctrl pressed DURING a drag lets go of the magnet while it is held (see Timeline's effect) */
+let snapFree = false
+const snapTime = (t: number, points: number[], zoom: number) => (snapFree ? t : snapTo(t, points, zoom))
 
 /** window-level drag helper: calls move(dx, ev) until pointerup */
 function windowDrag(
@@ -165,10 +181,15 @@ function startScrubOrRange(e: React.PointerEvent<HTMLDivElement>, lane: HTMLElem
     })
     return
   }
-  useEditor.getState().setPlayhead(timeAt(e.clientX))
-  windowDrag(e, (_dx, ev) => {
-    useEditor.getState().setPlayhead(timeAt(ev.clientX))
-  })
+  // K7: stopped, the drag is heard in short grains; playing, the player already plays it
+  const heard = !useEditor.getState().playing
+  const to = (t: number) => {
+    useEditor.getState().setPlayhead(t)
+    if (heard) scrub.move(t)
+  }
+  if (heard) scrub.begin()
+  to(timeAt(e.clientX))
+  windowDrag(e, (_dx, ev) => to(timeAt(ev.clientX)), () => { if (heard) scrub.end() })
 }
 
 /** The rubber band being dragged, in .tl-content pixels. Its own store so a
@@ -267,17 +288,61 @@ function startBand(
 interface MenuState {
   x: number
   y: number
-  kind: 'track' | 'clip' | 'transition' | 'edge' | 'junction'
+  kind: 'track' | 'clip' | 'transition' | 'edge' | 'junction' | 'fade'
   trackId?: string
   trackKind?: Track['kind']
   clipId?: string
   linked?: boolean
-  /** edge menus: which clip tip was clicked */
+  /** edge and fade menus: which clip end was clicked */
   edge?: 'in' | 'out'
   /** junction menus: [outgoing clip, incoming clip] */
   clipIds?: [string, string]
+  /** clip menus: the project second under the click (a clip marker goes there) */
+  at?: number
 }
 
+/** The mouse gestures, one per line behind a «?» — as a toolbar row they
+    wrapped onto three lines at 1500 px and into a column in a narrow window. */
+function TimelineHelp() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  return (
+    <>
+      <button
+        className={`icon-only tl-help${at ? ' active' : ''}`}
+        data-act="timeline-help"
+        title={t('tlHelp')}
+        aria-label={t('tlHelp')}
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        ?
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="tl-help-pop">
+          <div className="ctx-title">{t('tlHelp')}</div>
+          {t('dropHint').split(' · ').map((line) => <div key={line} className="tl-help-line">{line}</div>)}
+        </CtxMenu>
+      )}
+    </>
+  )
+}
 
 export function Timeline({ height }: { height: number }) {
   const t = useT()
@@ -299,6 +364,31 @@ export function Timeline({ height }: { height: number }) {
   useEffect(() => {
     if (zoomSliderRef.current) zoomSliderRef.current.value = String(Math.log(zoom))
   }, [zoom])
+  // Ctrl PRESSED during a drag frees it from the magnet while held. Ctrl held
+  // BEFORE the press already means speed / roll / toggle-select, and its
+  // auto-repeat is ignored, so those gestures keep snapping as before.
+  useEffect(() => {
+    let down = false
+    const press = () => { down = true }
+    const release = () => { down = false; snapFree = false }
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Control') return
+      if (e.type === 'keyup') snapFree = false
+      else if (down && !e.repeat) snapFree = true
+    }
+    window.addEventListener('pointerdown', press, true)
+    window.addEventListener('pointerup', release, true)
+    window.addEventListener('pointercancel', release, true)
+    window.addEventListener('keydown', key, true)
+    window.addEventListener('keyup', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', press, true)
+      window.removeEventListener('pointerup', release, true)
+      window.removeEventListener('pointercancel', release, true)
+      window.removeEventListener('keydown', key, true)
+      window.removeEventListener('keyup', key, true)
+    }
+  }, [])
   const view = useMemo(() => ({ start: sv.left / zoom, end: (sv.left + sv.width - HEADER_W) / zoom }), [sv, zoom])
   const [menu, setMenu] = useState<MenuState | null>(null)
 
@@ -380,7 +470,7 @@ export function Timeline({ height }: { height: number }) {
         content.style.setProperty('--zo', `${HEADER_W + g.anchorT * g.z0}px`)
         content.classList.add('zooming')
       }
-      g.nz = Math.min(MAX_ZOOM, Math.max(4, target))
+      g.nz = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, target))
       const k = g.nz / g.z0
       content.style.setProperty('--zs', String(k))
       clearTimeout(gestureTimer)
@@ -388,14 +478,40 @@ export function Timeline({ height }: { height: number }) {
       if (k > 2 || k < 0.5) commit()
       else gestureTimer = setTimeout(commit, 150)
     }
+    // a key zoom (Shift+Z, Alt+Z, -/=) is a gesture committed at once: `anchorT`
+    // lands `off` px into the lanes at the new zoom
+    const zoomNow = (nz: number, anchorT: number, off: number) => {
+      commit()
+      gestureRef.current = { z0: useEditor.getState().zoom, nz: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nz)), anchorT, off }
+      commit()
+    }
+    const lanes = () => el.clientWidth - HEADER_W
+    timelineView.fit = (a, b) => {
+      const f = fitZoom(a, b, lanes())
+      if (f) zoomNow(f.zoom, f.t0, 0)
+    }
+    timelineView.zoomBy = (k) => {
+      // about the playhead where it is on screen, else it comes to the middle
+      const s = useEditor.getState()
+      const off = s.playhead * s.zoom - el.scrollLeft
+      zoomNow(s.zoom * k, s.playhead, off >= 0 && off <= lanes() ? off : lanes() / 2)
+    }
+    // PLAYBACK FOLLOW («Следовать за курсором»): page or centre the view while
+    // playing — never during a zoom gesture, whose stretch is anchored to the view
+    const unfollow = useEditor.subscribe((s, p) => {
+      if (!s.playing || s.playhead === p.playhead || gestureRef.current) return
+      const left = followLeft(setting<FollowMode>('playback.follow'), s.playhead * s.zoom, el.scrollLeft, lanes(), s.playRate)
+      if (left !== null) el.scrollLeft = left
+    })
     const onWheel = (e: WheelEvent) => {
-      // plain wheel (and Ctrl+wheel) zooms around the cursor; Shift+wheel pans
-      if (e.shiftKey) return
+      // «Колесо на таймлайне»: the wheel (and Ctrl+wheel) zooms around the cursor and Shift pans,
+      // or the wheel scrolls and Ctrl zooms
+      if (setting('mouse.wheel') === 'scroll' ? !e.ctrlKey : e.shiftKey) return
       // the gain/opacity slider row has its own precise ±1% wheel
       if ((e.target as HTMLElement).closest?.('.track-gain-row')) return
       e.preventDefault()
       const cur = gestureRef.current?.nz ?? useEditor.getState().zoom
-      zoomGestureRef.current?.(cur * Math.exp(-e.deltaY * 0.0015), e.clientX)
+      zoomGestureRef.current?.(cur * Math.exp(-e.deltaY * 0.0015 * setting<number>('mouse.zoomSpeed')), e.clientX)
     }
     // anything else on the timeline sees the committed zoom: a click during
     // the stretch would otherwise land where the picture is not
@@ -413,6 +529,8 @@ export function Timeline({ height }: { height: number }) {
       gestureRef.current = null
       zoomGestureRef.current = null
       commitGestureRef.current = null
+      timelineView.fit = timelineView.zoomBy = null
+      unfollow()
     }
   }, [])
 
@@ -442,7 +560,7 @@ export function Timeline({ height }: { height: number }) {
     const assetId = e.dataTransfer.getData('kadr/asset')
     if (assetId) {
       e.preventDefault()
-      useEditor.getState().insertClipFromAsset(assetId, null, time)
+      useEditor.getState().insertClipFromAsset(assetId, null, time, e.shiftKey) // Shift inserts
       return
     }
     const payload = dropPayload(e)
@@ -452,6 +570,8 @@ export function Timeline({ height }: { height: number }) {
     }
   }
 
+  const mixerOpen = useMixerUi((s) => s.open)
+  const mixerWin = useMixerPopout((s) => s.win)
   return (
     <div className="timeline" style={{ height }}>
       <div className="tl-toolbar">
@@ -470,6 +590,7 @@ export function Timeline({ height }: { height: number }) {
           <Icon name="glow" /> {t('capButton')}
         </button>
         <BeatButtons />
+        <PasteAttrsMenu />
         <ChecksButton />
         <button data-act="sounds" title={t('soundsButtonHint')}
                 onClick={() => useSoundsUi.getState().setOpen(true)}>
@@ -481,7 +602,9 @@ export function Timeline({ height }: { height: number }) {
           <Icon name="speech" /> {t('ttsButton')}
         </button>
         <DefectButtons />
-        <span className="dim hint-inline">{t('dropHint')}</span>
+        <SilenceButtons />
+        <TimelineHelp />
+        <MixerToggle />
         <span className="flex1" />
         <label className="zoom-ctl">
           {t('trackHeight')}
@@ -499,7 +622,7 @@ export function Timeline({ height }: { height: number }) {
           <input
             type="range"
             ref={zoomSliderRef}
-            min={Math.log(4)}
+            min={Math.log(MIN_ZOOM)}
             max={Math.log(MAX_ZOOM)}
             step={0.01}
             defaultValue={Math.log(zoom)}
@@ -521,6 +644,8 @@ export function Timeline({ height }: { height: number }) {
           />
         </label>
       </div>
+      <TimelineTabs />
+      <div className="mx-row">
       <div className="tl-scroll" ref={scrollRef} onDragOver={onAnyDragOver} onDrop={onAnyDrop}>
         <div className="tl-content" style={{ width: HEADER_W + contentW, ['--z' as string]: zoom, ['--hw' as string]: `${HEADER_W}px` }}>
           <RulerRow contentW={contentW} view={view} />
@@ -543,12 +668,185 @@ export function Timeline({ height }: { height: number }) {
             <KfMarker />
             <BeatLines view={view} />
             <Markers />
+            <SilenceFlags />
             <Playhead />
           </div>
         </div>
       </div>
+      {mixerOpen && !mixerWin && <MixerDock />}
+      {/* K12: popped out, the same component renders into the mixer's own window */}
+      {mixerOpen && mixerWin && createPortal(<MixerDock win={mixerWin as Window & typeof globalThis} />, mixerHost)}
+      </div>
       {menu && <TrackMenu menu={menu} onClose={() => setMenu(null)} />}
+      <TimelineAsks />
     </div>
+  )
+}
+
+/** K6: «Микшер» in the timeline toolbar opens the dock right of the lanes */
+function MixerToggle() {
+  const t = useT()
+  const open = useMixerUi((s) => s.open)
+  return (
+    <button className={open ? 'toggled' : ''} data-act="mixer" aria-pressed={open} title={t('mxToggleTitle')}
+            onClick={() => { if (open) dockMixerWindow(); useMixerUi.getState().setOpen(!open) }}>
+      <Icon name="sliders" size={13} /> {t('mxToggle')}
+    </button>
+  )
+}
+
+// Destructive timeline actions that no longer happen on one click: the marker
+// menu (right-click), its name-and-note box, and the question before a track with
+// clips is deleted. Each ends in one store action = one undo step.
+// A marker is a timeline marker, or with `clipId` that clip's marker (L1).
+type MarkerRef = { id: string; clipId?: string }
+const useTlAsk = create<{
+  track: { id: string; n: number } | null
+  marker: (MarkerRef & { x: number; y: number }) | null
+  rename: (MarkerRef & { label: string; note: string }) | null
+}>(() => ({ track: null, marker: null, rename: null }))
+
+const markerOf = (r: MarkerRef) => {
+  const p = useEditor.getState().project
+  return r.clipId ? findClip(p, r.clipId)?.clip.markers?.find((m) => m.id === r.id) : p.markers?.find((m) => m.id === r.id)
+}
+
+/** the marker menu — from a flag on the timeline, a clip marker, or a row of the markers list */
+export const openMarkerMenu = (ref: MarkerRef, x: number, y: number) => useTlAsk.setState({ marker: { ...ref, x, y } })
+
+function TimelineAsks() {
+  const t = useT()
+  const { track, marker, rename } = useTlAsk()
+  const close = () => useTlAsk.setState({ track: null, marker: null, rename: null })
+  useEffect(() => {
+    if (!marker) return
+    const off = () => useTlAsk.setState({ marker: null })
+    window.addEventListener('pointerdown', off)
+    return () => window.removeEventListener('pointerdown', off)
+  }, [marker])
+  if (marker) {
+    const ref = { id: marker.id, clipId: marker.clipId }
+    return (
+      <CtxMenu x={marker.x} y={marker.y}>
+        <button
+          data-act="marker-rename"
+          onClick={() => {
+            const m = markerOf(ref)
+            useTlAsk.setState({ marker: null, rename: m ? { ...ref, label: m.label, note: m.note ?? '' } : null })
+          }}
+        >
+          {t('markerEdit')}
+        </button>
+        <Swatches
+          value={markerOf(ref)?.color}
+          onPick={(color) => {
+            useEditor.getState().updateMarker(ref, { color })
+            close()
+          }}
+        />
+        <button
+          className="danger"
+          data-act="marker-delete"
+          onClick={() => {
+            useEditor.getState().removeMarker(marker.id, marker.clipId)
+            close()
+          }}
+        >
+          {t('markerDelete')}
+        </button>
+      </CtxMenu>
+    )
+  }
+  if (rename) {
+    const apply = () => {
+      useEditor.getState().updateMarker({ id: rename.id, clipId: rename.clipId }, { label: rename.label, note: rename.note })
+      close()
+    }
+    return (
+      <Modal
+        title={t('markerEdit').replace('…', '')}
+        onClose={close}
+        actions={
+          <>
+            <button onClick={close}>{t('cancel')}</button>
+            <button className="primary" onClick={apply} data-act="marker-rename-ok">{t('save')}</button>
+          </>
+        }
+      >
+        <label className="marker-edit">
+          <span>{t('markerName')}</span>
+          <input
+            autoFocus
+            value={rename.label}
+            onChange={(e) => useTlAsk.setState({ rename: { ...rename, label: e.target.value } })}
+            onKeyDown={(e) => { if (e.key === 'Enter') apply() }}
+          />
+        </label>
+        <label className="marker-edit">
+          <span>{t('markerNote')}</span>
+          <textarea
+            data-act="marker-note"
+            rows={3}
+            value={rename.note}
+            onChange={(e) => useTlAsk.setState({ rename: { ...rename, note: e.target.value } })}
+            onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey) apply() }}
+          />
+        </label>
+      </Modal>
+    )
+  }
+  if (track) {
+    return (
+      <Modal
+        title={t('deleteTrackAsk').replace('{n}', String(track.n))}
+        onClose={close}
+        actions={
+          <>
+            <button onClick={close} data-act="track-delete-cancel">{t('cancel')}</button>
+            <button
+              className="danger"
+              data-act="track-delete-ok"
+              onClick={() => {
+                useEditor.getState().removeTrack(track.id)
+                close()
+              }}
+            >
+              {t('deleteTrack')}
+            </button>
+          </>
+        }
+      >
+        <p>{t('deleteTrackBody')}</p>
+      </Modal>
+    )
+  }
+  return null
+}
+
+/** the colour-label row of the track and clip menus (E9); undefined = no colour */
+function Swatches({ value, onPick }: { value?: number; onPick: (n: number | undefined) => void }) {
+  const t = useT()
+  return (
+    <>
+      <div className="ctx-title dim">{t('colorLabel')}</div>
+      <div className="ctx-swatches" role="group" aria-label={t('colorLabel')}>
+        <button
+          data-act="color-none" title={t('colorNone')} aria-label={t('colorNone')}
+          aria-pressed={!value} style={{ '--sw': 'transparent' } as React.CSSProperties}
+          onClick={() => onPick(undefined)}
+        >
+          <Icon name="close" size={12} />
+        </button>
+        {Array.from({ length: LABEL_COLORS }, (_, i) => i + 1).map((n) => (
+          <button
+            key={n} data-act={`color-${n}`}
+            title={t('colorN').replace('{n}', String(n))} aria-label={t('colorN').replace('{n}', String(n))}
+            aria-pressed={value === n} style={{ '--sw': `var(--label-${n})` } as React.CSSProperties}
+            onClick={() => onPick(n)}
+          />
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -601,6 +899,28 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
       </CtxMenu>
     )
   }
+  if (menu.kind === 'fade' && menu.clipId) {
+    // K2: the shape of this end's audio fade — also of the crossfade over an overlap
+    const key = menu.edge === 'in' ? 'fadeInCurve' : 'fadeOutCurve'
+    const cur = findClip(useEditor.getState().project, menu.clipId)?.clip[key] ?? 'lin'
+    const pick = (c: FadeCurve) => {
+      const st = useEditor.getState()
+      st.pushHistory('hFade')
+      st.updateClip(menu.clipId!, { [key]: c })
+      onClose()
+    }
+    return (
+      <CtxMenu x={menu.x} y={menu.y} className="trans-menu">
+        <div className="ctx-title dim">{t(key)}</div>
+        {FADE_CURVES.map((c) => (
+          <button key={c} data-curve={c} onClick={() => pick(c)}>
+            <span className="ctx-check">{cur === c && <Icon name="check" size={13} />}</span>
+            {t(FADE_CURVE_NAME[c])}
+          </button>
+        ))}
+      </CtxMenu>
+    )
+  }
   if (menu.kind === 'edge' || menu.kind === 'junction') {
     const apply = (type: string | null, duration?: number) => {
       const st = useEditor.getState()
@@ -631,7 +951,7 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           {[0.3, 0.5, 1].map((d) => (
             <button
               key={d}
-              className={Math.abs((edgeCur?.duration ?? 0.5) - d) < 0.01 ? 'dur-on' : ''}
+              className={Math.abs((edgeCur?.duration ?? setting<number>('editing.edgeDuration')) - d) < 0.01 ? 'dur-on' : ''}
               onClick={() => {
                 if (edgeCur) apply(edgeCur.type, d)
                 onClose()
@@ -661,10 +981,23 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {menu.trackKind === 'video' ? t('addVideoTrack') : t('addAudioTrack')}
           </button>
+          <Swatches
+            value={useEditor.getState().project.tracks.find((x) => x.id === menu.trackId)?.color}
+            onPick={(color) => {
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(menu.trackId!, { color })
+              onClose()
+            }}
+          />
           <button
             className="danger"
             onClick={() => {
-              useEditor.getState().removeTrack(menu.trackId!)
+              const st = useEditor.getState()
+              const tr = st.project.tracks.find((x) => x.id === menu.trackId)
+              const n = tr ? trackDeleteAsks(tr, useSettings.getState().confirmDelete) : 0
+              if (n) useTlAsk.setState({ track: { id: tr!.id, n } })
+              else st.removeTrack(menu.trackId!)
               onClose()
             }}
           >
@@ -706,6 +1039,77 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
             {t('animTab')}…
           </button>
           {speedGroup(menu.clipId!).length > 0 && <SpeedDial clipId={menu.clipId!} />}
+          <button
+            data-act="clip-toggle-enable"
+            onClick={() => {
+              const st = useEditor.getState()
+              if (!st.selection.includes(menu.clipId!)) st.select(withLinked(st.project, [menu.clipId!]))
+              st.toggleDisabled()
+              onClose()
+            }}
+          >
+            {findClip(useEditor.getState().project, menu.clipId!)?.clip.disabled ? t('clipEnable') : t('clipDisable')}
+          </button>
+          {(() => {
+            // L6: a compound opens; any selection nests
+            const f = findClip(useEditor.getState().project, menu.clipId!)
+            return f && isCompound(f.clip) ? (
+              <button data-act="clip-open-compound" onClick={() => { openCompound(f.clip); onClose() }}>{t('tlOpen')}</button>
+            ) : null
+          })()}
+          <button
+            data-act="clip-nest"
+            onClick={() => {
+              const st = useEditor.getState()
+              st.nestClips(st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+              onClose()
+            }}
+          >
+            {t('actNest')}
+          </button>
+          {menu.at !== undefined && (
+            <button
+              data-act="clip-marker-add"
+              onClick={() => {
+                useEditor.getState().addClipMarker(menu.clipId!, menu.at!)
+                onClose()
+              }}
+            >
+              {t('clipMarkerAdd')}
+            </button>
+          )}
+          {(() => {
+            // F4: «Заполнить кадр» — cover on the clicked clip (the selection, when it is in it); again → contain
+            const p = useEditor.getState().project
+            const f = findClip(p, menu.clipId!)
+            if (!f || f.track.kind !== 'video') return null
+            const filled = f.clip.fit === 'cover'
+            return (
+              <button
+                data-act="clip-fill-frame"
+                onClick={() => {
+                  const st = useEditor.getState()
+                  const ids = (st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+                    .filter((id) => findClip(st.project, id)?.track.kind === 'video')
+                  st.pushHistory('hEdit')
+                  st.setClipProps(ids, { fit: filled ? undefined : 'cover' })
+                  onClose()
+                }}
+              >
+                {filled ? t('fitFrame') : t('fillFrame')}
+              </button>
+            )
+          })()}
+          <Swatches
+            value={findClip(useEditor.getState().project, menu.clipId!)?.clip.color}
+            onPick={(color) => {
+              const st = useEditor.getState()
+              const ids = st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!]
+              st.pushHistory('hEdit')
+              st.setClipProps(ids, { color })
+              onClose()
+            }}
+          />
           {(() => {
             const p = useEditor.getState().project
             const f = findClip(p, menu.clipId!)
@@ -742,7 +1146,7 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
               <button
                 onClick={() => {
                   normalizeClip(menu.clipId!).catch((err) =>
-                    logWarn('громкость', 'нормализовать не удалось', err)
+                    logWarn(tr('lgVolume'), tr('lmNormFail'), err)
                   )
                   onClose()
                 }}
@@ -751,6 +1155,11 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
               </button>
             )
           })()}
+          {duckTargets(menu.clipId!).includes(menu.clipId!) && (
+            <button data-act="clip-duck" onClick={() => { void duckHere(menu.clipId!); onClose() }}>
+              {t('actDuck')}
+            </button>
+          )}
           <button
             className="danger"
             onClick={() => {
@@ -764,6 +1173,16 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
             }}
           >
             {t('clipDelete')}
+          </button>
+          <button
+            className="danger"
+            onClick={() => {
+              const st = useEditor.getState()
+              st.rippleDelete(st.selection.includes(menu.clipId!) ? st.selection : [menu.clipId!])
+              onClose()
+            }}
+          >
+            {t('actRippleDelete')}
           </button>
         </>
       )}
@@ -808,8 +1227,12 @@ function Playhead() {
   return <div className="playhead" style={{ left: HEADER_W + playhead * zoom }} />
 }
 
+/** a marker's colour label (L1) as the flag's and the line's colour; none = the marker green */
+const markerTint = (color?: number) =>
+  (color ? { '--mk': `var(--label-${color})`, '--mk-on': 'var(--c-text)' } : {}) as React.CSSProperties
+
 /** Track-independent user markers: M adds one at the playhead, the flag
-    drags along the timeline (snapping), right-click removes. */
+    drags along the timeline (snapping), right-click opens name and note / colour / delete. */
 function Markers() {
   const all = useEditor((s) => s.project.markers)
   const zoom = useEditor((s) => s.zoom)
@@ -823,7 +1246,8 @@ function Markers() {
         <div
           key={m.id}
           className="tl-marker"
-          style={{ left: HEADER_W + m.time * zoom }}
+          data-marker={m.id}
+          style={{ left: HEADER_W + m.time * zoom, ...markerTint(m.color) }}
           onPointerDown={(e) => {
             if (e.button !== 0) return
             e.stopPropagation()
@@ -842,10 +1266,10 @@ function Markers() {
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            useEditor.getState().removeMarker(m.id)
+            openMarkerMenu({ id: m.id }, e.clientX, e.clientY)
           }}
         >
-          <span className="tl-marker-flag" title={t('markerTip')}>{m.label}</span>
+          <span className="tl-marker-flag" title={m.note ? `${m.note}\n\n${t('markerTip')}` : t('markerTip')}>{m.label}</span>
         </div>
       ))}
     </>
@@ -868,7 +1292,8 @@ function BeatLines({ view }: { view: ViewWindow }) {
   const zoom = useEditor((s) => s.zoom)
   const beats = useMemo(() => (markers ?? []).filter((m) => m.kind === 'beat'), [markers])
   const spans = useMemo(() => (markers ?? []).filter((m) => m.kind === 'section' || m.kind === 'pause'), [markers])
-  if (!beats.length && !spans.length) return null
+  const scenes = useMemo(() => (markers ?? []).filter((m) => m.kind === 'scene'), [markers])
+  if (!beats.length && !spans.length && !scenes.length) return null
   const margin = 50 / zoom
   const visible = beats.filter((b) => b.time >= view.start - margin && b.time <= view.end + margin)
   const hasBars = beats.some((b) => b.beatInBar !== undefined)
@@ -896,6 +1321,9 @@ function BeatLines({ view }: { view: ViewWindow }) {
           <div key={m.id} className="tl-pause" title={t('musicPause')}
                style={{ left: HEADER_W + m.time * zoom, width: Math.max(2, ((m.end ?? m.time) - m.time) * zoom) }} />
           ))}
+      {scenes.filter(inView).map((m) => (
+        <div key={m.id} className="tl-scene" title={t('sceneCut')} style={{ left: HEADER_W + m.time * zoom }} />
+      ))}
       {shown.map((b) => (
         <div key={b.id}
              className={`tl-beat${hasBars ? (isDown(b) ? ' down' : '') : b.strong ? ' strong' : ''}`}
@@ -947,24 +1375,51 @@ function EventTicks({ track }: { track: Track }) {
   )
 }
 
-/** «Биты» — opens the beat dialog; the magnet next to it toggles snapping to them. */
+const SNAP_TARGETS = [
+  ['editing.snapEdges', 'snapEdges'],
+  ['editing.snapPlayhead', 'snapPlayhead'],
+  ['editing.snapMarkers', 'snapMarkers'],
+  ['editing.snapBeats', 'snapBeatsT']
+] as const
+
+/** «Биты» — opens the beat dialog; the magnet next to it is the timeline's
+    snapping (N), and its right-click menu picks what snaps. */
 function BeatButtons() {
   const t = useT()
   const busy = useBeatsUi((s) => s.busy)
-  const hasBeats = useEditor((s) => (s.project.markers ?? []).some((m) => m.kind === 'beat'))
-  const snap = useSettings((s) => s.snapBeats)
+  useSettings((s) => s.snap) // re-render on any settings change
+  const snap = setting<boolean>('editing.snap')
+  const on = SNAP_TARGETS.map(([k]) => setting<boolean>(k))
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    if (!menu) return
+    const off = () => setMenu(null)
+    window.addEventListener('pointerdown', off)
+    return () => window.removeEventListener('pointerdown', off)
+  }, [menu])
   return (
     <>
       <button data-act="beats" title={t('beatsButtonHint')}
               onClick={() => useBeatsUi.getState().setOpen(true)}>
         {busy ? <Spinner /> : <Icon name="beat" />} {t('beatsButton')}
       </button>
-      {hasBeats && (
-        <button className="icon-only beat-snap" data-act="beat-snap"
-                title={t('beatSnap')} aria-label={t('beatSnap')} aria-pressed={snap}
-                onClick={() => useSettings.getState().setSnapBeats(!snap)}>
-          <Icon name="magnet" />
-        </button>
+      <button className="icon-only beat-snap" data-act="tl-snap"
+              title={t('snapHint')} aria-label={t('actSnap')} aria-pressed={snap}
+              onClick={() => useSettings.getState().set('editing.snap', !snap)}
+              onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }) }}>
+        <Icon name="magnet" />
+      </button>
+      {menu && (
+        <CtxMenu x={menu.x} y={menu.y}>
+          <div className="ctx-title dim">{t('snapTargets')}</div>
+          {SNAP_TARGETS.map(([k, label], i) => (
+            <button key={k} data-act={`snap-${label}`} role="menuitemcheckbox" aria-checked={on[i]}
+                    onClick={() => useSettings.getState().set(k, !on[i])}>
+              <span className="ctx-check">{on[i] && <Icon name="check" size={13} />}</span>
+              {t(label)}
+            </button>
+          ))}
+        </CtxMenu>
       )}
     </>
   )
@@ -1072,6 +1527,7 @@ const JOG_PX = 160
 function SpeedDial({ clipId }: { clipId: string }) {
   const t = useT()
   const speed = useEditor((s) => findClip(s.project, clipId)?.clip.speed || 1)
+  const ramp = useEditor((s) => { const c = findClip(s.project, clipId)?.clip; return c ? rampPresetOf(c) : null })
   const [text, setText] = useState<string | null>(null)
 
   const setAll = (v: number) => {
@@ -1161,9 +1617,20 @@ function SpeedDial({ clipId }: { clipId: string }) {
           </button>
         ))}
       </div>
+      <div className="ctx-dur-row speed-ramp-row" title={t('rampHint')}>
+        <span>{t('speedRamp')}</span>
+        {([null, ...RAMP_PRESETS] as (RampPreset | null)[]).map((p) => (
+          <button key={p ?? 'off'} className={p === ramp ? 'dur-on' : ''} aria-pressed={p === ramp}
+            onClick={() => useEditor.getState().setSpeedRamp(speedGroup(clipId).map((i) => i.id), p)}>
+            {t(p ? RAMP_LABEL[p] : 'rampOff')}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }
+
+const RAMP_LABEL = { up: 'rampUp', down: 'rampDown', peak: 'rampPeak', dip: 'rampDip' } as const
 
 function TrackRow({
   track, trackH, contentW, view, onMenu
@@ -1177,6 +1644,8 @@ function TrackRow({
   const t = useT()
   const reorder = useRef<{ pushed: boolean } | null>(null)
   const gainRef = useRef<HTMLInputElement>(null)
+  const keys = useRef(keyRun()).current
+  const [naming, setNaming] = useState(false)
   // Only what is near the visible stretch goes into the DOM (half a screen on
   // either side, so a scroll finds it drawn), plus the selection — a clip being
   // dragged must not unmount under the pointer. Everything was rendered before:
@@ -1223,7 +1692,7 @@ function TrackRow({
     const assetId = e.dataTransfer.getData('kadr/asset')
     if (assetId) {
       e.preventDefault()
-      useEditor.getState().insertClipFromAsset(assetId, track.id, time)
+      useEditor.getState().insertClipFromAsset(assetId, track.id, time, e.shiftKey) // Shift inserts
       return
     }
     // files (or browser image URLs / raw image data) dropped from outside:
@@ -1260,8 +1729,9 @@ function TrackRow({
 
   // drag the header vertically to reorder tracks
   const onHeadDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    const tag = (e.target as HTMLElement).tagName
-    if (tag === 'BUTTON' || tag === 'INPUT' || e.button !== 0) return
+    // closest, not tagName: a press on a button's ICON (svg/path) used to start
+    // a reorder, whose pointer capture then took the click from the button
+    if ((e.target as HTMLElement).closest('button, input') || e.button !== 0) return
     reorder.current = { pushed: false }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
@@ -1291,7 +1761,10 @@ function TrackRow({
     <div className="tl-row" style={{ height: trackH }}>
       <div
         className={`tl-head track-head ${track.kind}`}
-        style={{ width: HEADER_W, height: trackH }}
+        style={{
+          width: HEADER_W, height: trackH,
+          ...(track.color ? { boxShadow: `inset 3px 0 0 var(--label-${track.color})` } : {})
+        }}
         data-trackhead={track.id}
         onPointerDown={onHeadDown}
         onPointerMove={onHeadMove}
@@ -1300,9 +1773,34 @@ function TrackRow({
           e.preventDefault()
           onMenu({ x: e.clientX, y: e.clientY, kind: 'track', trackId: track.id, trackKind: track.kind })
         }}
+        onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest('button, input')) setNaming(true) }}
       >
         <div className="track-head-row">
-          <span className="track-name">{track.name}</span>
+          {naming ? (
+            <input
+              className="track-name-edit"
+              data-act="track-name"
+              aria-label={t('trackRenameHint')}
+              autoFocus
+              defaultValue={track.name}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={(e) => {
+                const name = e.currentTarget.value.trim()
+                setNaming(false)
+                if (!name || name === track.name) return
+                const st = useEditor.getState()
+                st.pushHistory('hTrack')
+                st.updateTrack(track.id, { name })
+              }}
+              onKeyDown={(e) => {
+                e.stopPropagation()
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') { e.currentTarget.value = track.name; e.currentTarget.blur() }
+              }}
+            />
+          ) : (
+            <><SourceChip track={track} /><span className="track-name" title={t('trackRenameHint')}>{track.name}</span></>
+          )}
           {track.kind === 'video' && (
             <button
               className={track.motion ? 'toggled-on' : ''}
@@ -1314,15 +1812,26 @@ function TrackRow({
               <Icon name="move" size={13} />
             </button>
           )}
+          {track.kind === 'audio' && <ArmButton trackId={track.id} />}
           <button
             className={track.muted ? 'toggled' : ''}
             data-act="mute"
             title={t('mute')}
             aria-label={t('mute')}
             aria-pressed={track.muted}
-            onClick={() => useEditor.getState().updateTrack(track.id, { muted: !track.muted })}
+            onClick={() => toggleTrack(track.id, 'muted')}
           >
             <Icon name={track.muted ? 'mute' : 'volume'} size={13} />
+          </button>
+          <button
+            className={track.solo ? 'toggled-on' : ''}
+            data-act="solo"
+            title={t('solo')}
+            aria-label={t('solo')}
+            aria-pressed={!!track.solo}
+            onClick={() => toggleTrack(track.id, 'solo')}
+          >
+            <Icon name="solo" size={13} />
           </button>
           <button
             className={track.locked ? 'toggled' : ''}
@@ -1330,7 +1839,12 @@ function TrackRow({
             title={t('lock')}
             aria-label={t('lock')}
             aria-pressed={track.locked}
-            onClick={() => useEditor.getState().updateTrack(track.id, { locked: !track.locked })}
+            onClick={() => {
+              // an edit like solo, name and colour (E9): it is in the undo history (L2)
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(track.id, { locked: !track.locked })
+            }}
           >
             <Icon name={track.locked ? 'lock' : 'unlock'} size={13} />
           </button>
@@ -1346,15 +1860,22 @@ function TrackRow({
               step={0.01}
               value={track.gain}
               title={track.kind === 'audio' ? t('volume') : t('opacity')}
+              aria-label={track.kind === 'audio' ? t('volume') : t('opacity')}
               onPointerDown={(e) => {
                 e.stopPropagation()
+                keys.end()
                 useEditor.getState().pushHistory('hEdit')
               }}
+              // K12: arrow keys change it too — one undo step per run, as on the strip
+              onKeyDown={(e) => { if (/^(Arrow|Page|Home$|End$)/.test(e.key)) keys.key() }}
+              onBlur={keys.end}
               onChange={(e) =>
                 useEditor.getState().updateTrack(track.id, { gain: Number(e.target.value) })
               }
             />
-            <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>
+            {track.kind === 'audio'
+              ? <span className="gain-pct dim" title={t('thGainDb')}>{dbText(gainToDb(track.gain))}</span>
+              : <span className="gain-pct dim">{Math.round(track.gain * 100)}%</span>}
           </div>
         )}
       </div>
@@ -1448,6 +1969,74 @@ function DefectButtons() {
               onClick={() => setDefectsHidden(!hidden)}>
         <Icon name={hidden ? 'eyeOff' : 'eye'} />
       </button>
+    </>
+  )
+}
+
+/** Silence removal (card I5): find, mark all, remove the confirmed ones (one undo), clear. */
+function SilenceButtons() {
+  const t = useT()
+  const { items, busy, none } = useSilences()
+  // a confirmed 'short' (card I11) goes to «Экспортировать выбранные», not here
+  const confirmed = items.filter((x) => x.state === 'confirmed' && x.kind !== 'short').length
+  return (
+    <>
+      <button data-act="silences" title={t('silButtonHint')} disabled={busy} onClick={() => void findSilencesHere()}>
+        {busy ? <Spinner size={14} /> : <Icon name="mute" />} {t('silButton')}
+      </button>
+      {none && <span className="dim">{t('silNone')}</span>}
+      {items.length > 0 && (
+        <>
+          <button data-act="silences-confirm-all" onClick={confirmAllSilences}>
+            <Icon name="check" /> {t('silConfirmAll')}
+          </button>
+          <button data-act="silences-apply" disabled={!confirmed} onClick={() => applySilences('confirmed')}>
+            <Icon name="trash" /> {trf('silApply', { n: confirmed })}
+          </button>
+          <button className="icon-only" data-act="silences-clear" title={t('silClear')} aria-label={t('silClear')}
+                  onClick={clearSilences}>
+            <Icon name="close" />
+          </button>
+        </>
+      )}
+    </>
+  )
+}
+
+/**
+ * Found pauses as full-height bands over every track (a cut goes through all of
+ * them), each with the defect flag on the ruler: click marks it for removal
+ * (Alt unmarks), right click keeps it, double click plays it with a second of
+ * context. Deciding is no edit — only «Удалить подтверждённые» is.
+ */
+function SilenceFlags() {
+  const items = useSilences((s) => s.items)
+  const zoom = useEditor((s) => s.zoom)
+  if (!items.length) return null
+  const cls = (x: Silence) => (x.state === 'proposed' ? '' : ` ${x.state}`)
+  // the agent's proposals (kadr_propose, card I8) ride the same flags, with their reason
+  const tip = proposalTip
+  return (
+    <>
+      {items.map((x) => (
+        <div key={x.id}>
+          <div className={`adefect silence${cls(x)}`} data-silence={x.id}
+               style={{ left: HEADER_W + x.start * zoom, width: Math.max(3, (x.end - x.start) * zoom) }} />
+          <button
+            className={`adefect-flag${cls(x)}`}
+            data-silence-flag={x.id}
+            style={{ left: HEADER_W + x.start * zoom }}
+            title={tip(x)}
+            aria-label={tip(x)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => { e.stopPropagation(); setSilenceState(x.id, e.altKey ? 'proposed' : 'confirmed') }}
+            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSilenceState(x.id, 'rejected') }}
+            onDoubleClick={(e) => { e.stopPropagation(); playAround(x) }}
+          >
+            {x.state === 'confirmed' ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name={x.reason ? 'bot' : 'mute'} size={10} strokeWidth={2.5} />}
+          </button>
+        </div>
+      ))}
     </>
   )
 }
@@ -1775,19 +2364,24 @@ const ClipView = memo(function ClipView({
     clip.assetId ? s.project.assets.find((a) => a.id === clip.assetId) : undefined
   )
   const reversing = useReverseUi((s) => s.busy[clip.id]) // 0..1 or undefined
+  const offline = useOffline((s) => !!clip.assetId && s.ids.has(clip.assetId))
   const drag = useRef<DragState | null>(null)
   const waveRef = useRef<HTMLCanvasElement>(null)
   const [levelDrag, setLevelDrag] = useState<number | null>(null)
   // live ×N readout during a Ctrl speed drag; highlighted when snapped
   const [speedBadge, setSpeedBadge] =
     useState<{ x: number; y: number; speed: number; snapped: boolean } | null>(null)
+  // a glyph + a readout beside the cursor during a ripple, roll, slip or slide drag
+  const [modeBadge, setModeBadge] =
+    useState<{ x: number; y: number; icon: IconName; text: string } | null>(null)
+  const signed = (dt: number) => `${dt >= 0 ? '+' : '−'}${Math.abs(dt).toFixed(2)}`
 
   const w = clip.duration * zoom
   const speed = clip.speed || 1
   // timeline length of one full pass over the source — the loop period
   const natural =
     asset && asset.kind !== 'image'
-      ? Math.max(0.05, asset.duration - clip.inPoint) / speed
+      ? relAtOffset(clip, Math.max(0.05, asset.duration - clip.inPoint))
       : Infinity
   const loops = isFinite(natural) && clip.duration > natural + 0.01
 
@@ -1811,7 +2405,8 @@ const ClipView = memo(function ClipView({
     ctx.clearRect(0, 0, cw, ch)
     const span = Math.max(0.05, asset.duration - clip.inPoint)
     const mid = ch / 2
-    const cols = waveColumns(wf, { cw, vis0, dpr, zoom, speed, inPoint: clip.inPoint, span })
+    const cols = waveColumns(wf, { cw, vis0, dpr, zoom, speed, inPoint: clip.inPoint, span,
+      ...(clip.speedRamp?.keyframes?.length ? { src: (t: number) => sourceOffset(clip, t) } : {}) })
     // one path per colour, filled once: switching fillStyle for every column
     // was a large share of the redraw
     const peaks = new Path2D()
@@ -1826,7 +2421,7 @@ const ClipView = memo(function ClipView({
     ctx.fill(peaks)
     ctx.fillStyle = token('--c-wave-rms')
     ctx.fill(rmsPath)
-  }, [asset, zoom, vis0, visW, clip.inPoint, clip.start, speed, laneHeight])
+  }, [asset, zoom, vis0, visW, clip.inPoint, clip.start, speed, clip.speedRamp, laneHeight])
 
   // -------------------------------------------------------------- main drag
   // window-level listeners: the clip element remounts when it crosses to
@@ -1838,6 +2433,25 @@ const ClipView = memo(function ClipView({
     // a locked A/V twin is left out: the store would refuse to move it, and
     // half a pair that follows the drag is worse than a pair that does not
     const linkedIds = unlocked(st.project, withLinked(st.project, [clip.id]))
+    const zone0 = setting<number>('mouse.edgeZone')
+    const lx0 = e.clientX - e.currentTarget.getBoundingClientRect().left
+    const atEdge = w > 24 && (lx0 < zone0 || lx0 > w - zone0)
+    if (e.ctrlKey && e.shiftKey && atEdge && startRoll(e, lx0 < zone0 ? 'in' : 'out')) return
+    if (e.altKey && !e.ctrlKey && !atEdge) {
+      // Alt on the body: slip; Alt+Shift: slide (Alt near an edge stays speed)
+      startSlipSlide(e, e.shiftKey)
+      return
+    }
+    if (e.shiftKey && w > 24) {
+      // Shift on an EDGE is ripple trim; Shift on the body stays span select
+      const rect = e.currentTarget.getBoundingClientRect()
+      const lx = e.clientX - rect.left
+      const zone = setting<number>('mouse.edgeZone')
+      if (lx < zone || lx > rect.width - zone) {
+        startRippleTrim(e, lx < zone ? 'in' : 'out')
+        return
+      }
+    }
     if (e.shiftKey) {
       // Explorer's Shift+click: from the FIRST clip of the current selection
       // to this one — the tracks between them, over the time they cover
@@ -1849,7 +2463,7 @@ const ClipView = memo(function ClipView({
       )
       return
     }
-    if ((e.ctrlKey || e.altKey) && w > 24 && asset && asset.kind !== 'image') {
+    if (speedModifier(e) && w > 24 && asset && asset.kind !== 'image') {
       // Ctrl/Alt+drag near EITHER edge = speed (Vegas-style time stretch) —
       // the same gesture as the extend handles, but forgiving about where
       // exactly the clip is grabbed
@@ -1864,15 +2478,17 @@ const ClipView = memo(function ClipView({
         return
       }
     }
+    // Ctrl on the body: a click toggles the selection, a DRAG past 3 px copies
+    // (Explorer's copy modifier) — the originals move, copies stay behind
+    let copy: string[] | null = null
+    const toggleSelection = () => {
+      const s = useEditor.getState()
+      const sel = new Set(s.selection)
+      if (sel.has(clip.id)) linkedIds.forEach((id) => sel.delete(id))
+      else linkedIds.forEach((id) => sel.add(id))
+      s.select([...sel])
+    }
     if (e.ctrlKey) {
-      const toggleSelection = () => {
-        const s = useEditor.getState()
-        const sel = new Set(s.selection)
-        if (sel.has(clip.id)) linkedIds.forEach((id) => sel.delete(id))
-        else linkedIds.forEach((id) => sel.add(id))
-        s.select([...sel])
-      }
-
       // On a voice-over clip Ctrl+DRAG marks a span for the defect detector —
       // the gesture the work actually needs. A Ctrl+CLICK (no movement) still
       // toggles the selection exactly as before, so nothing is taken away.
@@ -1909,18 +2525,18 @@ const ClipView = memo(function ClipView({
         })
         return
       }
-      toggleSelection()
-      return
+      copy = selected ? unlocked(st.project, st.selection) : linkedIds
     }
-    if (!selected) st.select(linkedIds)
+    if (!copy && !selected) st.select(linkedIds)
 
     const rect = e.currentTarget.getBoundingClientRect()
     const lx = e.clientX - rect.left
-    const mode: DragMode = lx < 8 && w > 24 ? 'in' : lx > rect.width - 8 && w > 24 ? 'out' : 'move'
+    const zone = setting<number>('mouse.edgeZone')
+    const mode: DragMode = copy ? 'move' : lx < zone && w > 24 ? 'in' : lx > rect.width - zone && w > 24 ? 'out' : 'move'
     const grabTime = clip.start + lx / st.zoom
-    st.pushHistory(mode === 'move' ? 'hMove' : 'hTrim')
+    if (!copy) st.pushHistory(mode === 'move' ? 'hMove' : 'hTrim')
 
-    const sel = useEditor.getState().selection
+    const sel = copy ?? useEditor.getState().selection
     const group =
       mode === 'move' && sel.length > 1 && sel.includes(clip.id)
         ? sel
@@ -2017,13 +2633,27 @@ const ClipView = memo(function ClipView({
     const startY = e.clientY
     let moved = false
     const onMoveTracked = (ev: PointerEvent) => {
-      if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) > 3) moved = true
+      if (!moved && Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) > 3) {
+        moved = true
+        if (copy) {
+          // one undo step: the copies and the move that follows
+          const s = useEditor.getState()
+          s.pushHistory('hDuplicate')
+          s.select(copy)
+          s.duplicateInPlace(copy)
+        }
+      }
+      if (copy && !moved) return
       onMove(ev)
     }
     const onUp = () => {
       window.removeEventListener('pointermove', onMoveTracked)
       window.removeEventListener('pointerup', onUp)
       drag.current = null
+      if (copy) {
+        if (!moved) toggleSelection()
+        return
+      }
       // a plain click (no drag) parks the playhead at the click position;
       // dragging keeps the red cursor where it was so clips can snap to it
       if (!moved && mode === 'move') {
@@ -2058,6 +2688,100 @@ const ClipView = memo(function ClipView({
     })
   }
 
+  // ------------------------------------------------------ ripple trim drag
+  // Shift+drag of an edge: the clip's length changes and everything after it
+  // on its track and its twin's follows (rippleTrim). The in edge keeps its
+  // place — the head comes off the source and the tail closes up.
+  const startRippleTrim = (e: React.PointerEvent<HTMLDivElement>, edge: 'in' | 'out') => {
+    e.stopPropagation()
+    e.preventDefault()
+    const st = useEditor.getState()
+    if (!selected) st.select(unlocked(st.project, withLinked(st.project, [clip.id])))
+    st.pushHistory('hRippleTrim')
+    const origEnd = clip.start + clip.duration
+    const origDur = clip.duration
+    const origIn = clip.inPoint
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      const dt = dx / s.zoom
+      if (edge === 'out') s.rippleTrim(clip.id, 'out', snapTime(origEnd + dt, points, s.zoom))
+      else {
+        // the start never moves, so ask for what is still to come off the head
+        const cur = findClip(s.project, clip.id)?.clip
+        if (cur) s.rippleTrim(clip.id, 'in', cur.start + dt - (cur.inPoint - origIn) / speed)
+      }
+      const now = findClip(useEditor.getState().project, clip.id)?.clip
+      setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'wave', text: signed((now?.duration ?? origDur) - origDur) })
+    }, () => setModeBadge(null))
+  }
+
+  // ------------------------------------------------------------ roll drag
+  // Ctrl+Shift+drag of an edge shared with a butted neighbour: the cut moves,
+  // both clips change length, their sum does not. False when there is no
+  // neighbour (the caller falls through).
+  const startRoll = (e: React.PointerEvent<HTMLDivElement>, edge: 'in' | 'out') => {
+    const st = useEditor.getState()
+    const cut = edge === 'in' ? clip.start : clip.start + clip.duration
+    const other = track.clips.find((o) => o.id !== clip.id &&
+      Math.abs((edge === 'in' ? o.start + o.duration : o.start) - cut) < 1e-6)
+    if (!other) return false
+    e.stopPropagation()
+    e.preventDefault()
+    const [left, right] = edge === 'in' ? [other.id, clip.id] : [clip.id, other.id]
+    st.pushHistory('hRoll')
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id, other.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      s.rollEdit(left, right, snapTime(cut + dx / s.zoom, points, s.zoom))
+      const l = findClip(useEditor.getState().project, left)?.clip
+      setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'junction', text: signed((l ? l.start + l.duration : cut) - cut) })
+    }, () => setModeBadge(null))
+    return true
+  }
+
+  // ------------------------------------------------------ slip/slide drag
+  // Alt+drag of the body: slip — the source moves under a clip that stays put
+  // (the content follows the pointer); Alt+Shift: slide — the clip moves with
+  // its source and the butted neighbours' facing edges follow.
+  const startSlipSlide = (e: React.PointerEvent<HTMLDivElement>, isSlide: boolean) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const st = useEditor.getState()
+    if (!isSlide && (!asset || asset.kind === 'image')) {
+      setModeBadge({ x: e.clientX, y: e.clientY, icon: 'film', text: t('slipStill') })
+      windowDrag(e, () => {}, () => setModeBadge(null))
+      return
+    }
+    if (!selected) st.select(unlocked(st.project, withLinked(st.project, [clip.id])))
+    st.pushHistory(isSlide ? 'hSlide' : 'hSlip')
+    const origStart = clip.start
+    const origIn = clip.inPoint
+    const points = snapPoints(st.project, withLinked(st.project, [clip.id]), st.playhead)
+    windowDrag(e, (dx, ev) => {
+      const s = useEditor.getState()
+      const cur = findClip(s.project, clip.id)?.clip
+      if (!cur) return
+      const fps = s.project.fps
+      if (isSlide) {
+        let ns = origStart + dx / s.zoom
+        const snapped = snapTime(ns, points, s.zoom)
+        const snappedEnd = snapTime(ns + cur.duration, points, s.zoom) - cur.duration
+        ns = snapped !== ns ? snapped : snappedEnd
+        s.slide(clip.id, ns - cur.start)
+        const now = findClip(useEditor.getState().project, clip.id)?.clip ?? cur
+        setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'move', text: signed(now.start - origStart) })
+      } else {
+        // dragging right shows EARLIER source: the picture follows the hand
+        const want = origIn - (dx / s.zoom) * speed
+        s.slip(clip.id, (want - cur.inPoint) / speed)
+        const now = findClip(useEditor.getState().project, clip.id)?.clip ?? cur
+        setModeBadge({ x: ev.clientX, y: ev.clientY, icon: 'film',
+          text: `${formatTime(now.inPoint, fps)} – ${formatTime(now.inPoint + now.duration * speed, fps)}` })
+      }
+    }, () => setModeBadge(null))
+  }
+
   // ---------------------------------------------------- extend/speed drag
   // Works from BOTH clip ends. Right: the start stays put (resize = loop-
   // extend, Ctrl = speed). Left: the RIGHT edge stays anchored (resize =
@@ -2067,9 +2791,14 @@ const ClipView = memo(function ClipView({
     if (track.locked || e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
+    if (e.ctrlKey && e.shiftKey && startRoll(e, edge === 'left' ? 'in' : 'out')) return
+    const speedMode = speedModifier(e) && !!asset && asset.kind !== 'image'
+    if (e.shiftKey && !speedMode) {
+      startRippleTrim(e, edge === 'left' ? 'in' : 'out')
+      return
+    }
     const st = useEditor.getState()
     if (!selected) st.select([clip.id])
-    const speedMode = (e.ctrlKey || e.altKey) && !!asset && asset.kind !== 'image'
     const leftTrim = edge === 'left' && !speedMode
     st.pushHistory(speedMode ? 'hSpeed' : leftTrim ? 'hTrim' : 'hResize')
     const origStart = clip.start
@@ -2120,9 +2849,9 @@ const ClipView = memo(function ClipView({
       } else {
         let nd = Math.max(0.05, origDur + dt)
         // sticky zone at the natural (source) length
-        if (isFinite(natural) && Math.abs(nd - natural) < 10 / s.zoom) nd = natural
+        if (isFinite(natural) && Math.abs(nd - natural) < snapRadius(s.zoom)) nd = natural
         const snapped = snapTime(origStart + nd, points, s.zoom) - origStart
-        if (snapped > 0.05 && Math.abs(snapped - nd) < 10 / s.zoom) nd = snapped
+        if (snapped > 0.05 && Math.abs(snapped - nd) < snapRadius(s.zoom)) nd = snapped
         s.setClipDuration(clip.id, nd) // linked partner follows
       }
     }, () => setSpeedBadge(null))
@@ -2134,39 +2863,102 @@ const ClipView = memo(function ClipView({
   const level = isAudio ? evalAnim(clip.gain, 0) : evalAnim(clip.transform?.opacity, 0)
   const levelPad = 7
   const levelUsable = Math.max(4, laneHeight - 8 - levelPad * 2)
-  const levelY = levelPad + (1 - Math.min(levelMax, Math.max(0, level)) / levelMax) * levelUsable
+  const yOfLevel = (v: number) => levelPad + (1 - Math.min(levelMax, Math.max(0, v)) / levelMax) * levelUsable
+  const levelY = yOfLevel(level)
+  // K1: the line takes points — the Anim's keys, at clip-local times
+  const levelAnim = isAudio ? clip.gain : clip.transform?.opacity
+  const writeLevel = (a: Anim) => {
+    const s = useEditor.getState()
+    const f = findClip(s.project, clip.id)
+    if (!f) return
+    if (isAudio) s.updateClip(clip.id, { gain: a })
+    else s.updateClip(clip.id, { transform: { ...f.clip.transform, opacity: a } })
+  }
+  const lineOf = (el: Element): LevelLine => {
+    const r = el.closest('.clip')!.getBoundingClientRect()
+    return { left: r.left, top: r.top, width: r.width, duration: clip.duration, pad: levelPad, usable: levelUsable, max: levelMax }
+  }
 
-  const startLevelDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+  // the line: a drag moves the whole level (every point alike); a click adds a point
+  const startLevelDrag = (e: React.PointerEvent<Element>) => {
     if (track.locked || e.button !== 0) return
     e.stopPropagation()
     e.preventDefault()
     const st = useEditor.getState()
-    st.pushHistory('hEdit')
-    const l0 = level
-    setLevelDrag(l0)
+    st.pushHistory('hEdit') // one gesture, one undo step
+    const a0 = levelAnim ?? { value: 1 }
+    const line = lineOf(e.currentTarget)
+    const down = levelAt(line, e.clientX, e.clientY)
+    let moved = false
     windowDrag(
       e,
-      (_dx, ev) => {
-        // vertical drag; windowDrag gives dx, use ev for dy
-        const dy = ev.clientY - (e.clientY as number)
-        const nl = Math.min(levelMax, Math.max(0, l0 - (dy / levelUsable) * levelMax))
-        setLevelDrag(nl)
-        const s = useEditor.getState()
-        const f = findClip(s.project, clip.id)
-        if (!f) return
-        if (isAudio) s.updateClip(clip.id, { gain: { ...f.clip.gain, value: nl } })
-        else s.updateClip(clip.id, {
-          transform: { ...f.clip.transform, opacity: { ...f.clip.transform.opacity, value: nl } }
-        })
+      (dx, ev) => {
+        const dy = ev.clientY - e.clientY
+        if (!moved && Math.abs(dx) + Math.abs(dy) <= 3) return
+        moved = true
+        const a = shiftLevel(a0, -(dy / levelUsable) * levelMax, levelMax)
+        setLevelDrag(evalAnim(a, down.t))
+        writeLevel(a)
       },
-      () => setLevelDrag(null)
+      () => {
+        if (!moved) writeLevel(addLevelPoint(a0, down.t))
+        setLevelDrag(null)
+      }
     )
   }
+  // a point: drag moves it (Shift: along time only), right-click removes it
+  const startPointDrag = (i: number) => (e: React.PointerEvent<HTMLDivElement>) => {
+    if (track.locked || e.button !== 0 || !levelAnim) return
+    e.stopPropagation()
+    e.preventDefault()
+    useEditor.getState().pushHistory('hEdit')
+    const a0 = levelAnim
+    const line = lineOf(e.currentTarget)
+    const k0 = sortedKfs(a0)[i]
+    setLevelDrag(k0.value)
+    windowDrag(e, (dx, ev) => {
+      const dy = ev.clientY - e.clientY
+      const a = moveLevelPoint(a0, i, k0.time + (dx / line.width) * clip.duration,
+        k0.value - (dy / levelUsable) * levelMax, { duration: clip.duration, max: levelMax, keepLevel: ev.shiftKey })
+      setLevelDrag(a.keyframes![i].value)
+      writeLevel(a)
+    }, () => setLevelDrag(null))
+  }
+  const deletePoint = (i: number) => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (track.locked || !levelAnim) return
+    useEditor.getState().pushHistory('hEdit')
+    writeLevel(deleteLevelPoint(levelAnim, i))
+  }
+  // the keyed line, in clip seconds × lane px: straight between linear keys,
+  // sampled where an easing or the spline bends it
+  const levelPath = (() => {
+    if (!levelAnim?.keyframes?.length) return ''
+    const kfs = sortedKfs(levelAnim)
+    const ts = [0]
+    kfs.forEach((k, j) => {
+      const next = kfs[j + 1]
+      ts.push(k.time)
+      if (next && (levelAnim.smooth || k.easing !== 'linear')) {
+        for (let s = 1; s < 24; s++) ts.push(k.time + ((next.time - k.time) * s) / 24)
+        ts.push(next.time - 1e-6)
+      }
+    })
+    ts.push(clip.duration)
+    return ts.map((t) => `${t},${yOfLevel(evalAnim(levelAnim, t)).toFixed(1)}`).join(' ')
+  })()
 
   const isText = clip.kind === 'text'
+  // L6: a compound clip is drawn like any clip with a nest glyph; what its expansion
+  // does not honour (fades, edge tips, opacity keys) is not offered on it
+  const compound = clip.kind === 'timeline'
   const fadeIn = clip.fadeIn ?? 0
   const fadeOut = clip.fadeOut ?? 0
-  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}`
+  const cls = `clip ${track.kind} ${selected ? 'selected' : ''} ${isText ? 'text-clip' : ''} ${clip.kind === 'remotion' ? 'remotion-clip' : ''}${compound ? ' compound-clip' : ''}${offline ? ' offline' : ''}${clip.disabled ? ' disabled' : ''}`
+  // a colour label (E9): the clip's own, else its track's
+  const label = clip.color ?? track.color
+  const tint = label ? { background: `var(--label-${label})` } : {}
   // A clip a few pixels wide shows nothing but its colour: its handles, level
   // line, label and waveform can be neither seen nor grabbed. Zoomed out on a
   // long project that is most of them (a 19-minute project: ~600 clips on
@@ -2181,6 +2973,11 @@ const ClipView = memo(function ClipView({
     e.stopPropagation()
     onMenu({ x: e.clientX, y: e.clientY, kind: 'edge', clipId: clip.id, edge })
   }
+  const openFadeMenu = (edge: 'in' | 'out') => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    onMenu({ x: e.clientX, y: e.clientY, kind: 'fade', clipId: clip.id, edge })
+  }
 
   const loopMarks: number[] = []
   if (loops) {
@@ -2193,16 +2990,20 @@ const ClipView = memo(function ClipView({
 
   const onDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation()
-    useEditor.getState().setAnimClip(clip.id)
+    if (compound) openCompound(clip)
+    else useEditor.getState().setAnimClip(clip.id)
   }
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     const st = useEditor.getState()
     if (!st.selection.includes(clip.id)) st.select(withLinked(st.project, [clip.id]))
+    // px per second from the box itself, so a zoom gesture in flight reads right
+    const r = e.currentTarget.getBoundingClientRect()
     onMenu({
       x: e.clientX, y: e.clientY, kind: 'clip',
-      clipId: clip.id, linked: !!clip.linkId, trackKind: track.kind
+      clipId: clip.id, linked: !!clip.linkId, trackKind: track.kind,
+      at: clip.start + (e.clientX - r.left) * clip.duration / Math.max(1, r.width)
     })
   }
   if (tiny) {
@@ -2210,8 +3011,8 @@ const ClipView = memo(function ClipView({
       <div
         className={cls}
         data-clip={clip.id}
-        style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})` }}
-        title={clip.label ?? asset?.name}
+        style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})`, ...tint }}
+        title={offline ? t('offlineClip') : clip.disabled ? t('clipDisabled') : clip.label ?? asset?.name}
         onPointerDown={onPointerDown}
         onDoubleClick={onDoubleClick}
         onContextMenu={onContextMenu}
@@ -2222,7 +3023,8 @@ const ClipView = memo(function ClipView({
     <div
       className={cls}
       data-clip={clip.id}
-      style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})` }}
+      style={{ left: zpx(clip.start), width: `max(4px, ${zpx(clip.duration)})`, ...tint }}
+      title={clip.disabled ? t('clipDisabled') : undefined}
       onPointerDown={onPointerDown}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
@@ -2241,26 +3043,67 @@ const ClipView = memo(function ClipView({
       {track.kind === 'audio' && visW > 0 && (
         <canvas ref={waveRef} className="clip-wave" style={{ left: zpx(vis0 / zoom), width: zpx(visW / zoom) }} />
       )}
-      <div
-        className="level-hit"
-        style={{ top: levelY - 4 }}
-        title={`${Math.round(level * 100)}%`}
-        onPointerDown={startLevelDrag}
-      >
-        <div className="level-line" />
-      </div>
+      {compound ? null : levelPath ? (
+        <svg className="level-curve" style={{ height: levelUsable + levelPad * 2 }}
+          viewBox={`0 0 ${clip.duration} ${levelUsable + levelPad * 2}`} preserveAspectRatio="none">
+          <polyline className="level-curve-hit" points={levelPath} onPointerDown={startLevelDrag}>
+            <title>{t('levelPointsHint')}</title>
+          </polyline>
+          <polyline className="level-curve-line" points={levelPath} />
+        </svg>
+      ) : (
+        <div
+          className="level-hit"
+          style={{ top: levelY - 4 }}
+          title={`${Math.round(level * 100)}% · ${t('levelPointsHint')}`}
+          onPointerDown={startLevelDrag}
+        >
+          <div className="level-line" />
+        </div>
+      )}
+      {w > 30 && !compound && sortedKfs(levelAnim ?? { value: 1 }).map((k, i) => (
+        <div
+          key={i}
+          className="level-point"
+          data-level-point={i}
+          style={{ left: `calc(${zpx(k.time)} - 4px)`, top: yOfLevel(k.value) - 4 }}
+          title={`${Math.round(k.value * 100)}%`}
+          onPointerDown={startPointDrag(i)}
+          onContextMenu={deletePoint(i)}
+        />
+      ))}
       {levelDrag !== null && (
-        <div className="level-badge" style={{ top: Math.max(0, levelY - 22) }}>
+        <div className="level-badge" style={{ top: Math.max(0, yOfLevel(levelDrag) - 22) }}>
           {Math.round(levelDrag * 100)}%
         </div>
       )}
       {fadeIn > 0 && <div className="fade-shade left" style={{ width: zpx(fadeIn) }} />}
       {fadeOut > 0 && <div className="fade-shade right" style={{ width: zpx(fadeOut) }} />}
+      {(clip.markers ?? []).map((m) => {
+        // L1: a clip marker sits on its SOURCE second, so it rides every move, trim and slip
+        const at = clipMarkerTime(clip, m.source)
+        if (at === null) return null
+        return (
+          <div key={m.id} className="clip-marker" data-clip-marker={m.id}
+            style={{ left: zpx(at - clip.start), ...markerTint(m.color) }}>
+            <span className="clip-marker-flag" title={m.note ? `${m.note}\n\n${t('clipMarkerTip')}` : t('clipMarkerTip')}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                openMarkerMenu({ id: m.id, clipId: clip.id }, e.clientX, e.clientY)
+              }}>
+              {m.label}
+            </span>
+          </div>
+        )
+      })}
       {loopMarks.map((x) => (
-        <div key={x} className="loop-mark" style={{ left: zpx(x) }} title="loop" />
+        <div key={x} className="loop-mark" style={{ left: zpx(x) }} title={t('loopMark')} />
       ))}
       <span className="clip-label">
+        {offline && <span className="clip-offline" title={t('offlineClip')}><Icon name="unlink" size={11} /></span>}
         {clip.kind === 'remotion' && <Icon name="atom" size={11} />}
+        {compound && <Icon name="layers" size={11} />}
         {clip.linkId && <Icon name="link" size={11} />}
         <span>
           {isText ? `T: ${clip.text}` : clip.label}
@@ -2278,17 +3121,21 @@ const ClipView = memo(function ClipView({
       )}
       {tipIn && <div className="tip-strip left" style={{ width: zpx(tipIn.duration) }} />}
       {tipOut && <div className="tip-strip right" style={{ width: zpx(tipOut.duration) }} />}
-      {track.kind === 'video' && w > 40 && (
+      {track.kind === 'video' && w > 40 && !compound && (
         <>
           <div
             className={`clip-tip left ${tipIn ? 'set' : ''}`}
+            role="button"
             title={t('edgeTipHint')}
+            aria-label={t('edgeTipHint')}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={openTipMenu('in')}
           />
           <div
             className={`clip-tip right ${tipOut ? 'set' : ''}`}
+            role="button"
             title={t('edgeTipHint')}
+            aria-label={t('edgeTipHint')}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={openTipMenu('out')}
           />
@@ -2296,28 +3143,30 @@ const ClipView = memo(function ClipView({
       )}
       <div className="trim-handle left" />
       <div className="trim-handle right" />
-      {w > 30 && (
+      {w > 30 && !compound && (
         <>
           <div
             className="fade-handle left"
             style={{ left: fadeInX }}
-            title="Fade in"
+            title={t('fadeInHandle')}
             onPointerDown={startFadeDrag('fadeIn')}
+            onContextMenu={openFadeMenu('in')}
           />
           <div
             className="fade-handle right"
             style={{ right: fadeOutX }}
-            title="Fade out"
+            title={t('fadeOutHandle')}
             onPointerDown={startFadeDrag('fadeOut')}
+            onContextMenu={openFadeMenu('out')}
           />
           <div
             className="extend-handle"
-            title="Drag: resize/loop · Ctrl/Alt: speed"
+            title={t('extendRightHint')}
             onPointerDown={startExtendDrag('right')}
           />
           <div
             className="extend-handle left"
-            title="Drag: resize · Ctrl/Alt: speed"
+            title={t('extendLeftHint')}
             onPointerDown={startExtendDrag('left')}
           />
         </>
@@ -2328,6 +3177,12 @@ const ClipView = memo(function ClipView({
           style={{ left: speedBadge.x + 14, top: speedBadge.y - 30 }}
         >
           ×{speedBadge.speed.toFixed(2)}
+        </div>,
+        document.body
+      )}
+      {modeBadge && createPortal(
+        <div className="speed-badge" style={{ left: modeBadge.x + 14, top: modeBadge.y - 30 }}>
+          <Icon name={modeBadge.icon} size={13} /> {modeBadge.text}
         </div>,
         document.body
       )}

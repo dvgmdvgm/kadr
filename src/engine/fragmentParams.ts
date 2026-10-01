@@ -10,6 +10,7 @@
 import { create } from 'zustand'
 import type { FragmentParamDecl, FragmentParamValue } from '@shared/types'
 import { logError } from './log'
+import { trf, tr } from '../i18n'
 
 export const useFragmentParams = create<{ live: Record<string, Record<string, FragmentParamValue>> }>(() => ({
   live: {}
@@ -87,7 +88,7 @@ async function save(fid: string, patch: Record<string, FragmentParamValue> | nul
         if (changed) useFragmentParams.setState((s) => ({ live: { ...s.live, [fid]: live } }))
       }, 2000)
     } catch (e) {
-      logError('параметры фрагмента', `${fid}: не удалось сохранить params.json`, e)
+      logError(tr('lgFragParams'), trf('lmParamsFail', { id: fid }), e)
     }
   })
   pending.set(fid, run)

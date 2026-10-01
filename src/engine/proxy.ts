@@ -3,11 +3,11 @@
 // reading the original (WYSIWYG quality).
 import { create } from 'zustand'
 import type { MediaAsset } from '@shared/types'
-import { useEditor } from '@/state/store'
+import { useEditor, useSettings, setting } from '@/state/store'
+import { previewPrefs } from './player'
 import { chromiumCanDecode } from './codecs'
+import { buildsProxy, type ProxyEnv } from '@shared/proxyChoice'
 
-/** sources at or above this short-side size get a preview proxy */
-const PROXY_MIN_SIDE = 720
 
 interface ProxyProgressState {
   /** asset id → 0..1 while a proxy is being generated */
@@ -16,14 +16,17 @@ interface ProxyProgressState {
 
 export const useProxyProgress = create<ProxyProgressState>(() => ({ jobs: {} }))
 
+/** the env of shared/proxyChoice.ts for this asset, from the live settings */
+export function proxyEnv(a: MediaAsset): ProxyEnv {
+  return {
+    proxies: setting('playback.proxies') === true,
+    minSide: setting<number>('playback.proxyMinSide'),
+    canDecode: chromiumCanDecode(a)
+  }
+}
+
 export function wantsProxy(a: MediaAsset): boolean {
-  if (a.kind !== 'video') return false
-  // codecs Chromium can't decode need a proxy at ANY size — without one the
-  // preview <video> renders 0×0 and the clip is invisible
-  if (!chromiumCanDecode(a.codec)) return true
-  // an HDR source looks flat and wrong played as it is: its proxy is tone-mapped (electron/hdr.ts)
-  if (a.hdr) return true
-  return Math.min(a.width, a.height) >= PROXY_MIN_SIDE
+  return buildsProxy(a, proxyEnv(a))
 }
 
 const inflight = new Set<string>()
@@ -54,37 +57,51 @@ export function ensureProxies() {
         }
       })
     }
-    inflight.add(a.id)
-    useProxyProgress.setState((s) => ({ jobs: { ...s.jobs, [a.id]: 0 } }))
-    ;(async () => {
-      // assets saved before codec/hasAlpha existed: re-probe once so alpha
-      // sources stop getting (and keeping) an H.264 proxy that bakes the
-      // transparency into a solid background
-      let { codec, hasAlpha } = a
-      if (a.kind === 'video' && codec === undefined) {
-        const fresh = (await window.kadr.probeMedia(a.path)).asset
-        codec = fresh.codec
-        hasAlpha = fresh.hasAlpha
-        useEditor.getState().updateAsset(a.id, { codec, hasAlpha: !!hasAlpha })
-      }
-      return window.kadr.requestProxy(a.path, a.duration, { alpha: !!hasAlpha, codec })
-    })()
-      .then((proxyPath) => {
-        const cur = useEditor.getState().project.assets.find((x) => x.id === a.id)
-        if (cur && cur.proxyPath !== proxyPath) {
-          useEditor.getState().updateAsset(a.id, { proxyPath })
-        }
-      })
-      .catch(() => { /* preview keeps decoding the original */ })
-      .finally(() => {
-        inflight.delete(a.id)
-        useProxyProgress.setState((s) => {
-          const jobs = { ...s.jobs }
-          delete jobs[a.id]
-          return { jobs }
-        })
-      })
+    build(a)
   }
+}
+
+/** «Пересобрать прокси» (H7): the cached file is deleted and built again.
+    The path is cleared first so the preview drops to the original meanwhile
+    and reloads when the path comes back (the new file has the SAME name). */
+export function rebuildProxy(assetId: string) {
+  const a = useEditor.getState().project.assets.find((x) => x.id === assetId)
+  if (!a || !wantsProxy(a) || inflight.has(a.id)) return
+  build(a, true) // first: it marks the asset in flight, so the store change below queues no second build
+  if (a.proxyPath) useEditor.getState().updateAsset(a.id, { proxyPath: undefined })
+}
+
+function build(a: MediaAsset, rebuild = false) {
+  inflight.add(a.id)
+  useProxyProgress.setState((s) => ({ jobs: { ...s.jobs, [a.id]: 0 } }))
+  ;(async () => {
+    // assets saved before codec/hasAlpha existed: re-probe once so alpha
+    // sources stop getting (and keeping) an H.264 proxy that bakes the
+    // transparency into a solid background
+    let { codec, hasAlpha } = a
+    if (a.kind === 'video' && codec === undefined) {
+      const fresh = (await window.kadr.probeMedia(a.path)).asset
+      codec = fresh.codec
+      hasAlpha = fresh.hasAlpha
+      useEditor.getState().updateAsset(a.id, { codec, hasAlpha: !!hasAlpha })
+    }
+    return window.kadr.requestProxy(a.path, a.duration, { alpha: !!hasAlpha, codec, rebuild })
+  })()
+    .then((proxyPath) => {
+      const cur = useEditor.getState().project.assets.find((x) => x.id === a.id)
+      if (cur && cur.proxyPath !== proxyPath) {
+        useEditor.getState().updateAsset(a.id, { proxyPath })
+      }
+    })
+    .catch(() => { /* preview keeps decoding the original */ })
+    .finally(() => {
+      inflight.delete(a.id)
+      useProxyProgress.setState((s) => {
+        const jobs = { ...s.jobs }
+        delete jobs[a.id]
+        return { jobs }
+      })
+    })
 }
 
 let wired = false
@@ -93,6 +110,12 @@ let wired = false
 export function wireProxies() {
   if (wired) return
   wired = true
+  const sync = () => {
+    const on = setting('playback.proxies') === true
+    if (on !== previewPrefs.proxies) { previewPrefs.proxies = on; ensureProxies() }
+  }
+  sync()
+  useSettings.subscribe(sync)
   window.kadr.onProxyProgress(({ path, progress }) => {
     const a = useEditor.getState().project.assets.find((x) => x.path === path)
     if (a && inflight.has(a.id)) {

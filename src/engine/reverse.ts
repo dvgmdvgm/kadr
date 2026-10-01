@@ -7,6 +7,7 @@
 import { create } from 'zustand'
 import { useEditor, uid, findClip } from '@/state/store'
 import type { Clip, MediaAsset, Project } from '@shared/types'
+import { sourceOffset } from '@shared/speedRamp'
 
 /** clip id → render progress 0..1 for reversals in flight (timeline shows ⏳ N%) */
 export const useReverseUi = create<{ busy: Record<string, number> }>(() => ({ busy: {} }))
@@ -29,7 +30,7 @@ function groupOf(project: Project, clip: Clip): Clip[] {
 }
 
 /** source seconds actually consumed by the clip (first loop iteration) */
-const playedSpan = (c: Clip) => c.duration * (c.speed || 1)
+const playedSpan = (c: Clip) => sourceOffset(c, c.duration)
 
 export async function reverseClip(clipId: string): Promise<void> {
   const st = useEditor.getState()

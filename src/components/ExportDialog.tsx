@@ -1,17 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ExportProgress } from '@shared/types'
-import { PRESETS } from '@/presets'
-import { startExport, type ExportHandle } from '@/engine/exporter'
+import type { ExportPreset, ExportProgress } from '@shared/types'
+import {
+  PRESETS, presetName, audioCodecLabel, allPresets, isUserPreset, useExportPresets,
+  saveExportPreset, renameExportPreset, deleteExportPreset, AUDIO_BITRATES, lossyAudio
+} from '@/presets'
+import { LOUDNESS_TARGETS } from '@shared/audioMaster'
+import { fileNameFrom, withOutput } from '@shared/exportPresets'
+import { chaptersInRange, chapterMarks, youtubeChapters, youtubeProblems, embedsSubs } from '@shared/exportExtras'
+import {
+  X264_PRESETS, VIDEO_ENCODERS, VIDEO_CODECS, OPTIONAL_ENCODERS, withCodec, videoCodecOf, pickEncoder,
+  type OutputFit, type VideoEncoder, type VideoCodec
+} from '@shared/rawEncode'
+import { effective, type SettingKey } from '@shared/settings'
+import { etaOf, fmtClock, estimateBytes, ETA_WINDOW, type EtaSample } from '@shared/exportEta'
+import { startExport, type ExportHandle, type ExportOptions } from '@/engine/exporter'
+import { useSilences } from '@/engine/silences'
+import { shortJobs, exportShorts, SHORT } from '@/engine/shorts'
 import { useVoiceUi } from '@/engine/voiceCheck'
-import { useEditor } from '@/state/store'
-import { useT } from '@/i18n'
+import { useEditor, useSettings, setting, projectDuration } from '@/state/store'
+import { useT, trf } from '@/i18n'
 import { Icon } from './icons'
 import { Modal } from './Modal'
+import { size as fmtSize } from './StoragePanel'
 
 type Status =
   | { kind: 'idle' }
-  | { kind: 'running'; phase: ExportProgress['phase']; progress: number }
-  | { kind: 'done' }
+  | { kind: 'running'; phase: ExportProgress['phase']; progress: number; est: ReturnType<typeof etaOf> }
+  | { kind: 'done'; loudness?: { i: number; tp: number } }
   | { kind: 'error'; message: string }
   | { kind: 'cancelled' }
 
@@ -20,46 +35,206 @@ export function ExportDialog() {
   const t = useT()
   const open = useEditor((s) => s.exportOpen)
   const range = useEditor((s) => s.range)
-  const [presetId, setPresetId] = useState(PRESETS[0].id)
-  const [motionBlur, setMotionBlur] = useState(true)
-  const [frameBlending, setFrameBlending] = useState(true)
-  const [fastEncoder, setFastEncoder] = useState(false)
+  const project = useEditor((s) => s.project)
+  const userPresets = useExportPresets((s) => s.presets)
+  // the «Экспорт» settings ARE the dialog's state: every change is written
+  // back, so the next opening (and the next launch) starts from the last choice
+  const snap = useSettings((s) => s.snap)
+  const on = (k: SettingKey) => effective(k, snap).value === true
+  const presetId = String(effective('export.preset', snap).value)
+  const motionBlur = on('export.motionBlur')
+  const frameBlending = on('export.frameBlending')
+  const fastEncoder = on('export.fastEncoder')
+  const quality: 'abr' | 'crf' = effective('export.quality', snap).value === 'crf' ? 'crf' : 'abr'
+  const crf = Number(effective('export.crf', snap).value)
+  const x264Preset = String(effective('export.x264Preset', snap).value)
+  const codecSel = String(effective('export.codec', snap).value) as VideoCodec | 'preset'
+  // G5: the encoder the user chose, and the hardware ones that open here (null = still probing)
+  const chosenEncoder = String(effective('export.videoEncoder', snap).value) as VideoEncoder
+  const [hwEncoders, setHwEncoders] = useState<string[] | null>(null)
+  // G4: the dialog's own size / fps / bitrate over the preset's (0 = the preset's) and the fit
+  const num = (k: SettingKey) => Number(effective(k, snap).value) || 0
+  const out = {
+    width: num('export.width'), height: num('export.height'), fps: num('export.fps'), bitrate: num('export.bitrate'),
+    fit: String(effective('export.fit', snap).value) as OutputFit
+  }
+  const custom = out.width > 0 || out.height > 0 || out.fps > 0 || out.bitrate > 0
+  // G9: the audio bitrate over the preset's (0 = the preset's) and the loudness target
+  const audioKbps = num('export.audioBitrate')
+  const loudSel = String(effective('export.loudness', snap).value)
+  const loudness = loudSel === 'off' ? undefined : Number(loudSel)
+  const put = useSettings.getState().set
+  // the preset name being typed: null = not editing; `mode` says what OK does
+  const [naming, setNaming] = useState<{ mode: 'save' | 'rename'; name: string } | null>(null)
   const [status, setStatus] = useState<Status>({ kind: 'idle' })
+  // G7: which transcript, and the title tag — per export, not settings (they belong to the project)
+  const subs = String(effective('export.subs', snap).value) as 'off' | 'srt' | 'vtt'
+  const subsEmbed = on('export.subsEmbed')
+  const chapKind = String(effective('export.chapters', snap).value) as 'off' | 'markers' | 'sections'
+  const [docId, setDocId] = useState<string | null>(null)
+  const [title, setTitle] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const handle = useRef<ExportHandle | null>(null)
+  // I11: «Экспортировать выбранные» — the confirmed shorts, one file each, one at a time
+  const shorts = useSilences((u) => u.items.filter((x) => x.kind === SHORT && x.state === 'confirmed').length)
+  const [batch, setBatch] = useState<{ i: number; n: number } | null>(null)
+  const batching = useRef(false)
+  // G9: the target the finished export is held against (the dialog may change after the start)
+  const doneTarget = useRef<number | undefined>(undefined)
+  // G8: the progress events of the current phase, for the moving-average fps and ETA
+  const track = useRef<{ phase: string; s: EtaSample[] }>({ phase: '', s: [] })
+  const progressed = (p: ExportProgress) => {
+    const r = track.current
+    if (r.phase !== p.phase) { r.phase = p.phase; r.s = [] }
+    const now = performance.now() / 1000
+    r.s.push({ t: now, p: p.progress })
+    while (now - r.s[0].t > 2 * ETA_WINDOW) r.s.shift()
+    setStatus({ kind: 'running', phase: p.phase, progress: p.progress, est: etaOf(r.s, p.frames) })
+  }
 
   useEffect(() => {
     return window.kadr.onExportProgress((p) => {
-      if (p.phase === 'done') setStatus({ kind: 'done' })
+      // a batch ends (or fails) on its own promise, not on each file's «done»
+      if (batching.current) { if (!['done', 'error', 'cancelled'].includes(p.phase)) progressed(p); return }
+      if (p.phase === 'done') setStatus({ kind: 'done', loudness: p.loudness })
       else if (p.phase === 'error') setStatus({ kind: 'error', message: p.message ?? '' })
       else if (p.phase === 'cancelled') setStatus({ kind: 'cancelled' })
-      else setStatus({ kind: 'running', phase: p.phase, progress: p.progress })
+      else progressed(p)
     })
   }, [])
 
+  useEffect(() => {
+    if (open) void window.kadr.hwEncoders().then(setHwEncoders, () => setHwEncoders([]))
+    setTitle(null)
+    setCopied(false)
+  }, [open])
+
   if (!open) return null
   const running = status.kind === 'running'
+  const presets = [...userPresets, ...PRESETS]
+  const preset = presets.find((p) => p.id === presetId) ?? PRESETS[0]
+  // G6: the codec laid over the preset — container and audio follow it
+  const coded = withCodec(preset, codecSel === 'preset' ? '' : codecSel)
+  const vcodec = videoCodecOf(coded)
+  const spec = VIDEO_CODECS[vcodec]
+  // rate control: H.264, HEVC, AV1 (CRF / the GPU's CQ) and VP9; ProRes and PNG have none, MP3 no video
+  const rated = !preset.audioOnly && (!!spec.hw || vcodec === 'vp9')
+  // Chromium's fast encoder writes H.264 only; every other codec takes ffmpeg
+  const fast = fastEncoder && vcodec === 'h264'
+  const shaped = preset.audioOnly ? preset : withOutput(coded, out)
+  // the CPU encoder of this codec in this ffmpeg (HEVC needs libx265, AV1 SVT-AV1 or libaom)
+  const cpuEnc = spec.cpu.find((n) => !(OPTIONAL_ENCODERS as readonly string[]).includes(n) || !!hwEncoders?.includes(n))
+  const works = (e: VideoEncoder) => e === 'x264' ? !hwEncoders || !!cpuEnc : !!hwEncoders?.includes(`${vcodec}_${e}`)
+  // one chosen on another machine (or not probed yet) encodes on the CPU — the select says so
+  const videoEncoder: VideoEncoder = spec.hw && works(chosenEncoder) ? chosenEncoder : 'x264'
+  const hw = videoEncoder !== 'x264'
+  const video: ExportPreset = rated ? { ...shaped, rateControl: quality, crf, x264Preset, videoEncoder } : shaped
+  const lossy = lossyAudio(video)
+  const job: ExportPreset = {
+    ...video,
+    ...(lossy && audioKbps > 0 && { audioBitrate: `${audioKbps}k` }),
+    ...(loudness !== undefined && { loudness })
+  }
+  const kbps = parseInt(job.audioBitrate)
+  const crfMax = vcodec === 'vp9' || vcodec === 'av1' ? 63 : 51
+  // a codec with no encoder in this ffmpeg (HEVC without libx265 and without a GPU) is shown, not offered
+  const codecMissing = (c: VideoCodec) => !!hwEncoders && !pickEncoder(c, 'x264', hwEncoders)
+  const own = isUserPreset(preset)
+  // G7: extras exist where a mux runs — not for PNG frames
+  const muxed = !!preset.audioOnly || vcodec !== 'png'
+  const srtDocs = (project.texts ?? []).filter((d) => d.format === 'srt').reverse()
+  const subsDoc = srtDocs.find((d) => d.id === docId) ?? srtDocs[0]
+  const canEmbed = !preset.audioOnly && embedsSubs(job.container)
+  const span = range ?? { start: 0, end: projectDuration(project) }
+  const chapters = chapKind === 'off' ? []
+    : chaptersInRange(chapterMarks(project.markers ?? [], chapKind), span.start, span.end, t('exChLead'))
+  const metaTitle = title ?? project.name
+  // bitrate × duration; null where no bitrate rules the size (constant quality, ProRes, PNG)
+  // (Chromium's fast encoder ignores the bitrate — no promise there either)
+  const bytes = fast ? null : estimateBytes(job, span.end - span.start)
+  const fileName = fileNameFrom(setting<string>('export.fileName'),
+    { project: project.name, preset: presetName(preset), date: new Date() })
+
+  const resetOutput = () => (['export.width', 'export.height', 'export.fps', 'export.bitrate'] as const)
+    .forEach((k) => put(k, null))
+
+  function choose(id: string) {
+    put('export.preset', id)
+    // a preset IS a codec, size, rate and bitrate: choosing one drops the dialog's own
+    resetOutput()
+    put('export.codec', null)
+    put('export.audioBitrate', null)
+    const p = allPresets().find((x) => x.id === id)
+    // a user preset carries its render options
+    if (p && isUserPreset(p)) {
+      put('export.motionBlur', p.motionBlur)
+      put('export.frameBlending', p.frameBlending)
+      put('export.fastEncoder', p.fastEncoder)
+      put('export.quality', p.rateControl ?? 'abr')
+      put('export.crf', p.crf ?? 18)
+      put('export.x264Preset', p.x264Preset ?? 'faster')
+      put('export.videoEncoder', p.videoEncoder ?? 'x264')
+      put('export.fit', p.fit ?? 'fit')
+      put('export.loudness', p.loudness === undefined ? 'off' : String(p.loudness))
+    }
+  }
+
+  function commitName() {
+    const name = naming?.name.trim()
+    if (naming && name) {
+      if (naming.mode === 'rename') renameExportPreset(preset.id, name)
+      else choose(saveExportPreset(job, { motionBlur, frameBlending, fastEncoder }, name).id)
+    }
+    setNaming(null)
+  }
+
+  const options: ExportOptions = {
+    motionBlur, frameBlending, encoder: fast ? 'webcodecs' : 'x264',
+    extras: muxed ? {
+      title: metaTitle.trim() || undefined,
+      subsDoc,
+      sidecar: subs === 'off' ? undefined : subs,
+      embedSubs: canEmbed && subsEmbed,
+      chapters: chapKind === 'off' ? undefined : chapKind,
+      lead: t('exChLead')
+    } : undefined
+  }
+
+  function running0() {
+    useEditor.getState().setPlaying(false)
+    track.current = { phase: '', s: [] }
+    doneTarget.current = job.loudness
+    setStatus({ kind: 'running', phase: 'video', progress: 0, est: null })
+  }
+  const failed = (err: Error) => {
+    if (String(err?.message).includes('cancelled')) setStatus({ kind: 'cancelled' })
+    else setStatus({ kind: 'error', message: String(err?.message ?? err) })
+  }
 
   async function begin() {
-    const preset = PRESETS.find((p) => p.id === presetId)!
     const s = useEditor.getState()
-    const ext = preset.container
-    const out = await window.kadr.exportDialog(s.project.name, ext)
+    const out = await window.kadr.exportDialog(fileName, job.container)
     if (!out) return
-    s.setPlaying(false)
-    setStatus({ kind: 'running', phase: 'video', progress: 0 })
-    const h = startExport(
-      s.project,
-      preset,
-      out,
-      (p) => setStatus({ kind: 'running', phase: p.phase, progress: p.progress }),
-      s.range,
-      { motionBlur, frameBlending, encoder: fastEncoder ? 'webcodecs' : 'x264' }
-    )
+    running0()
+    const h = startExport(s.project, job, out, progressed, s.range, options)
     handle.current = h
-    h.done.catch((err) => {
-      if (String(err?.message).includes('cancelled')) setStatus({ kind: 'cancelled' })
-      else setStatus({ kind: 'error', message: String(err?.message ?? err) })
-    })
+    h.done.catch(failed)
+  }
+
+  /** I11: each confirmed short to its own file in a folder, named from its reason, one after another */
+  async function beginShorts() {
+    const dir = await window.kadr.pickDirectory(t('exShortsDir'))
+    if (!dir) return
+    const jobs = await shortJobs(dir, job.container)
+    if (!jobs.length) return
+    const project = useEditor.getState().project
+    running0()
+    batching.current = true
+    const h = exportShorts(jobs, (range, path) => startExport(project, job, path, progressed, range, options),
+      (i) => { track.current = { phase: '', s: [] }; setBatch({ i, n: jobs.length }) })
+    handle.current = h
+    h.done.then(() => setStatus({ kind: 'done' }), failed)
+      .finally(() => { batching.current = false; setBatch(null) })
   }
 
   function cancel() {
@@ -82,6 +257,70 @@ export function ExportDialog() {
           : t('mixingAudio')
       : ''
 
+  const asProject = (v: unknown) => (v === 'project' ? ` · ${t('exAsProject')}` : '')
+  const width = job.width === 'project' ? project.width : job.width
+  const height = job.height === 'project' ? project.height : job.height
+  const fps = job.fps === 'project' ? project.fps : job.fps
+  // committed on blur / Enter: a half-typed «1» of «1080» must not become the size
+  const numIn = (k: SettingKey, v: number, label: string, min: number, max: number, step: number | 'any' = 1) => (
+    <input type="number" aria-label={label} key={`${k}:${v}`} defaultValue={v} min={min} max={max} step={step}
+           disabled={running}
+           onBlur={(e) => {
+             const n = Number(e.target.value.replace(',', '.'))
+             if (e.target.value.trim() !== '' && Number.isFinite(n) && n >= min && n <= max) { if (n !== v) put(k, n) }
+             else e.target.value = String(v)
+           }}
+           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }} />
+  )
+  const sec = t('secUnit')
+  // −14.0: a true minus, one decimal
+  const db = (v: number) => (isFinite(v) ? v.toFixed(1).replace('-', '−') : '−∞')
+  const value = (label: string, v: string) => (
+    <div className="insp-field"><span>{label}</span><span className="export-value">{v}</span></div>
+  )
+
+  // the status lives in the footer: at the 640 px minimum the body scrolls,
+  // and a progress bar under the last section would be out of sight
+  const statusLine =
+    status.kind === 'running' ? (
+      <div className="export-progress">
+        <div>{batch ? `${trf('exShortsAt', { i: batch.i + 1, n: batch.n })} · ` : ''}{phaseLabel}</div>
+        <progress value={status.progress} max={1} />
+        <div className="dim">
+          {[
+            `${Math.round(status.progress * 100)}%`,
+            status.est?.fps && trf('exFpsNow', { n: Math.round(status.est.fps) }),
+            status.est && trf('exLeft', { t: fmtClock(status.est.eta) }),
+            bytes !== null && `≈ ${fmtSize(Math.round(bytes), t)}`
+          ].filter(Boolean).join(' · ')}
+        </div>
+      </div>
+    ) : status.kind === 'done' ? (
+      <>
+        <div className="export-ok">
+          <Icon name="check" /> {t('exportDone')}
+          <button className="ghost" onClick={() => void window.kadr.exportReveal(false)}>
+            <Icon name="folderOpen" /> {t('exReveal')}
+          </button>
+          <button className="ghost" onClick={() => void window.kadr.exportReveal(true)}>{t('exOpen')}</button>
+        </div>
+        {/* G9: what the file measures; short of the target (sparse full-scale hits) says so */}
+        {status.loudness && (
+          <div className="dim">{trf('exLoudDone', { i: db(status.loudness.i), tp: db(status.loudness.tp) })}</div>
+        )}
+        {status.loudness && doneTarget.current !== undefined && status.loudness.i < doneTarget.current - 0.5 && (
+          <div className="dim">{trf('exLoudShort', { t: db(doneTarget.current) })}</div>
+        )}
+      </>
+    ) : status.kind === 'cancelled' ? (
+      <div className="dim">{t('exportCancelled')}</div>
+    ) : status.kind === 'error' ? (
+      <div className="export-err">
+        <Icon name="alert" size={15} />
+        <span>{t('exportError')}: {status.message}</span>
+      </div>
+    ) : null
+
   return (
     <Modal
       title={t('export')}
@@ -90,81 +329,289 @@ export function ExportDialog() {
       titleIcon={<Icon name="download" size={17} />}
       wide
       actions={
-        running ? (
-          <button onClick={cancel}>{t('cancel')}</button>
-        ) : (
-          <>
-            <button onClick={close}>{t('close')}</button>
-            <button className="primary" disabled={checking} onClick={begin}
-                    title={checking ? t('dfLong') : undefined}>
-              <Icon name="download" /> {t('startExport')}
-            </button>
-          </>
-        )
+        <>
+          {statusLine && <div className="export-status">{statusLine}</div>}
+          {running ? (
+            <button onClick={cancel}>{t('cancel')}</button>
+          ) : (
+            <>
+              {shorts > 0 && (
+                <button data-act="export-shorts" disabled={checking} onClick={() => void beginShorts()}
+                        title={checking ? t('dfLong') : t('exShortsHint')}>
+                  <Icon name="download" /> {trf('exShorts', { n: shorts })}
+                </button>
+              )}
+              <button className="primary" disabled={checking} onClick={begin}
+                      title={checking ? t('dfLong') : undefined}>
+                <Icon name="download" /> {t('startExport')}
+              </button>
+            </>
+          )}
+        </>
       }
     >
-      <label className="insp-field">
-        <span>{t('preset')}</span>
-        <select value={presetId} disabled={running} onChange={(e) => setPresetId(e.target.value)}>
-          {PRESETS.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      </label>
-      <div className="insp-field">
-        <span>{t('duration')}</span>
-        <span>
-          {range
-            ? `${t('exportRange')}: ${range.start.toFixed(2)}–${range.end.toFixed(2)} c`
-            : t('wholeProject')}
-        </span>
-      </div>
-      {!range && <div className="dim">{t('rangeHint')}</div>}
-      <label className="anim-check export-mb">
-        <input
-          type="checkbox"
-          checked={motionBlur}
-          disabled={running}
-          onChange={(e) => setMotionBlur(e.target.checked)}
-        />
-        {t('motionBlur')}
-      </label>
-      <label className="anim-check export-mb" title={t('frameBlendingHint')}>
-        <input
-          type="checkbox"
-          checked={frameBlending}
-          disabled={running}
-          onChange={(e) => setFrameBlending(e.target.checked)}
-        />
-        {t('frameBlending')}
-      </label>
-      <label className="anim-check export-mb" title={t('fastEncoderHint')}>
-        <input
-          type="checkbox"
-          checked={fastEncoder}
-          disabled={running}
-          onChange={(e) => setFastEncoder(e.target.checked)}
-        />
-        {t('fastEncoder')}
-      </label>
+      <div className="insp-section">{t('preset')}</div>
+      {naming ? (
+        <div className="export-preset-row">
+          <input type="text" className="export-preset" aria-label={t('exPresetName')} autoFocus
+                 placeholder={t('exPresetName')} value={naming.name}
+                 onChange={(e) => setNaming({ ...naming, name: e.target.value })}
+                 onKeyDown={(e) => {
+                   if (e.key === 'Enter') commitName()
+                   // Escape leaves the name field, not the dialog
+                   if (e.key === 'Escape') { e.stopPropagation(); setNaming(null) }
+                 }} />
+          <button className="primary" disabled={!naming.name.trim()} onClick={commitName}>{t('save')}</button>
+          <button onClick={() => setNaming(null)}>{t('cancel')}</button>
+        </div>
+      ) : (
+        <div className="export-preset-row">
+          <select className="export-preset" aria-label={t('preset')} value={preset.id} disabled={running}
+                  onChange={(e) => choose(e.target.value)}>
+            {userPresets.length > 0 && (
+              <optgroup label={t('exMyPresets')}>
+                {userPresets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </optgroup>
+            )}
+            <optgroup label={t('exBuiltin')}>
+              {PRESETS.map((p) => <option key={p.id} value={p.id}>{presetName(p)}</option>)}
+            </optgroup>
+          </select>
+          <button className="ghost icon-only" title={t('exSaveAs')} aria-label={t('exSaveAs')} disabled={running}
+                  onClick={() => setNaming({ mode: 'save', name: '' })}><Icon name="save" /></button>
+          <button className="ghost icon-only" title={t('exRename')} aria-label={t('exRename')} disabled={running || !own}
+                  onClick={() => setNaming({ mode: 'rename', name: preset.name })}><Icon name="pencil" /></button>
+          <button className="ghost icon-only" title={t('exDeletePreset')} aria-label={t('exDeletePreset')}
+                  disabled={running || !own}
+                  onClick={() => { deleteExportPreset(preset.id); put('export.preset', null) }}><Icon name="trash" /></button>
+        </div>
+      )}
 
-      {status.kind === 'running' && (
-        <div className="export-progress">
-          <div>{phaseLabel}</div>
-          <progress value={status.progress} max={1} />
-          <div className="dim">{Math.round(status.progress * 100)}%</div>
-        </div>
+      <div className="insp-section">{t('exVideo')}</div>
+      {preset.audioOnly ? (
+        <div className="dim">{t('exNoVideo')}</div>
+      ) : (
+        <>
+          <div className="insp-field">
+            <span>{t('exCodec')}</span>
+            <select aria-label={t('exVCodec')} value={vcodec} disabled={running}
+                    onChange={(e) => put('export.codec', e.target.value)}>
+              {(Object.keys(VIDEO_CODECS) as VideoCodec[]).map((c) => (
+                <option key={c} value={c} disabled={codecMissing(c)}>
+                  {t(`vc${c}`)}{codecMissing(c) ? ` — ${t('encMissing')}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          {spec.alpha && (vcodec !== 'vp9' || project.background === 'transparent') && (
+            <div className="dim">{t(project.background === 'transparent' ? 'exAlphaOn' : 'exAlphaOff')}</div>
+          )}
+          <div className="insp-field">
+            <span>{t('exSize')}</span>
+            <span className="export-size">
+              {numIn('export.width', width, t('exWidth'), 16, 8192, 2)}×{numIn('export.height', height, t('exHeight'), 16, 8192, 2)}
+              {asProject(job.width)}
+              {custom && (
+                <button className="ghost icon-only" title={t('exReset')} aria-label={t('exReset')} disabled={running}
+                        onClick={resetOutput}><Icon name="undo" /></button>
+              )}
+            </span>
+          </div>
+          {(width !== project.width || height !== project.height) && (
+            <div className="insp-field">
+              <span>{t('exFit')}</span>
+              <select aria-label={t('exFit')} value={out.fit} disabled={running}
+                      onChange={(e) => put('export.fit', e.target.value)}>
+                <option value="fit">{t('exFitFit')}</option>
+                <option value="fill">{t('exFitFill')}</option>
+                <option value="stretch">{t('exFitStretch')}</option>
+              </select>
+            </div>
+          )}
+          <div className="insp-field">
+            <span>{t('exFps')}</span>
+            <span className="export-size">{numIn('export.fps', fps, t('exFps'), 1, 240, 'any')} {t('fpsUnit')}{asProject(job.fps)}</span>
+          </div>
+          {/* the fast encoder is Chromium's: it takes no rate control; ProRes and PNG have no bitrate */}
+          {rated && (quality !== 'crf' || fast) && (
+            <div className="insp-field">
+              <span>{t('exBitrate')}</span>
+              <span className="export-size">
+                {numIn('export.bitrate', +(job.videoBitrate / 1e6).toFixed(1), t('exBitrate'), 0.1, 400, 'any')} {t('mbpsUnit')}
+              </span>
+            </div>
+          )}
+          {rated && (
+            <>
+              {spec.hw && <div className="insp-field">
+                <span>{t('exEncoder')}</span>
+                <select aria-label={t('exEncoder')} value={videoEncoder} disabled={running || fast}
+                        title={fast ? t('fastEncoderHint') : undefined}
+                        onChange={(e) => put('export.videoEncoder', e.target.value)}>
+                  {VIDEO_ENCODERS.map((e) => (
+                    <option key={e} value={e} disabled={!works(e)}>
+                      {e === 'x264' && vcodec !== 'h264'
+                        // the CPU row names the encoder this codec runs on there: x265, SVT-AV1 or libaom
+                        ? `${t('encCpu')} — ${(cpuEnc ?? '').replace(/^lib/, '')}`
+                        : t(`enc${e}`)}{hwEncoders && !works(e) ? ` — ${t('encMissing')}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>}
+              <div className="insp-field">
+                <span>{t('exQuality')}</span>
+                <select aria-label={t('exQuality')} value={quality} disabled={running || fast}
+                        title={fast ? t('fastEncoderHint') : undefined}
+                        onChange={(e) => put('export.quality', e.target.value)}>
+                  <option value="abr">{t('exQualityAbr')}</option>
+                  <option value="crf">{t(hw ? 'exQualityCq' : 'exQualityCrf')}</option>
+                </select>
+              </div>
+              {quality === 'crf' && (
+                <div className="insp-field" title={t(hw ? 'exCqHint' : crfMax > 51 ? 'exCrfHint63' : 'exCrfHint')}>
+                  <span>{t(hw ? 'exCq' : 'exCrf')}</span>
+                  <input type="number" aria-label={t(hw ? 'exCq' : 'exCrf')} min={0} max={crfMax} step={1} value={Math.min(crf, crfMax)}
+                         disabled={running || fast}
+                         onChange={(e) => {
+                           const n = Math.round(Number(e.target.value))
+                           if (e.target.value !== '' && n >= 0 && n <= crfMax) put('export.crf', n)
+                         }} />
+                </div>
+              )}
+              {!hw && (vcodec === 'h264' || vcodec === 'hevc') && <div className="insp-field">
+                <span>{t('exSpeed')}</span>
+                <select aria-label={t('exSpeed')} value={x264Preset} disabled={running || fast}
+                        onChange={(e) => put('export.x264Preset', e.target.value)}>
+                  {X264_PRESETS.map((p) => <option key={p} value={p}>{t(`x264${p}`)}</option>)}
+                </select>
+              </div>}
+            </>
+          )}
+          <label className="anim-check export-mb">
+            <input
+              type="checkbox"
+              checked={motionBlur}
+              disabled={running}
+              onChange={(e) => put('export.motionBlur', e.target.checked)}
+            />
+            {t('motionBlur')}
+          </label>
+          <label className="anim-check export-mb" title={t('frameBlendingHint')}>
+            <input
+              type="checkbox"
+              checked={frameBlending}
+              disabled={running}
+              onChange={(e) => put('export.frameBlending', e.target.checked)}
+            />
+            {t('frameBlending')}
+          </label>
+          <label className="anim-check export-mb" title={t(vcodec === 'h264' ? 'fastEncoderHint' : 'exFastH264')}>
+            <input
+              type="checkbox"
+              checked={fast}
+              disabled={running || vcodec !== 'h264'}
+              onChange={(e) => put('export.fastEncoder', e.target.checked)}
+            />
+            {t('fastEncoder')}
+          </label>
+        </>
       )}
-      {status.kind === 'done' && (
-        <div className="export-ok"><Icon name="check" /> {t('exportDone')}</div>
+
+      <div className="insp-section">{t('exAudio')}</div>
+      {vcodec === 'png' && !preset.audioOnly ? <div className="dim">{t('exSeqNoAudio')}</div> : (
+        <>
+          {value(t('exCodec'), audioCodecLabel(job, !lossy))}
+          {lossy && (
+            <div className="insp-field">
+              <span>{t('exAudioBitrate')}</span>
+              <select aria-label={t('exAudioBitrate')} value={kbps} disabled={running}
+                      onChange={(e) => put('export.audioBitrate', Number(e.target.value))}>
+                {[...new Set([...AUDIO_BITRATES, kbps])].sort((a, b) => a - b).map((n) => (
+                  <option key={n} value={n}>{n} {t('kbpsUnit')}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="insp-field" title={t('exLoudHint')}>
+            <span>{t('exLoudness')}</span>
+            <select aria-label={t('exLoudness')} value={loudSel} disabled={running}
+                    onChange={(e) => put('export.loudness', e.target.value)}>
+              <option value="off">{t('exLoudOff')}</option>
+              {LOUDNESS_TARGETS.map((n) => <option key={n} value={String(n)}>{t(`exLoud${-n}` as 'exLoud14')}</option>)}
+            </select>
+          </div>
+        </>
       )}
-      {status.kind === 'cancelled' && <div className="dim">{t('exportCancelled')}</div>}
-      {status.kind === 'error' && (
-        <div className="export-err">
-          <Icon name="alert" size={15} />
-          <span>{t('exportError')}: {status.message}</span>
-        </div>
+
+      <div className="insp-section">{t('exRange')}</div>
+      {value(t('duration'), range
+        ? `${t('exportRange')}: ${range.start.toFixed(2)}–${range.end.toFixed(2)} ${sec}`
+        : `${t('wholeProject')} · ${projectDuration(project).toFixed(2)} ${sec}`)}
+      {!range && <div className="dim">{t('rangeHint')}</div>}
+
+      <div className="insp-section">{t('exExtras')}</div>
+      {!muxed ? <div className="dim">{t('exExtrasPng')}</div> : (
+        <>
+          <div className="insp-field">
+            <span>{t('exSubs')}</span>
+            <select aria-label={t('exSubs')} value={subs} disabled={running || !subsDoc}
+                    onChange={(e) => put('export.subs', e.target.value)}>
+              <option value="off">{t('exNone')}</option>
+              <option value="srt">{t('exSubsSrt')}</option>
+              <option value="vtt">{t('exSubsVtt')}</option>
+            </select>
+          </div>
+          {!subsDoc && <div className="dim">{t('exSubsNone')}</div>}
+          {subsDoc && (subs !== 'off' || (canEmbed && subsEmbed)) && (
+            <div className="insp-field">
+              <span>{t('exSubsDoc')}</span>
+              <select aria-label={t('exSubsDoc')} value={subsDoc.id} disabled={running} onChange={(e) => setDocId(e.target.value)}>
+                {srtDocs.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+          )}
+          {subsDoc && canEmbed && (
+            <label className="anim-check export-mb">
+              <input type="checkbox" checked={subsEmbed} disabled={running}
+                     onChange={(e) => put('export.subsEmbed', e.target.checked)} />
+              {t('exSubsEmbed')}
+            </label>
+          )}
+          <div className="insp-field">
+            <span>{t('exChapters')}</span>
+            <select aria-label={t('exChapters')} value={chapKind} disabled={running}
+                    onChange={(e) => { put('export.chapters', e.target.value); setCopied(false) }}>
+              <option value="off">{t('exNone')}</option>
+              <option value="markers">{t('exChMarkers')}</option>
+              <option value="sections">{t('exChSections')}</option>
+            </select>
+          </div>
+          {chapKind !== 'off' && (
+            <div className="insp-field">
+              <span>{trf('exChCount', { n: chapters.length })}</span>
+              <button disabled={running || !chapters.length}
+                      onClick={() => navigator.clipboard.writeText(youtubeChapters(chapters)).then(() => setCopied(true), () => setCopied(false))}>
+                {copied ? <><Icon name="check" /> {t('exChCopied')}</> : t('exChCopy')}
+              </button>
+            </div>
+          )}
+          {chapters.length > 0 && youtubeProblems(chapters).map((p) => (
+            <div key={p} className="dim">{t(p === 'count' ? 'exYtCount' : 'exYtShort')}</div>
+          ))}
+          <div className="insp-field">
+            <span>{t('exMetaTitle')}</span>
+            <input type="text" aria-label={t('exMetaTitle')} value={metaTitle} placeholder={project.name} disabled={running}
+                   onChange={(e) => setTitle(e.target.value)} />
+          </div>
+        </>
       )}
+
+      <div className="insp-section">{t('exFile')}</div>
+      {value(t('exFormat'), `${job.container.toUpperCase()} (.${job.container})`)}
+      {/* a PNG sequence is numbered beside the chosen name (shared/rawEncode.ts seqPattern) */}
+      {value(t('exName'), job.container === 'png' ? `${fileName}_000001.png …` : `${fileName}.${job.container}`)}
+      {bytes !== null && value(t('exFileSize'), `≈ ${fmtSize(Math.round(bytes), t)}`)}
+      <div className="dim">{t('exAskPath')}</div>
     </Modal>
   )
 }

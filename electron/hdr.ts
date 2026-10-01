@@ -8,7 +8,8 @@
 //
 // The conversion itself — a 3D LUT computed in closed form, since ffmpeg 4.3
 // here has no zscale — is in shared/hdr.ts (checked by scripts/check-hdr.mjs).
-import { app } from 'electron'
+import { cacheDir } from './appSettings'
+import { saidError } from '@shared/said'
 import { promises as fs, statSync } from 'fs'
 import { join } from 'path'
 import { execFile } from 'child_process'
@@ -42,7 +43,7 @@ const LUT_SIZE = 33
 
 /** The .cube file for a transfer (written once into userData/luts). */
 export async function hdrLut(kind: HdrKind): Promise<string> {
-  const dir = join(app.getPath('userData'), 'luts')
+  const dir = cacheDir('luts')
   const path = join(dir, `${kind}-to-sdr709-v${HDR_VERSION}.cube`)
   try { await fs.access(path); return path } catch { /* build it */ }
   await fs.mkdir(dir, { recursive: true })
@@ -64,7 +65,7 @@ export async function hdrLut(kind: HdrKind): Promise<string> {
  */
 export async function fragmentMedia(src: string, projectDir: string, opts: { name?: string; maxSide?: number } = {},
   onProgress?: (p: number) => void): Promise<{ path: string; import: string; cached: boolean; hdr: HdrKind | null }> {
-  if (!projectDir) throw new Error('видео для фрагментов хранится в папке проекта (kadr-lib/media) — сначала сохраните проект')
+  if (!projectDir) throw saidError('eHdSaveFirst')
   const st = statSync(src)
   const base = (opts.name ?? src.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, ''))
     .normalize('NFKD').replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'clip'

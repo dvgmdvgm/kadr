@@ -1,7 +1,9 @@
 import { app, ipcMain } from 'electron'
+import { cacheDir } from './appSettings'
 import { promises as fs, statfsSync } from 'fs'
 import { join, basename, resolve, sep } from 'path'
-import { mediaCacheKey, proxySuffix, decodedSuffix } from './cacheKeys'
+import { loadResolved } from '../shared/projectPaths'
+import { mediaCacheKey, proxySuffix, decodedSuffix, projectKey, DENOISE_SUFFIX } from './cacheKeys'
 import type {
   StorageScan, StorageGroup, StorageGroupId, StorageProject, StoragePruneRequest,
   StoragePruneResult
@@ -28,17 +30,26 @@ interface GroupDef {
   dir: () => string
   rebuildable: boolean
   /** how a file in this directory is tied back to a project */
-  match: 'key' | 'path' | 'prefix' | 'none'
+  match: 'key' | 'path' | 'prefix' | 'project' | 'none'
 }
 
 const GROUPS: GroupDef[] = [
-  { id: 'proxies', dir: () => join(app.getPath('userData'), 'proxies'), rebuildable: true, match: 'key' },
-  { id: 'decoded', dir: () => join(app.getPath('userData'), 'decoded'), rebuildable: true, match: 'key' },
-  { id: 'fragments', dir: () => join(app.getPath('userData'), 'fragment-renders'), rebuildable: true, match: 'prefix' },
+  { id: 'proxies', dir: () => cacheDir('proxies'), rebuildable: true, match: 'key' },
+  { id: 'decoded', dir: () => cacheDir('decoded'), rebuildable: true, match: 'key' },
+  { id: 'fragments', dir: () => cacheDir('fragment-renders'), rebuildable: true, match: 'prefix' },
+  // K9: denoised copies of sources, `<key>-<nr>.flac`
+  { id: 'denoised', dir: () => cacheDir('denoised'), rebuildable: true, match: 'key' },
   { id: 'ttsqcCache', dir: homeCache, rebuildable: true, match: 'none' },
   { id: 'reversed', dir: () => join(app.getPath('userData'), 'reversed'), rebuildable: false, match: 'path' },
   { id: 'imported', dir: () => join(app.getPath('userData'), 'imported'), rebuildable: false, match: 'path' },
-  { id: 'voiceRuns', dir: () => join(app.getPath('userData'), 'ttsqc-runs'), rebuildable: false, match: 'path' }
+  // K8: microphone takes of never-saved projects (a saved one keeps them in <project>/media/recordings)
+  { id: 'recordings', dir: () => join(app.getPath('userData'), 'recordings'), rebuildable: false, match: 'path' },
+  { id: 'voiceRuns', dir: () => join(app.getPath('userData'), 'ttsqc-runs'), rebuildable: false, match: 'path' },
+  // one folder per project, named projectKey(path) (electron/backups.ts); a never-saved
+  // project's folder (unsaved-<id>) belongs to no file and shows as unattributed
+  { id: 'backups', dir: () => join(app.getPath('userData'), 'backups'), rebuildable: false, match: 'project' },
+  // «Сохранить как шаблон» (H3): user data, belongs to no project and is never deleted from the panel
+  { id: 'templates', dir: () => join(app.getPath('userData'), 'templates'), rebuildable: false, match: 'none' }
 ]
 
 /** Every project we were told about, reduced to what identifies its files. */
@@ -57,14 +68,16 @@ interface Known {
 
 async function readProjectFile(path: string): Promise<Known | null> {
   try {
-    const p = JSON.parse(await fs.readFile(path, 'utf8'))
+    // relative paths (H8) mean the project's own folder
+    const raw = JSON.parse(await fs.readFile(path, 'utf8'))
+    const p: typeof raw = loadResolved(raw, path)
     return {
       id: path,
       name: p.name || basename(path),
       path,
       assets: (p.assets ?? []).map((a: { path?: string }) => a.path).filter(Boolean),
-      fragmentIds: (p.tracks ?? []).flatMap((t: { clips?: { fragmentId?: string }[] }) =>
-        (t.clips ?? []).map((c) => c.fragmentId).filter(Boolean)),
+      fragmentIds: [...(p.tracks ?? []), ...(p.timelines ?? []).flatMap((tl: { tracks?: unknown[] }) => tl.tracks ?? [])].flatMap((t: { clips?: { fragmentId?: string }[] }) =>
+        (t.clips ?? []).map((c) => c.fragmentId).filter((x): x is string => !!x)),
       runDirs: (p.voiceRuns ?? []).map((r: { runDir?: string }) => r.runDir).filter(Boolean)
     }
   } catch {
@@ -83,7 +96,8 @@ async function keysOf(k: Known): Promise<Set<string>> {
     let st
     try { st = await fs.stat(src) } catch { return }
     for (const suffix of [proxySuffix(false), proxySuffix(true), proxySuffix(false, true),
-                          decodedSuffix(), decodedSuffix({ alpha: true }), decodedSuffix({ packed: true }), decodedSuffix({ sdr: true })]) {
+                          decodedSuffix(), decodedSuffix({ alpha: true }), decodedSuffix({ packed: true }), decodedSuffix({ sdr: true }),
+                          DENOISE_SUFFIX]) {
       keys.add(mediaCacheKey(src, st.size, st.mtimeMs, suffix))
     }
   }
@@ -93,7 +107,7 @@ async function keysOf(k: Known): Promise<Set<string>> {
   // packs their alpha. Without this pass those files belong to nobody, and the
   // largest group on disk reads as pure garbage when much of it is in use.
   if (k.fragmentIds.length) {
-    const dir = join(app.getPath('userData'), 'fragment-renders')
+    const dir = cacheDir('fragment-renders')
     let names: string[] = []
     try { names = await fs.readdir(dir) } catch { /* nothing rendered yet */ }
     for (const name of names) {
@@ -148,11 +162,13 @@ function ownersOf(
   for (const k of known) {
     let mine = false
     if (def.match === 'key') {
-      const key = entry.name.split('.')[0]
+      const key = entry.name.split(/[.-]/)[0] // `<key>.<ext>`, `<key>.part.<ext>`, a denoised `<key>-<nr>.flac`
       mine = keys.get(k.id)?.has(key) ?? false
     } else if (def.match === 'prefix') {
       // fragment renders are named "<fragmentId>-<hash>-q2[-a].<ext>"
       mine = k.fragmentIds.some((id) => entry.name.startsWith(id + '-'))
+    } else if (def.match === 'project') {
+      mine = !!k.path && entry.name === projectKey(resolve(k.path))
     } else if (def.match === 'path') {
       mine = k.assets.some((a) => a === entry.path || inside(entry.path, a)) ||
              k.runDirs.some((r) => resolve(r) === resolve(entry.path))
@@ -257,7 +273,9 @@ async function prune(req: StoragePruneRequest): Promise<StoragePruneResult> {
     if (req.scope === 'project') return req.project ? owners.includes(req.project) : false
     return true   // 'all'
   })
-  // a project's own files may only be dropped when they can come back
+  // a project's own files may only be dropped when they can come back; user data
+  // that belongs to nobody (templates) is not the panel's to drop at all
+  if (def.match === 'none' && !def.rebuildable) return { removed: 0, bytes: 0, error: 'not rebuildable' }
   if (req.scope !== 'stale' && !def.rebuildable) {
     return { removed: 0, bytes: 0, error: 'not rebuildable' }
   }

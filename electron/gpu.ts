@@ -39,12 +39,13 @@
 import { app, ipcMain } from 'electron'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
+import type { Said } from '@shared/types'
 
 export type GpuPref = 'auto' | 'discrete' | 'integrated'
 interface GpuFile {
   pref?: GpuPref
   /** set when discrete rendering failed; 'auto' then stays on the default */
-  fallback?: { at: number; reason: string }
+  fallback?: { at: number; reason: string; said?: Said }
 }
 
 const NV_EGL = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
@@ -61,7 +62,7 @@ const discreteAvailable = () =>
   process.platform === 'linux' && existsSync(NV_EGL) && existsSync('/proc/driver/nvidia/version')
 
 let applied: 'discrete' | 'default' = 'default'
-let why = ''
+let why: Said = { key: 'gpuWhyAuto' }
 let renderer = ''
 
 /** Decide and apply before 'ready'. */
@@ -69,10 +70,10 @@ export function applyGpuChoice() {
   const f = readFile()
   const env = process.env.KADR_GPU as GpuPref | undefined
   const pref: GpuPref = env === 'auto' || env === 'discrete' || env === 'integrated' ? env : f.pref ?? 'auto'
-  if (pref === 'integrated') { why = 'выбрана встроенная'; return }
-  if (!discreteAvailable()) { why = 'дискретной видеокарты NVIDIA нет'; return }
-  if (pref === 'auto') { why = 'по умолчанию: на этой машине дискретная замерена медленнее (PRIME)'; return }
-  if (f.fallback) { why = `откат: ${f.fallback.reason}`; return }
+  if (pref === 'integrated') { why = { key: 'gpuWhyIntegrated' }; return }
+  if (!discreteAvailable()) { why = { key: 'gpuWhyNoNvidia' }; return }
+  if (pref === 'auto') { why = { key: 'gpuWhyAuto' }; return }
+  if (f.fallback) { why = { key: 'gpuWhyFallback', args: { reason: f.fallback.reason } }; return }
   // The GPU process is forked from a zygote that exists before this code
   // runs: an environment set here never reaches it. The dev launcher
   // (electron.vite.config.ts) sets it; a packaged app relaunches itself once.
@@ -84,20 +85,20 @@ export function applyGpuChoice() {
       app.exit(0)
       return
     }
-    why = 'нет __EGL_VENDOR_LIBRARY_FILENAMES при запуске — остаёмся на видеокарте по умолчанию'
+    why = { key: 'gpuWhyNoEgl' }
     return
   }
   app.commandLine.appendSwitch('use-angle', 'gl-egl')
   app.commandLine.appendSwitch('disable-gpu-memory-buffer-video-frames')
   applied = 'discrete'
-  why = 'выбрана дискретная'
+  why = { key: 'gpuWhyDiscrete' }
 }
 
-function fallBack(reason: string) {
+function fallBack(reason: string, said: Said) {
   if (applied !== 'discrete') return
   const f = readFile()
   if (f.fallback) return
-  f.fallback = { at: Date.now(), reason }
+  f.fallback = { at: Date.now(), reason, said }
   writeFile(f)
   console.warn('[kadr] discrete GPU disabled for the next launch:', reason)
 }
@@ -110,7 +111,7 @@ export function registerGpuIpc() {
     crashes++
     // one crash can be anything; two in the first minutes is this setup
     if (crashes >= 2 && Date.now() - started < 5 * 60_000) {
-      fallBack(`GPU-процесс падал ${crashes} раза (${d.reason})`)
+      fallBack(`GPU process crashed ${crashes} times (${d.reason})`, { key: 'gpuWhyCrashes', args: { n: crashes, reason: d.reason } })
     }
   })
   ipcMain.handle('gpu:get', () => {
@@ -134,7 +135,7 @@ export function registerGpuIpc() {
   ipcMain.handle('gpu:report', (_e, name: unknown) => {
     renderer = typeof name === 'string' ? name.slice(0, 200) : ''
     if (applied === 'discrete' && renderer && !/nvidia/i.test(renderer)) {
-      fallBack(`WebGL работает не на NVIDIA: ${renderer}`)
+      fallBack(`WebGL is not on NVIDIA: ${renderer}`, { key: 'gpuWhyNotNvidia', args: { renderer } })
     }
     return applied
   })

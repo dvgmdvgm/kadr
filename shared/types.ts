@@ -1,6 +1,19 @@
 // Core project model shared between main and renderer processes.
 // All times are in seconds, all dimensions in pixels.
 
+import type { ClipGrade } from './colour'
+import type { BlendMode } from './blend'
+import type { ClipKey } from './key'
+import type { ClipWheels, ClipCurves } from './curves'
+import type { RelinkWanted } from './relinkMatch'
+import type { MediaScan, SeqRun } from './sequences'
+import type { CollectPlan } from './projectPaths'
+import type { GainKey } from './gainKeys'
+import type { FadeCurve } from './fadeCurves'
+import type { AudioFx } from './audioFx'
+import type { SettingsSnapshot, SettingValue } from './settings'
+import type { RawEncodeOpts } from './rawEncode'
+
 export type AssetKind = 'video' | 'audio' | 'image'
 
 /** Audacity-style waveform: per-bin peak and RMS, base64-encoded Uint8 (0..255). */
@@ -21,6 +34,11 @@ export interface MediaAsset {
   height: number
   fps: number
   hasAudio: boolean
+  /** K10: channels of the first audio stream, from the probe (absent on assets imported before it was kept) */
+  channels?: number
+  /** bytes, from the probe (absent on assets imported before it was kept) —
+      the relink search matches a renamed file by size + duration */
+  size?: number
   /** data: URL of a poster frame, generated on import */
   thumbnail?: string
   /** poster of the last frame (clip tails show it on the timeline) */
@@ -29,6 +47,8 @@ export interface MediaAsset {
   /** ffprobe codec_name of the video stream (e.g. 'h264', 'hevc') — decides
       whether Chromium can decode the source or ffmpeg must step in */
   codec?: string
+  /** ffprobe pix_fmt of the video stream — which HEVC profile the platform is asked about (J11) */
+  pixFmt?: string
   /** video carries an alpha channel (yuva pix_fmt or WebM alpha_mode tag) —
       proxies/intermediates must preserve it (VP9+alpha WebM, not H.264) */
   hasAlpha?: boolean
@@ -41,8 +61,22 @@ export interface MediaAsset {
   probeV?: number
   /** light 540p copy used by the preview; export always reads `path` */
   proxyPath?: string
+  /** the bin's per-asset proxy choice (H7); absent = auto, the global rule
+      (shared/proxyChoice.ts) */
+  proxyMode?: 'always' | 'never'
   /** this asset is a reversed render of a source range of another asset */
   reverseOf?: { assetId: string; start: number; duration: number }
+  /** the bin folder it sits in (H5); absent = the bin's root */
+  binId?: string
+}
+
+/** a folder of the media bin (H5): only groups assets, never owns them —
+    deleting one moves what it held to the root */
+export interface BinFolder {
+  id: string
+  name: string
+  /** null = at the root */
+  parentId: string | null
 }
 
 export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold'
@@ -93,6 +127,9 @@ export interface ClipMask {
   bottom: Anim
 }
 
+/** how a source meets the frame: whole picture with bars, fill with a crop, or distorted to the frame */
+export type ClipFit = 'contain' | 'cover' | 'stretch'
+
 export type MaskShapeType = 'rect' | 'ellipse' | 'triangle'
 
 /** Drawn shape mask in layer UV space (0..1), with soft borders. */
@@ -133,14 +170,35 @@ export interface TextStyle {
   outlineColor: string
   outlineWidth: number
   background: string // '' = none
+  /** the plate's padding around the block, × fontSize */
+  backgroundPad: number
+  shadowColor: string // '' = none
+  shadowBlur: number
+  shadowX: number
+  shadowY: number
+  /** line pitch, × fontSize */
+  lineHeight: number
+  /** px between letters (canvas letterSpacing) */
+  letterSpacing: number
+  /** px of the project frame a line may take before it wraps at a space; 0 = never */
+  wrapWidth: number
+}
+
+/** J2: a LUT on a clip — the file lives in `<project>/kadr-lib/luts` (lutImport) or anywhere else until a collect */
+export interface ClipLut {
+  path: string
+  intensity: Anim
 }
 
 export interface Clip {
   id: string
   /** source asset; text clips have no asset */
   assetId?: string
-  /** 'text' = text overlay; 'remotion' = live fragment composition */
-  kind: 'media' | 'text' | 'remotion'
+  /** 'text' = text overlay; 'remotion' = live fragment composition;
+      'timeline' = a compound clip playing another timeline of the project (L6) */
+  kind: 'media' | 'text' | 'remotion' | 'timeline'
+  /** timeline clips: the `Timeline.id` it plays; `inPoint` is a second of that timeline */
+  timelineId?: string
   /** remotion clips: composition id inside the shared fragments workspace */
   fragmentId?: string
   /** remotion clips: composition geometry/timing snapshot (preview + export) */
@@ -154,23 +212,58 @@ export interface Clip {
   inPoint: number
   /** playback rate, 1 = normal; duration beyond source/speed loops the media */
   speed: number
+  /** L3: the speed as a curve over clip time (absolute speeds; shared/speedRamp.ts —
+      the source runs at its integral); absent or keyless = constant `speed` */
+  speedRamp?: Anim
   /** fade in/out lengths in timeline seconds (video opacity + audio gain) */
   fadeIn?: number
   fadeOut?: number
+  /** audio fade shape (shared/fadeCurves.ts), also over an overlap crossfade; absent = linear */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
   gain: Anim // audio gain 0..2
+  /** K4: stereo pan −1 (left) … 1 (right), added to the track's (shared/pan.ts); absent = centre */
+  pan?: Anim
+  /** K9: the clip's audio effects in order (shared/audioFx.ts) — after its element, before its gain; absent = none */
+  audioFx?: AudioFx[]
   muted: boolean
   transform: ClipTransform
+  /** absent = contain (preview and export alike) */
+  fit?: ClipFit
+  /** mirror the picture; crop and mask shapes follow it */
+  flipX?: boolean
+  flipY?: boolean
   mask?: ClipMask
   /** legacy single shape — superseded by maskShapes */
   maskShape?: MaskShape
   /** several drawn shapes combine: union of normal shapes minus inverted ones */
   maskShapes?: MaskShape[]
+  /** J1: primary colour correction (shared/colour.ts); absent = none */
+  grade?: ClipGrade
+  /** J2: a .cube LUT (shared/lut.ts) after the grade; `intensity` mixes it 0…1. Absent = none */
+  lut?: ClipLut
+  /** J3: how the clip mixes with what is under it (shared/blend.ts); absent = normal */
+  blend?: BlendMode
+  /** J4: chroma or luma key (shared/key.ts), before the grade; absent = none */
+  key?: ClipKey
+  /** J7: lift/gamma/gain wheels (shared/curves.ts), after the grade; absent = none */
+  wheels?: ClipWheels
+  /** J7: Y/R/G/B curves, after the wheels, before the LUT; absent = none */
+  curves?: ClipCurves
   effects: Effect[]
   /** clips created together (video + its audio) share a linkId and move as one */
   linkId?: string
   transitionIn?: Transition
   transitionOut?: Transition
   label?: string
+  /** colour label 1..LABEL_COLORS (`--label-N` in styles.css); absent = the track's, else the kind's */
+  color?: number
+  /** L1: markers on the clip, in source seconds */
+  markers?: ClipMarker[]
+  /** switched off: neither drawn nor heard, in preview or export (drawn hatched) */
+  disabled?: boolean
+  /** freeze frame: this SOURCE second is drawn for the whole clip, silent (preview and export alike) */
+  freezeAt?: number
   /**
    * remotion clips: the sound under the clip was baked into the fragment
    * (audio.json next to its entry) by «Реакция на звук». `hash` fingerprints
@@ -190,17 +283,36 @@ export interface AudioBake {
 
 export type TrackKind = 'video' | 'audio'
 
+/** how many colour labels there are (`--label-1…8`) */
+export const LABEL_COLORS = 8
+
 export interface Track {
   id: string
   kind: TrackKind
   name: string
   muted: boolean
   locked: boolean
+  /** while any track is soloed, only soloed tracks are heard (preview and export); the picture is untouched */
+  solo?: boolean
+  /** colour label 1..LABEL_COLORS: the header's stripe and the default of its clips */
+  color?: number
   /** audio: volume 0..2; video: whole-track opacity 0..1 */
   gain: number
+  /** K4: stereo pan −1…1, keys in project seconds, added to each clip's; absent = centre */
+  pan?: Anim
+  /** K9: audio effects on the track's sum (its bus), in order; absent = none */
+  audioFx?: AudioFx[]
   /** video tracks: animated whole-track transform */
   motion?: Transform3D
   clips: Clip[]
+}
+
+/** L6: a sequence of its own — edited when open, played inside others by a clip of kind 'timeline' */
+export interface Timeline {
+  id: string
+  name: string
+  /** absent for the open timeline, whose tracks are `project.tracks` */
+  tracks?: Track[]
 }
 
 export interface TimelineMarker {
@@ -214,9 +326,11 @@ export interface TimelineMarker {
    * analysis (Биты) and are replaced together when a stretch is analysed
    * again: 'beat' = a beat (thin line, no flag), 'section' = a part of the
    * song from `time` to `end` (a band under the ruler), 'pause' = where the
-   * music stops, `time`..`end`. All are snap targets.
+   * music stops, `time`..`end`. 'scene' = a hard cut found in the picture
+   * (I6, ffmpeg scdet; a thin line like a beat, replaced by the next scene
+   * search over its stretch). All are snap targets.
    */
-  kind?: 'beat' | 'section' | 'pause'
+  kind?: 'beat' | 'section' | 'pause' | 'scene'
   /** beats: strength 0..1 (brag's cue intensity) */
   strength?: number
   /** beats: an accent — among the strongest beats of the piece */
@@ -229,6 +343,23 @@ export interface TimelineMarker {
   /** sections: what part of the song, and its energy 0..1 */
   section?: MusicSectionLabel
   energy?: number
+  /** L1: the user's note on it, and a colour label 1..LABEL_COLORS (absent = the marker green) */
+  note?: string
+  color?: number
+}
+
+/**
+ * L1: a marker on a clip. `source` is a SOURCE second (like voice defects), so
+ * it stays on the same picture whatever the clip goes through — moved, trimmed,
+ * slipped, re-sped, split; shared/markers.ts places it on the timeline, and a
+ * marker the trim has taken off the clip is simply not shown.
+ */
+export interface ClipMarker {
+  id: string
+  source: number
+  label: string
+  note?: string
+  color?: number
 }
 
 /** markers the music analysis owns (replaced together on a new analysis) */
@@ -243,8 +374,16 @@ export interface Project {
   fps: number
   /** background color of the canvas */
   background: string
+  /** the OPEN timeline's tracks — every editing and render path reads these */
   tracks: Track[]
+  /** L6: every timeline of the project, the open one included (its `tracks`
+      absent there: they are `project.tracks`). Absent = one timeline. */
+  timelines?: Timeline[]
+  /** L6: the id of the open timeline in `timelines` */
+  activeTimeline?: string
   assets: MediaAsset[]
+  /** the media bin's folders (H5) */
+  bins?: BinFolder[]
   /** transcripts and other text documents imported into the sources */
   texts?: TextDoc[]
   /** free-floating timeline markers (M key / addMarker), track-independent */
@@ -255,6 +394,8 @@ export interface Project {
   defects?: AudioDefect[]
   /** Claude Code session ids of the chats held about this project */
   claudeChats?: string[]
+  /** K4: the master fader, linear gain before the limiter (preview and export); absent = 1 */
+  masterGain?: number
   /** their transcripts (jsonl) — present ONLY in the file on disk: main embeds
    *  them on save and takes them out on open (electron/chats.ts) */
   claudeTranscripts?: Record<string, string>
@@ -266,6 +407,27 @@ export interface ClaudeChatInfo {
   title: string
   /** last activity, ms since epoch */
   updated: number
+}
+
+/** the panel's claude as the settings row shows it (IPC `claude:status`) */
+export interface ClaudeStatus {
+  /** `claude auth status`: null when the probe could not tell (not claude, timed out) */
+  loggedIn: boolean | null
+  authMethod?: string
+  error?: string
+  /** claude-env.json `args`, which REPLACE Kadr's flags — the row warns */
+  legacyArgs: string[] | null
+}
+
+/** «Проверить» next to a tool path (IPC `settings:probe-tool`) */
+export interface ToolCheck {
+  ok: boolean
+  /** what ran */
+  cmd: string
+  /** the version line, trimmed; or why it did not run */
+  line: string
+  /** the untrimmed first line (a title) */
+  full?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +504,17 @@ export interface TextDoc {
   offset?: number
   /** detected language, informational */
   language?: string
+  /** the transcription's words (SRT docs only), in this doc's cue time — source
+      seconds for an asset-bound doc; `placeWords` maps them to the timeline */
+  words?: TextWord[]
+}
+
+/** One transcribed word (seconds in its doc's cue time; p = whisper probability). */
+export interface TextWord {
+  t0: number
+  t1: number
+  w: string
+  p?: number
 }
 
 /** One subtitle cue (seconds). */
@@ -369,6 +542,10 @@ export interface TranscribeResult {
   segments: TranscribeSegment[]
   language: string
   duration: number
+  /** the interpreter that ran faster-whisper, as spawned (`py -3`, a path…) */
+  python?: string
+  /** where it really ran: a failed CUDA load or kernel falls back to the CPU */
+  device?: 'cuda' | 'cpu'
 }
 
 export interface TranscribeRequest {
@@ -921,7 +1098,7 @@ export interface TtsResult {
 export interface ExportPreset {
   id: string
   name: string
-  container: 'mp4' | 'webm' | 'mkv' | 'mp3'
+  container: 'mp4' | 'webm' | 'mkv' | 'mov' | 'png' | 'mp3' | 'wav' | 'm4a'
   /** WebCodecs codec string for the renderer-side encoder */
   codec: string
   /** ffmpeg vcodec for the final pass; 'copy' keeps the WebCodecs stream */
@@ -933,6 +1110,18 @@ export interface ExportPreset {
   audioCodec: string
   audioBitrate: string // ffmpeg style, e.g. '192k'
   audioOnly?: boolean
+  /** x264 rate control (shared/rawEncode.ts); absent = 'abr' at videoBitrate */
+  rateControl?: 'abr' | 'crf'
+  crf?: number
+  x264Preset?: string
+  /** H.264 presets: x264 on the CPU, or a hardware encoder (shared/rawEncode.ts rawCodec); absent = x264 */
+  videoEncoder?: 'x264' | 'nvenc' | 'qsv' | 'amf'
+  /** a size other than the project's: fit (bars, default) · fill (crop) · stretch */
+  fit?: 'fit' | 'fill' | 'stretch'
+  /** G6: the codec (shared/rawEncode.ts VIDEO_CODECS); absent = what ffmpegVideo says (H.264 or VP9) */
+  videoCodec?: 'h264' | 'hevc' | 'av1' | 'vp9' | 'prores422' | 'prores4444' | 'png'
+  /** G9: the mix's integrated loudness target, LUFS (shared/audioMaster.ts); absent = the mix as it is */
+  loudness?: number
 }
 
 export interface ExportJob {
@@ -950,6 +1139,11 @@ export interface ExportJob {
    * false for analysis mixdowns, which must see the mix unaltered.
    */
   master?: boolean
+  /** K4: the project's master fader (linear, before the limiter; ignored when `master` is false
+   *  or a loudness target sets the level); absent = 1 */
+  masterGain?: number
+  /** G7: title, chapters, subtitles (shared/exportExtras.ts), already in export time */
+  extras?: import('./exportExtras').ExportExtras
 }
 
 export interface AudioSegment {
@@ -961,10 +1155,32 @@ export interface AudioSegment {
   /** position in the timeline */
   start: number
   gain: number
+  /** keyframed clip gain, multiplied over `gain` (shared/gainKeys.ts); absent = flat */
+  gainKeys?: GainKey[]
+  /** K4: clip + track pan, −1…1 (shared/pan.ts); absent = centre */
+  pan?: number
+  /** K4: a pan that moves, as points like gainKeys (unclamped; the filter clamps) */
+  panKeys?: GainKey[]
   speed: number
-  /** local fade windows in timeline seconds */
+  /** fade windows in timeline seconds — the WHOLE window, which may begin
+      before the segment (`fadeInFrom`) or end after it (`fadeOutPast`) */
   fadeIn: number
   fadeOut: number
+  /** K2/K9: seconds of the fade-in already gone at the segment's first sample (a range or a loop entering it) */
+  fadeInFrom?: number
+  /** …and seconds of the fade-out that lie after the segment's last sample */
+  fadeOutPast?: number
+  /** absent = linear */
+  fadeInCurve?: FadeCurve
+  fadeOutCurve?: FadeCurve
+  /** K10: the source's channel count (the asset's; main asks ffprobe when absent) — 1 is upmixed at unity */
+  channels?: number
+  /** K9: the clip's enabled DSP effects — run on the sound before `gain` */
+  fx?: AudioFx[]
+  /** K9: the clip's denoise (afftdn reduction, dB) — the source is replaced by its cached denoised file */
+  denoise?: number
+  /** K9: the track's bus when it carries effects: its segments are summed, then run through `fx` */
+  bus?: { id: string; fx: AudioFx[] }
 }
 
 export interface ExportProgress {
@@ -972,6 +1188,10 @@ export interface ExportProgress {
   /** 0..1 within the current phase */
   progress: number
   message?: string
+  /** the video phase: frames in the whole export (fps = progress rate × frames) */
+  frames?: number
+  /** done, with a loudness target (G9): what the exported file measures — LUFS, dBTP */
+  loudness?: { i: number; tp: number }
 }
 
 // ---------------------------------------------------------------------------
@@ -983,9 +1203,19 @@ export interface ProbeResult {
 
 /* ------------------------------ disk storage ------------------------------ */
 
+/** A backup written during a session that died, newer than its project file (electron/backups.ts). */
+export interface BackupOffer {
+  file: string
+  /** ms since the epoch */
+  time: number
+  /** the project it is a version of; null when it was never saved */
+  projectPath: string | null
+  name: string
+}
+
 export type StorageGroupId =
-  | 'proxies' | 'decoded' | 'fragments' | 'ttsqcCache'
-  | 'reversed' | 'imported' | 'voiceRuns'
+  | 'proxies' | 'decoded' | 'fragments' | 'denoised' | 'ttsqcCache'
+  | 'reversed' | 'imported' | 'recordings' | 'voiceRuns' | 'backups' | 'templates'
 
 /** A project, reduced to what identifies the files it owns on disk. */
 export interface StorageProject {
@@ -1049,15 +1279,18 @@ export interface StoragePruneResult {
 }
 
 export type GpuPref = 'auto' | 'discrete' | 'integrated'
+/** A message main hands the renderer to say in the user's language: an i18n key and its {args}. */
+export interface Said { key: string; args?: Record<string, string | number | Said> }
 export interface GpuInfo {
   pref: GpuPref
   /** what this launch actually asked Chromium for */
   applied: 'discrete' | 'default'
-  why: string
+  why: Said
   /** WebGL's renderer string (empty until the page reports it) */
   renderer: string
   available: boolean
-  fallback: { at: number; reason: string } | null
+  /** `reason` is the raw text (all a file written before `said` has) */
+  fallback: { at: number; reason: string; said?: Said } | null
 }
 
 /** An imported 3D model (electron/models.ts): <name>.glb (metres) + <name>.png in kadr-lib/models. */
@@ -1113,7 +1346,17 @@ export interface FragmentParamDecl {
 
 export interface KadrApi {
   openMediaDialog(): Promise<string[]>
+  /** «Импорт папки» (H6): folders, several at once */
+  openFolderDialog(): Promise<string[]>
+  /** folders walked in main to known media, numbered stills gathered into runs (electron/mediaScan.ts) */
+  scanMedia(paths: string[]): Promise<MediaScan>
+  /** a run as ONE clip at `fps` — the path of its intermediate in userData/imported (cached) */
+  buildSequence(run: Pick<SeqRun, 'pattern' | 'first' | 'count' | 'name'>, fps: number): Promise<string>
   probeMedia(path: string): Promise<ProbeResult>
+  /** one pass over many paths: the size of each, null where there is no file (offline media) */
+  statMany(paths: string[]): Promise<(number | null)[]>
+  /** «Искать в папке»: assetId → the file under `folder` to relink it to (shared/relinkMatch.ts) */
+  relinkScan(folder: string, wanted: RelinkWanted[]): Promise<Record<string, string>>
   fileUrl(path: string): string
   /** Absolute path of a File dropped from the OS (File.path is gone since
       Electron 32 — this goes through webUtils.getPathForFile). */
@@ -1124,6 +1367,9 @@ export interface KadrApi {
   /** Save raw media content (path-less File / data: URL from a browser drag)
       into userData/imported; cached by content hash. Returns the path. */
   saveBlobMedia(name: string, mime: string, data: Uint8Array): Promise<string>
+  /** K8: a microphone take (WAV bytes) into `<project>/media/recordings`, or
+      userData/recordings for an unsaved project. Returns the path. */
+  saveRecording(data: Uint8Array, projectPath: string | null): Promise<string>
   /** Resolve an XDG FileTransfer portal drop (transfer key → local paths). */
   portalFiles(key: string): Promise<string[]>
   /** Media from the OS clipboard: copied files (uri-list) or a copied image
@@ -1136,14 +1382,43 @@ export interface KadrApi {
   openProjectDialog(): Promise<string | null>
   readProject(path: string): Promise<Project>
   writeProject(path: string, project: Project): Promise<void>
+  /** «Собрать проект» (H8): what would be copied into `<folder of path>/media`, its size and the free space */
+  collectPlan(project: Project, path: string): Promise<CollectPlan>
+  /** copy it; resolves to old path → new path for everything now in media/ */
+  collectRun(project: Project, path: string): Promise<Record<string, string>>
+  collectCancel(): Promise<void>
+  onCollectProgress(cb: (p: { done: number; total: number; file: string }) => void): () => void
   /** write <name>.autosave.kadr next to the project (atomic); returns path */
+  /** a backup version in userData/backups (+ <name>.autosave.kadr next to a saved project); resolves to the backup's path */
   autosaveProject(project: Project, mainPath: string | null): Promise<string>
+  /** after an unclean exit: the backup to offer (asked once per launch) */
+  backupOffer(): Promise<BackupOffer | null>
+  /** show a backup in the file manager (paths inside userData/backups only) */
+  revealBackup(file: string): Promise<void>
+  /** closing the window asks the page first: `cb` decides, then calls closeWindow() to go on */
+  onCloseRequest(cb: () => void): () => void
+  closeWindow(): void
+  /** a .kadr to open: the launch's own argv (once), then any a second launch hands over */
+  onOpenProject(cb: (path: string) => void): () => void
 
   /** App-wide JSON stores in userData (presets etc.) — survive any restart. */
   storageScan(projects: string[], open: StorageProject | null): Promise<StorageScan>
   storagePrune(req: StoragePruneRequest): Promise<StoragePruneResult>
   readUserStore(name: string): Promise<unknown>
   writeUserStore(name: string, data: unknown): Promise<void>
+  /** project templates (userData/templates), sorted by name */
+  listTemplates(): Promise<{ name: string; project: Project }[]>
+  /** save the project's structure as a template; resolves the file name it got */
+  saveTemplate(name: string, project: Project): Promise<string>
+  /** main's settings (shared/settings.ts): a synchronous copy for the boot, and a patch (null = default) */
+  settingsGet(): SettingsSnapshot
+  settingsSet(patch: Partial<Record<string, SettingValue | null>>): Promise<SettingsSnapshot>
+  /** run a tool path (empty = the one found automatically) and report its version line */
+  probeTool(key: string, value: string): Promise<ToolCheck>
+  /** quit and start again (the caller asked about unsaved work first) */
+  relaunch(): void
+  /** the page's zoom factor (the interface scale) */
+  setZoom(factor: number): void
 
   /** Render (or reuse) a reversed copy of a source range; resolves with the file path. */
   reverseMedia(
@@ -1159,13 +1434,19 @@ export interface KadrApi {
   /** Build (or reuse) a preview proxy; resolves with the proxy file path.
       Alpha sources get a VP9+alpha WebM proxy instead of H.264. */
   requestProxy(path: string, duration: number,
-    opts?: { alpha?: boolean; codec?: string }): Promise<string>
+    opts?: { alpha?: boolean; codec?: string; rebuild?: boolean }): Promise<string>
   onProxyProgress(cb: (p: { path: string; progress: number }) => void): () => void
   /** Full-resolution intermediate for sources Chromium cannot decode
       (e.g. HEVC without VAAPI, ProRes): H.264, or VP9+alpha WebM for alpha
       sources; cached like proxies, video-only. */
   requestDecoded(path: string, duration: number,
     opts?: { alpha?: boolean; codec?: string; packed?: boolean }): Promise<string>
+  /** Font files in `<dir of projectPath>/kadr-lib/fonts` (absolute paths; [] when none). */
+  libFonts(projectPath: string): Promise<string[]>
+  /** J2: copy a .cube into `<dir of projectPath>/kadr-lib/luts` (an equal file there is reused, another of the name gets `-2`); the path to put on `Clip.lut` */
+  lutImport(src: string, projectPath: string): Promise<string>
+  /** J6: pick one .cube file; null when cancelled */
+  openLutDialog(): Promise<string | null>
   /** Native directory picker; null when the user cancels. */
   pickDirectory(title?: string): Promise<string | null>
   /** Write a frame snapshot PNG into dir (Downloads when null) under a
@@ -1175,6 +1456,10 @@ export interface KadrApi {
   measureLoudness(path: string, start: number, duration: number): Promise<{ i: number; tp: number }>
   /** plain mean/peak dBFS — for short spans where R128 has not settled */
   meanVolume(path: string, start: number, duration: number): Promise<{ mean: number; max: number }>
+  /** Hard cuts (ffmpeg scdet, score 0..100) in a source range, source seconds. */
+  detectScenes(path: string, start: number, duration: number, threshold?: number): Promise<number[]>
+  /** K9: the cached denoised copy of a source (afftdn at `nr` dB), built once — the preview plays it, the export mixes it */
+  audioDenoise(path: string, nr: number): Promise<string>
   /** Blender-compatible loudness envelope of a mixed range, one value per frame (see shared/envelope.ts). */
   audioEnvelope(req: EnvelopeRequest): Promise<number[]>
   /** Tempo, beat grid and band energies of a mixed range (see shared/audioAnalysis.ts). */
@@ -1193,6 +1478,8 @@ export interface KadrApi {
   fragmentParamsWrite(id: string, patch: Record<string, FragmentParamValue> | null): Promise<Record<string, unknown>>
 
   exportDialog(defaultName: string, ext: string): Promise<string | null>
+  /** hardware encoders that open on this machine (e.g. 'h264_nvenc'); probed once per launch */
+  hwEncoders(): Promise<string[]>
   exportBegin(job: ExportJob): Promise<void>
   exportVideoChunk(data: ArrayBuffer, position: number): Promise<void>
   /** Direct encode in the renderer process: preload spawns ffmpeg and pipes
@@ -1200,10 +1487,7 @@ export interface KadrApi {
       passed BY REFERENCE — zero copies until the kernel pipe. rawEncodeStart
       resolves with the temp file the encoder writes; exportUseVideo hands it
       to the muxer stage. */
-  rawEncodeStart(o: {
-    width: number; height: number; outWidth?: number; outHeight?: number
-    fps: number; codec: string; bitrate: number
-  }): Promise<string>
+  rawEncodeStart(o: Omit<RawEncodeOpts, 'out'> & { /** default: a temp file the muxer adopts */ out?: string }): Promise<string>
   /** resolves when ffmpeg's stdin accepted the memory — only then reuse it */
   rawEncodeFrame(view: Uint8Array): Promise<void>
   rawEncodeEnd(): Promise<void>
@@ -1213,12 +1497,16 @@ export interface KadrApi {
   /** main-process fallback raw encode: frames over WS (port > 0) or IPC */
   exportRawBegin(
     width: number, height: number, fps: number,
-    outWidth?: number, outHeight?: number
+    outWidth?: number, outHeight?: number, alpha?: boolean
   ): Promise<number>
   exportRawFrame(data: ArrayBuffer): Promise<void>
   exportRawEnd(): Promise<void>
   exportVideoDone(): Promise<void>
   exportCancel(): Promise<void>
+  /** hold (true) / release (false) the system awake during an export; returns whether it is held (no arg = ask) */
+  exportAwake(on?: boolean): Promise<boolean>
+  /** the LAST finished export: show it in its folder, or open it (a PNG sequence: its first frame) */
+  exportReveal(open: boolean): Promise<void>
   onExportProgress(cb: (p: ExportProgress) => void): () => void
 
   /** Remotion fragments: shared workspace, dev server, create and render. */
@@ -1255,7 +1543,7 @@ export interface KadrApi {
   /** tsc over one fragment (its @lib and @kadr paths); only its own errors */
   fragmentTypecheck(id: string): Promise<{ ok: boolean; errors: { file: string; line: number; col: number; code: string; message: string }[]; more: number }>
   /** errors from inside a capture window (WebGL failures, a crashed page) */
-  onFragmentCaptureLog(cb: (p: { id: string; level: 'error' | 'warn'; msg: string }) => void): () => void
+  onFragmentCaptureLog(cb: (p: { id: string; level: 'error' | 'warn'; msg: string; said?: Said }) => void): () => void
   fragmentCaptureSync(id: string, msg: unknown): void
   onFragmentFrame(cb: (p: { id: string; w: number; h: number; data: Uint8Array }) => void): () => void
   fragmentRender(id: string, opts?: { transparent?: boolean }): Promise<{ path: string; cached: boolean }>
@@ -1271,6 +1559,9 @@ export interface KadrApi {
   /** Mix the request's audio to a temp wav and run Whisper over it. */
   transcribe(req: TranscribeRequest): Promise<TranscribeResult>
   transcribeCancel(): Promise<void>
+  /** Which Python runs faster-whisper (KADR_PYTHON → the app's .venv → `py -3`
+      on Windows → python → python3; the first that imports it), or what was tried. */
+  speechPython(): Promise<{ command: string; args: string[]; device: 'cuda' | 'cpu' } | { error: string }>
   onTranscribeProgress(cb: (p: { progress: number; text: string }) => void): () => void
 
   /** Flush the user's verdicts into the training corpus of one run. */
@@ -1326,6 +1617,10 @@ export interface KadrApi {
   claudeInput(data: string): void
   claudeResize(cols: number, rows: number): void
   claudeClose(): Promise<void>
+  /** auth status of the configured CLI (spends no tokens) and the legacy args replace */
+  claudeStatus(): Promise<ClaudeStatus>
+  /** show userData/claude-env.json in the file manager */
+  revealClaudeEnv(): void
   onClaudeData(cb: (data: string) => void): () => void
   onClaudeExit(cb: (code: number) => void): () => void
 }

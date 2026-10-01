@@ -4,6 +4,15 @@ import { transitionGlsl } from './transitions'
 import { edgeGlsl } from './edges'
 import { GLOW_FIELD_FS, GLOW_FS, type GlowParams } from './glow'
 import { logError } from '@/engine/log'
+import type { ClipFit } from '@shared/types'
+import { PACK_GAP, packHeight } from '@shared/streamColour'
+import { GRADE_GLSL } from '@shared/colour'
+import { LUT_GLSL, type CubeLut } from '@shared/lut'
+import { BLEND_FS, blendIndex, type BlendMode } from '@shared/blend'
+import { KEY_GLSL, type KeyDraw } from '@shared/key'
+import { CURVE_GLSL } from '@shared/curves'
+import { scopeSize } from '@shared/scopes'
+import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
 layout(location=0) in vec3 aPos;   // NDC xy premultiplied by w, plus w
@@ -23,6 +32,8 @@ uniform sampler2D uTex;
 uniform int uRawBGRA;                  // 1 = premultiplied BGRA capture frame
 uniform int uAlphaPacked;              // 1 = colour over its alpha matte (2× tall)
 uniform float uPackHalfTexel;          // half texel of the packed texture (v units)
+uniform float uPackSplit;              // one half's share of the texture height
+uniform float uPackMatte;              // where the matte starts (v)
 uniform float uOpacity;
 uniform vec4 uCrop;                    // left, top, right, bottom cut fractions
 uniform int uShapeCount;
@@ -31,6 +42,10 @@ uniform vec4 uShapeRect[MAX_SHAPES];   // cx, cy, halfW, halfH in UV
 uniform vec3 uShapeFeather[MAX_SHAPES];// featherIn, featherOut, invert flag
 uniform float uAspect;                 // layer width/height (aspect-correct distances)
 out vec4 outColor;
+${KEY_GLSL}
+${GRADE_GLSL}
+${CURVE_GLSL}
+${LUT_GLSL}
 
 float edgeDist(vec2 a, vec2 b, vec2 p) {
   vec2 e = b - a;
@@ -48,8 +63,8 @@ void main() {
     // one; clamp both to their half so LINEAR filtering can't bleed across
     // the seam. Alpha sources are decoded this way because WebCodecs cannot
     // carry an alpha channel — see makeDecoded's packed branch.
-    float vc = clamp(vUV.y * 0.5, uPackHalfTexel, 0.5 - uPackHalfTexel);
-    float va = clamp(vUV.y * 0.5 + 0.5, 0.5 + uPackHalfTexel, 1.0 - uPackHalfTexel);
+    float vc = clamp(vUV.y * uPackSplit, uPackHalfTexel, uPackSplit - uPackHalfTexel);
+    float va = clamp(uPackMatte + vUV.y * uPackSplit, uPackMatte + uPackHalfTexel, uPackMatte + uPackSplit - uPackHalfTexel);
     c = vec4(texture(uTex, vec2(vUV.x, vc)).rgb, texture(uTex, vec2(vUV.x, va)).r);
   } else {
     c = texture(uTex, vUV);
@@ -58,6 +73,15 @@ void main() {
     c = vec4(c.b, c.g, c.r, c.a);          // offscreen captures arrive BGRA…
     if (c.a > 0.0001) c.rgb /= c.a;        // …premultiplied; pipeline wants straight
   }
+  // J4: the key reads the source as decoded (packed alpha already unpacked),
+  // before the grade; its alpha multiplies the source's and, below, the masks'
+  if (uKeyOn != 0) { highp vec4 k = kadrKey(c.rgb); c = vec4(k.rgb, c.a * k.a); }
+  // J1: the primary grade, on straight colour before opacity (highp inside)
+  if (uGradeOn == 1) c.rgb = kadrGrade(c.rgb);
+  // J7: wheels and curves, one baked 1D table, between the grade and the LUT
+  if (uCurveOn == 1) c.rgb = kadrCurve(c.rgb);
+  // J2: the clip's LUT, after the grade, on straight colour
+  if (uLutOn != 0) c.rgb = kadrLut(c.rgb);
   float alpha = c.a * uOpacity;
 
   if (uShapeCount > 0) {
@@ -202,6 +226,11 @@ export interface LayerDraw {
   dynamic: boolean
   srcWidth: number
   srcHeight: number
+  /** how the source meets the frame before the clip scale; absent = contain */
+  fit?: ClipFit
+  /** mirror the layer about its own centre — crop and masks (layer uv) go with it */
+  flipX?: boolean
+  flipY?: boolean
   x: number
   y: number
   scale: number
@@ -224,6 +253,14 @@ export interface LayerDraw {
   /** cut fractions [left, top, right, bottom], 0..1 */
   crop?: [number, number, number, number]
   shapes?: ShapeUniform[]
+  /** J1: `uGrade` values (shared/colour.ts `gradeAt`); absent = no grade, not even a round trip */
+  grade?: number[]
+  /** J2: the clip's LUT (shared/lut.ts) and its intensity 0…1; absent = none */
+  lut?: { table: CubeLut; mix: number }
+  /** J4: the clip's key (shared/key.ts `keyAt`); absent = none */
+  key?: KeyDraw
+  /** J7: the wheels and curves baked (shared/curves.ts `curveTable`); absent = none */
+  curve?: CubeLut
 }
 
 export interface ShapeUniform {
@@ -238,6 +275,8 @@ export interface ShapeUniform {
 }
 
 export const MAX_SHAPES = 8
+/** J2: texture units of the LUTs (0 is the layer, 1 a transition's second input) */
+const LUT3_UNIT = 2, LUT1_UNIT = 3, CURVE_UNIT = 4
 
 interface TexEntry {
   tex: WebGLTexture
@@ -288,6 +327,9 @@ export class Compositor {
     uDir: WebGLUniformLocation
     uRadius: WebGLUniformLocation
   } | null = null
+  /** J3: the blended layer drawn alone, and a copy of what lies under it */
+  private blendBufs: { src: Overlay; dst: Overlay; size: number } | null = null
+  private blendProg: { prog: WebGLProgram; uBlend: WebGLUniformLocation } | null = null
   private fieldProg: { prog: WebGLProgram; uSize: WebGLUniformLocation; uRatio: WebGLUniformLocation } | null = null
   private glowProg: {
     prog: WebGLProgram
@@ -297,21 +339,46 @@ export class Compositor {
   private uRawBGRA: WebGLUniformLocation
   private uAlphaPacked: WebGLUniformLocation
   private uPackHalfTexel: WebGLUniformLocation
+  private uPackSplit: WebGLUniformLocation
+  private uPackMatte: WebGLUniformLocation
   private uCrop: WebGLUniformLocation
   private uShapeCount: WebGLUniformLocation
   private uShapeType: WebGLUniformLocation
   private uShapeRect: WebGLUniformLocation
   private uShapeFeather: WebGLUniformLocation
   private uAspect: WebGLUniformLocation
+  private uGradeOn: WebGLUniformLocation
+  private uGrade: WebGLUniformLocation
+  private uKey: Record<'on' | 'rgb' | 'params', WebGLUniformLocation>
+  private uLut: Record<'on' | 'min' | 'scale' | 'size' | 'mix', WebGLUniformLocation>
+  /** J2: one texture per parsed LUT — a reload of the file is a new object, hence a new texture */
+  private luts = new Map<CubeLut, WebGLTexture>()
+  /** J14: the frame each table texture was last bound in — `begin` frees the stale ones */
+  private tableUse = new Map<WebGLTexture, number>()
+  /** J7: baked wheel/curve tables — a drag makes one per step; `begin` frees the unused (J14) */
+  private curveTex = new Map<CubeLut, WebGLTexture>()
+  private uCurve!: Record<'on' | 'size', WebGLUniformLocation>
   private textures = new Map<string, TexEntry>()
   private frame = 0
+  /** the frame in PROJECT pixels — all geometry, masks and effect radii */
   width = 0
   height = 0
+  /** backing-store scale (the preview's quality menu: 1, ½, ¼). The picture is
+      laid out in project pixels and only rasterised at width·scale — the
+      export builds its own compositor, which stays at 1. */
+  scale = 1
+  /** the backing store in real pixels: viewport, readback, FBOs */
+  private pw = 0
+  private ph = 0
 
-  constructor(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  /** `alpha`: the drawing buffer keeps coverage (an alpha export, G6) — readPixels
+      then returns PREMULTIPLIED RGBA. The preview asks for it too (H2): over an
+      opaque background the clear writes alpha 1 and nothing lowers it, so the page
+      sees the same pixels; over 'transparent' the CSS checkerboard shows through */
+  constructor(canvas: HTMLCanvasElement | OffscreenCanvas, opts?: { alpha?: boolean }) {
     this.canvas = canvas
     const gl = canvas.getContext('webgl2', {
-      alpha: false,
+      alpha: !!opts?.alpha,
       antialias: false,
       preserveDrawingBuffer: true
       // NOT desynchronized: on Windows it renders into the front buffer, and
@@ -326,12 +393,20 @@ export class Compositor {
     this.uRawBGRA = gl.getUniformLocation(prog, 'uRawBGRA')!
     this.uAlphaPacked = gl.getUniformLocation(prog, 'uAlphaPacked')!
     this.uPackHalfTexel = gl.getUniformLocation(prog, 'uPackHalfTexel')!
+    this.uPackSplit = gl.getUniformLocation(prog, 'uPackSplit')!
+    this.uPackMatte = gl.getUniformLocation(prog, 'uPackMatte')!
     this.uCrop = gl.getUniformLocation(prog, 'uCrop')!
     this.uShapeCount = gl.getUniformLocation(prog, 'uShapeCount')!
     this.uShapeType = gl.getUniformLocation(prog, 'uShapeType[0]')!
     this.uShapeRect = gl.getUniformLocation(prog, 'uShapeRect[0]')!
     this.uShapeFeather = gl.getUniformLocation(prog, 'uShapeFeather[0]')!
     this.uAspect = gl.getUniformLocation(prog, 'uAspect')!
+    this.uGradeOn = gl.getUniformLocation(prog, 'uGradeOn')!
+    this.uGrade = gl.getUniformLocation(prog, 'uGrade[0]')!
+    const u = (n: string) => gl.getUniformLocation(prog, n)!
+    this.uKey = { on: u('uKeyOn'), rgb: u('uKeyRgb'), params: u('uKeyParams') }
+    this.uLut = { on: u('uLutOn'), min: u('uLutMin'), scale: u('uLutScale'), size: u('uLutSize'), mix: u('uLutMix') }
+    this.uCurve = { on: u('uCurveOn'), size: u('uCurveSize') }
 
     this.vbo = gl.createBuffer()!
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
@@ -343,10 +418,13 @@ export class Compositor {
 
     gl.enable(gl.BLEND)
     // separate alpha factors so layers accumulate correct coverage in the
-    // transition FBOs (the canvas itself is alpha:false and doesn't care)
+    // transition FBOs and, on an alpha export, in the drawing buffer itself (premultiplied)
     gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
     gl.useProgram(prog)
     gl.uniform1i(gl.getUniformLocation(prog, 'uTex'), 0)
+    gl.uniform1i(gl.getUniformLocation(prog, 'uLut3'), LUT3_UNIT)
+    gl.uniform1i(gl.getUniformLocation(prog, 'uLut1'), LUT1_UNIT)
+    gl.uniform1i(gl.getUniformLocation(prog, 'uCurve'), CURVE_UNIT)
   }
 
   private buildProgram(vsSrc: string, fsSrc: string): WebGLProgram {
@@ -371,19 +449,47 @@ export class Compositor {
   }
 
   setSize(w: number, h: number) {
-    if (this.width === w && this.height === h) return
+    const pw = Math.max(1, Math.round(w * this.scale))
+    const ph = Math.max(1, Math.round(h * this.scale))
+    if (this.width === w && this.height === h && this.pw === pw && this.ph === ph) return
     this.width = w
     this.height = h
-    this.canvas.width = w
-    this.canvas.height = h
-    this.gl.viewport(0, 0, w, h)
+    this.pw = pw
+    this.ph = ph
+    this.canvas.width = pw
+    this.canvas.height = ph
+    this.gl.viewport(0, 0, pw, ph)
+  }
+
+  /** J6 before/after (preview only): everything drawn while set lands only in
+      the left `frac` of the frame — smaller effect buffers get a wider strip,
+      never a narrower one; null turns it off */
+  clipLeft(frac: number | null) {
+    const gl = this.gl
+    if (frac === null) { gl.disable(gl.SCISSOR_TEST); return }
+    gl.enable(gl.SCISSOR_TEST)
+    gl.scissor(0, 0, Math.round(this.pw * Math.min(1, Math.max(0, frac))), 1 << 15)
+  }
+
+  /** J6 pipette: the mean RGB (0…255) of an n×n square of the finished frame
+      around (fx, fy), fractions of the frame from its top-left */
+  meanAt(fx: number, fy: number, n = 5): [number, number, number] {
+    const gl = this.gl
+    const x = Math.min(this.pw - n, Math.max(0, Math.round(fx * this.pw - n / 2)))
+    const y = Math.min(this.ph - n, Math.max(0, Math.round((1 - fy) * this.ph - n / 2)))
+    const px = new Uint8Array(n * n * 4)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    gl.readPixels(x, y, n, n, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    const sum = [0, 0, 0]
+    for (let i = 0; i < px.length; i += 4) for (let c = 0; c < 3; c++) sum[c] += px[i + c]
+    return sum.map((v) => v / (n * n)) as [number, number, number]
   }
 
   /** Copy the finished frame out of the default framebuffer (bottom-up rows). */
   readPixels(out: Uint8Array) {
     const gl = this.gl
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
-    gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, out)
+    gl.readPixels(0, 0, this.pw, this.ph, gl.RGBA, gl.UNSIGNED_BYTE, out)
   }
 
   // Async readback: startRead() queues readPixels into a pixel-pack buffer
@@ -400,12 +506,12 @@ export class Compositor {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     if (!this.pbos[slot]) this.pbos[slot] = gl.createBuffer()
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbos[slot])
-    const bytes = this.width * this.height * 4
+    const bytes = this.pw * this.ph * 4
     if (this.pboBytes[slot] !== bytes) {
       gl.bufferData(gl.PIXEL_PACK_BUFFER, bytes, gl.STREAM_READ)
       this.pboBytes[slot] = bytes
     }
-    gl.readPixels(0, 0, this.width, this.height, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+    gl.readPixels(0, 0, this.pw, this.ph, gl.RGBA, gl.UNSIGNED_BYTE, 0)
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
     // Chromium queues GL in a command buffer and may not hand it to the GPU
     // process until the next blocking call — which would serialize the whole
@@ -421,13 +527,73 @@ export class Compositor {
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
   }
 
+  // J8 scopes: the finished frame downscaled by a blit into a small FBO and read
+  // into a PBO without waiting; scopeFetch() takes it once the GPU is done (a
+  // fence), a tick or more later — the preview never stalls on the readback.
+  private scope: { fbo: WebGLFramebuffer; rb: WebGLRenderbuffer; pbo: WebGLBuffer; w: number; h: number; fence: WebGLSync | null } | null = null
+
+  /** false while the previous read is still on its way */
+  scopeRead(): boolean {
+    const gl = this.gl
+    const [w, h] = scopeSize(this.pw, this.ph)
+    let s = this.scope
+    if (s?.fence) return false
+    if (!s || s.w !== w || s.h !== h) {
+      if (s) { gl.deleteFramebuffer(s.fbo); gl.deleteRenderbuffer(s.rb); gl.deleteBuffer(s.pbo) }
+      const rb = gl.createRenderbuffer()!, fbo = gl.createFramebuffer()!, pbo = gl.createBuffer()!
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb)
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo)
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, w * h * 4, gl.STREAM_READ)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+      s = this.scope = { fbo, rb, pbo, w, h, fence: null }
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.fbo)
+    gl.blitFramebuffer(0, 0, this.pw, this.ph, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.LINEAR)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, s.fbo)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    s.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    gl.flush()
+    return true
+  }
+
+  /** the pixels of the last scopeRead once they have arrived, else null */
+  scopeFetch(): { px: Uint8Array; w: number; h: number } | null {
+    const gl = this.gl, s = this.scope
+    if (!s?.fence) return null
+    if (gl.clientWaitSync(s.fence, 0, 0) === gl.TIMEOUT_EXPIRED) return null
+    gl.deleteSync(s.fence)
+    s.fence = null
+    const px = new Uint8Array(s.w * s.h * 4)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    return { px, w: s.w, h: s.h }
+  }
+
   begin(background: string) {
     const gl = this.gl
     this.frame++
+    // J14: a reloaded LUT or a dragged curve is a new table; a texture no layer
+    // bound for 8 frames (two passes a frame under «До и после») goes
+    for (const cache of [this.luts, this.curveTex]) for (const [t, tex] of cache) {
+      if ((this.tableUse.get(tex) ?? 0) >= this.frame - 8) continue
+      gl.deleteTexture(tex); cache.delete(t); this.tableUse.delete(tex)
+    }
     this.curFbo = this.target
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.target)
-    const [r, g, b] = hexToRgb(background)
-    gl.clearColor(r, g, b, 1)
+    // 'transparent' (G6; H2 makes it selectable): the layers build their own coverage
+    if (background === 'transparent') gl.clearColor(0, 0, 0, 0)
+    else {
+      const [r, g, b] = hexToRgb(background)
+      gl.clearColor(r, g, b, 1)
+    }
     gl.clear(gl.COLOR_BUFFER_BIT)
   }
 
@@ -454,62 +620,42 @@ export class Compositor {
     }
     gl.uniform1i(this.uRawBGRA, l.raw ? 1 : 0)
     gl.uniform1i(this.uAlphaPacked, l.alphaPacked ? 1 : 0)
-    // srcHeight is the LOGICAL height; the texture holds two stacked halves
-    gl.uniform1f(this.uPackHalfTexel, l.alphaPacked ? 0.25 / Math.max(1, l.srcHeight) : 0)
+    // srcHeight is the LOGICAL height; the texture holds both halves and the
+    // gaps between them (packHeight)
+    const h = Math.max(1, l.srcHeight), packH = packHeight(h)
+    gl.uniform1f(this.uPackHalfTexel, l.alphaPacked ? 0.5 / packH : 0)
+    gl.uniform1f(this.uPackSplit, l.alphaPacked ? h / packH : 1)
+    gl.uniform1f(this.uPackMatte, l.alphaPacked ? (h + 2 * PACK_GAP) / packH : 0)
     entry.lastUsed = this.frame
-
-    // fit the source into the project frame, then apply the clip scale
-    const fit = Math.min(this.width / l.srcWidth, this.height / l.srcHeight) * l.scale
-    const w = l.srcWidth * fit
-    const h = l.srcHeight * fit
-    const clipRot = makeRot3(l.rotation, l.rotX ?? 0, l.rotY ?? 0)
-    const outer = l.outer
-    const outerRot = outer ? makeRot3(outer.rotation, outer.rotX, outer.rotY) : null
-    const focal = Math.max(this.width, this.height) * 1.2
 
     // corner order matches TRIANGLE_STRIP: TL, BL, TR, BR
     const data = new Float32Array(20)
-    const corners = [
-      [-w / 2, -h / 2, 0, 0],
-      [-w / 2, h / 2, 0, 1],
-      [w / 2, -h / 2, 1, 0],
-      [w / 2, h / 2, 1, 1]
-    ]
-    corners.forEach(([px, py, u, v], i) => {
-      // clip transform: 3D rotation around the layer center, then offset
-      let P = rotApply(clipRot, px, py, 0)
-      P[0] += l.x
-      P[1] += l.y
-      P[2] += l.z ?? 0
-      // whole-track motion around the project center
-      if (outer && outerRot) {
-        P[0] *= outer.scale
-        P[1] *= outer.scale
-        P[2] *= outer.scale
-        P = rotApply(outerRot, P[0], P[1], P[2])
-        P[0] += outer.x
-        P[1] += outer.y
-        P[2] += outer.z
-      }
-      // perspective projection; the clip-space w must be proportional to
-      // the eye depth (f+z)/f — not its inverse — or the GPU interpolates
-      // the texture with inverted weights and the quad warps internally
-      const wclip = Math.max(0.05, (focal + P[2]) / focal)
-      const pw = 1 / wclip
-      const sx = this.width / 2 + P[0] * pw
-      const sy = this.height / 2 + P[1] * pw
-      const ndcX = (sx / this.width) * 2 - 1
-      const ndcY = 1 - (sy / this.height) * 2
-      data[i * 5] = ndcX * wclip
-      data[i * 5 + 1] = ndcY * wclip
-      data[i * 5 + 2] = wclip
-      data[i * 5 + 3] = u
-      data[i * 5 + 4] = v
+    layerQuad(l, this.width, this.height).forEach((q, i) => {
+      const ndcX = (q.sx / this.width) * 2 - 1
+      const ndcY = 1 - (q.sy / this.height) * 2
+      data[i * 5] = ndcX * q.w
+      data[i * 5 + 1] = ndcY * q.w
+      data[i * 5 + 2] = q.w
+      data[i * 5 + 3] = q.u
+      data[i * 5 + 4] = q.v
     })
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo)
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
     gl.uniform1f(this.uOpacity, l.opacity)
+    gl.uniform1i(this.uGradeOn, l.grade ? 1 : 0)
+    if (l.grade) gl.uniform1fv(this.uGrade, l.grade)
+    gl.uniform1i(this.uKey.on, l.key ? l.key.mode : 0)
+    if (l.key) {
+      gl.uniform3fv(this.uKey.rgb, l.key.rgb)
+      gl.uniform3f(this.uKey.params, l.key.tolerance, l.key.softness, l.key.spill)
+    }
+    this.bindLut(l.lut)
+    gl.uniform1i(this.uCurve.on, l.curve ? 1 : 0)
+    if (l.curve) {
+      this.lutTexture(l.curve, CURVE_UNIT, this.curveTex)
+      gl.uniform1f(this.uCurve.size, l.curve.size)
+    }
     const c = l.crop ?? [0, 0, 0, 0]
     gl.uniform4f(this.uCrop, c[0], c[1], c[2], c[3])
     const shapes = (l.shapes ?? []).slice(0, MAX_SHAPES)
@@ -526,7 +672,8 @@ export class Compositor {
       gl.uniform1iv(this.uShapeType, types)
       gl.uniform4fv(this.uShapeRect, rects)
       gl.uniform3fv(this.uShapeFeather, feathers)
-      gl.uniform1f(this.uAspect, l.srcWidth / Math.max(1, l.srcHeight))
+      const [fw, fh] = fitSize(l, this.width, this.height)
+      gl.uniform1f(this.uAspect, fw / Math.max(1e-6, fh))
     }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
@@ -699,7 +846,7 @@ export class Compositor {
       gl.uniform1f(fp.uRatio, ratio)
       this.fsQuad()
       gl.enable(gl.BLEND)
-      gl.viewport(0, 0, this.width, this.height)
+      gl.viewport(0, 0, this.pw, this.ph)
 
       // smoky halo under the layer, into the current composite destination
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.curFbo)
@@ -740,6 +887,54 @@ export class Compositor {
     gl.useProgram(this.prog)
   }
 
+  // ------------------------------------------------------------ blend modes
+  // J3: the layer (with its effects, frame blend and all) is drawn alone into
+  // its own buffer, the destination is copied, and one pass mixes the two by
+  // the W3C formula (shared/blend.ts). Normal never comes here.
+
+  /** Draw what `draw` draws, composited onto the current destination with `mode` */
+  drawBlended(mode: BlendMode, draw: () => void) {
+    const gl = this.gl
+    const size = this.pw * 65536 + this.ph
+    if (!this.blendBufs || this.blendBufs.size !== size) {
+      if (this.blendBufs) for (const o of [this.blendBufs.src, this.blendBufs.dst]) {
+        gl.deleteFramebuffer(o.fbo)
+        gl.deleteTexture(o.tex)
+      }
+      this.blendBufs = { src: this.makeFbo(this.pw, this.ph), dst: this.makeFbo(this.pw, this.ph), size }
+    }
+    const { src, dst } = this.blendBufs
+    const dest = this.curFbo
+    this.curFbo = src.fbo
+    gl.bindFramebuffer(gl.FRAMEBUFFER, src.fbo)
+    gl.clearColor(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    draw()
+    this.curFbo = dest
+    // the backdrop: a blit converts the canvas's RGB (alpha: false) to RGBA with alpha 1
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, dest)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fbo)
+    gl.blitFramebuffer(0, 0, this.pw, this.ph, 0, 0, this.pw, this.ph, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dest)
+    if (!this.blendProg) {
+      const prog = this.buildProgram(TRANS_VS, BLEND_FS)
+      gl.useProgram(prog)
+      gl.uniform1i(gl.getUniformLocation(prog, 'uSrc'), 0)
+      gl.uniform1i(gl.getUniformLocation(prog, 'uDst'), 1)
+      this.blendProg = { prog, uBlend: gl.getUniformLocation(prog, 'uBlend')! }
+    }
+    gl.useProgram(this.blendProg.prog)
+    gl.uniform1i(this.blendProg.uBlend, blendIndex(mode))
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_2D, dst.tex)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, src.tex)
+    gl.blendFuncSeparate(gl.ONE, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    this.fsQuad()
+    gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    gl.useProgram(this.prog)
+  }
+
   private fsQuad() {
     const gl = this.gl
     const data = new Float32Array([
@@ -770,7 +965,7 @@ export class Compositor {
 
   private ensureFx() {
     const gl = this.gl
-    const size = this.width * 65536 + this.height
+    const size = this.pw * 65536 + this.ph
     if (this.fx && this.fxSize === size) return
     if (this.fx) {
       for (const o of [this.fx.layer, this.fx.field, this.fx.blur]) {
@@ -778,12 +973,12 @@ export class Compositor {
         gl.deleteTexture(o.tex)
       }
     }
-    const fw = Math.max(2, Math.round(this.width / 4))
-    const fh = Math.max(2, Math.round(this.height / 4))
+    const fw = Math.max(2, Math.round(this.pw / 4))
+    const fh = Math.max(2, Math.round(this.ph / 4))
     this.fx = {
-      layer: this.makeFbo(this.width, this.height),
+      layer: this.makeFbo(this.pw, this.ph),
       field: this.makeFbo(fw, fh),
-      blur: this.makeFbo(this.width, this.height),
+      blur: this.makeFbo(this.pw, this.ph),
       fw, fh
     }
     this.fxSize = size
@@ -847,7 +1042,7 @@ export class Compositor {
 
   private ensureOverlays() {
     const gl = this.gl
-    const size = this.width * 65536 + this.height
+    const size = this.pw * 65536 + this.ph
     if (this.overlays.length === 3 && this.overlaySize === size) return
     for (const o of this.overlays) {
       gl.deleteFramebuffer(o.fbo)
@@ -858,7 +1053,7 @@ export class Compositor {
     for (let i = 0; i < 3; i++) {
       const tex = gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, tex)
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.width, this.height, 0,
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.pw, this.ph, 0,
         gl.RGBA, gl.UNSIGNED_BYTE, null)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
@@ -881,7 +1076,7 @@ export class Compositor {
       try {
         prog = this.buildProgram(TRANS_VS, transFS(transitionGlsl(type)))
       } catch (err) {
-        logError('эффекты', `переход «${type}» не компилируется`, err)
+        logError(tr('lgEffects'), trf('lmTransitionFail', { type }), err)
         prog = this.buildProgram(TRANS_VS, transFS(transitionGlsl('crossfade')))
       }
       gl.useProgram(prog)
@@ -908,7 +1103,7 @@ export class Compositor {
       try {
         prog = this.buildProgram(TRANS_VS, edgeFS(edgeGlsl(type)))
       } catch (err) {
-        logError('эффекты', `краевой эффект «${type}» не компилируется`, err)
+        logError(tr('lgEffects'), trf('lmEdgeFail', { type }), err)
         prog = this.buildProgram(TRANS_VS, edgeFS(edgeGlsl('blurZoomIn')))
       }
       gl.useProgram(prog)
@@ -941,6 +1136,43 @@ export class Compositor {
       this.gl.deleteTexture(e.tex)
       this.textures.delete(cacheKey)
     }
+  }
+
+  /** J2: upload a LUT once (half-float, linear filtering at texel centres) and bind it */
+  private bindLut(lut: LayerDraw['lut']) {
+    const gl = this.gl
+    const t = lut && lut.mix > 0 ? lut.table : undefined
+    gl.uniform1i(this.uLut.on, t ? t.dim : 0)
+    if (!t) return
+    this.lutTexture(t, t.dim === 3 ? LUT3_UNIT : LUT1_UNIT, this.luts)
+    gl.uniform3f(this.uLut.min, t.domainMin[0], t.domainMin[1], t.domainMin[2])
+    gl.uniform3f(this.uLut.scale, 1 / (t.domainMax[0] - t.domainMin[0]), 1 / (t.domainMax[1] - t.domainMin[1]), 1 / (t.domainMax[2] - t.domainMin[2]))
+    gl.uniform1f(this.uLut.size, t.size)
+    gl.uniform1f(this.uLut.mix, Math.min(1, lut!.mix))
+  }
+
+  /** bind table `t` on texture unit `unit`, uploading it once into `cache` */
+  private lutTexture(t: CubeLut, unit: number, cache: Map<CubeLut, WebGLTexture>) {
+    const gl = this.gl
+    const target = t.dim === 3 ? gl.TEXTURE_3D : gl.TEXTURE_2D
+    gl.activeTexture(gl.TEXTURE0 + unit)
+    let tex = cache.get(t)
+    if (tex) gl.bindTexture(target, tex)
+    else {
+      tex = gl.createTexture()!
+      gl.bindTexture(target, tex)
+      for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(target, p, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+      if (t.dim === 3) gl.texImage3D(target, 0, gl.RGB16F, t.size, t.size, t.size, 0, gl.RGB, gl.FLOAT, t.data)
+      else gl.texImage2D(target, 0, gl.RGB16F, t.size, 1, 0, gl.RGB, gl.FLOAT, t.data)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+      cache.set(t, tex)
+    }
+    this.tableUse.set(tex, this.frame)
+    gl.activeTexture(gl.TEXTURE0)
   }
 
   private getTexture(key: string): TexEntry {
@@ -986,6 +1218,7 @@ export class Compositor {
     const gl = this.gl
     if (!gl.isContextLost()) {
       for (const entry of this.textures.values()) gl.deleteTexture(entry.tex)
+      for (const tex of [...this.luts.values(), ...this.curveTex.values()]) gl.deleteTexture(tex)
       for (const o of this.overlays) {
         gl.deleteFramebuffer(o.fbo)
         gl.deleteTexture(o.tex)
@@ -996,10 +1229,16 @@ export class Compositor {
           gl.deleteTexture(o.tex)
         }
       }
+      if (this.blendBufs) {
+        for (const o of [this.blendBufs.src, this.blendBufs.dst]) {
+          gl.deleteFramebuffer(o.fbo)
+          gl.deleteTexture(o.tex)
+        }
+      }
       for (const b of this.pbos) if (b) gl.deleteBuffer(b)
       gl.deleteBuffer(this.vbo)
       for (const t of this.transProgs.values()) gl.deleteProgram(t.prog)
-      for (const prog of [this.prog, this.blitProg, this.blurProg?.prog, this.fieldProg?.prog, this.glowProg?.prog]) {
+      for (const prog of [this.prog, this.blitProg, this.blurProg?.prog, this.fieldProg?.prog, this.glowProg?.prog, this.blendProg?.prog]) {
         if (prog) gl.deleteProgram(prog)
       }
       // the extension is what actually frees the context; the deletes above
@@ -1007,11 +1246,16 @@ export class Compositor {
       gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
     this.textures.clear()
+    this.luts.clear()
+    this.curveTex.clear()
+    this.tableUse.clear()
     this.transProgs.clear()
     this.overlays = []
     this.overlaySize = 0
     this.fx = null
     this.fxSize = 0
+    this.blendBufs = null
+    this.blendProg = null
     this.pbos = [null, null]
     this.blitProg = null
     this.blurProg = null
@@ -1024,6 +1268,60 @@ function hexToRgb(hex: string | undefined): [number, number, number] {
   const v = parseInt((hex ?? '#000000').replace('#', ''), 16)
   if (!Number.isFinite(v)) return [0, 0, 0]
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255]
+}
+
+/** the part of a layer that decides where it lands on the frame */
+export type LayerGeom = Pick<LayerDraw, 'srcWidth' | 'srcHeight' | 'fit' | 'flipX' | 'flipY' | 'x' | 'y' | 'scale' | 'rotation' | 'rotX' | 'rotY' | 'z' | 'outer'>
+
+/** the layer's drawn size in project px before rotation: the source fitted
+    into the frame (contain / cover / stretch), times the clip scale */
+export function fitSize(l: Pick<LayerGeom, 'srcWidth' | 'srcHeight' | 'fit' | 'scale'>, width: number, height: number): [number, number] {
+  if (l.fit === 'stretch') return [width * l.scale, height * l.scale]
+  const fit = (l.fit === 'cover' ? Math.max : Math.min)(width / l.srcWidth, height / l.srcHeight) * l.scale
+  return [l.srcWidth * fit, l.srcHeight * fit]
+}
+
+/**
+ * Where a layer's corners land, in project pixels — THE geometry the
+ * compositor draws with, and the one the preview gizmo draws its box from.
+ * Corners TL, BL, TR, BR (the triangle strip's order); `sub` picks a part of
+ * the layer in uv (a text layer's ink), `w` is the clip-space w.
+ */
+export function layerQuad(
+  l: LayerGeom, width: number, height: number, sub: [number, number, number, number] = [0, 0, 1, 1]
+): { sx: number; sy: number; u: number; v: number; w: number }[] {
+  const [w, h] = fitSize(l, width, height)
+  // a flip mirrors where a uv lands, not the uv — so crop and masks follow
+  const mx = l.flipX ? -1 : 1
+  const my = l.flipY ? -1 : 1
+  const clipRot = makeRot3(l.rotation, l.rotX ?? 0, l.rotY ?? 0)
+  const outer = l.outer
+  const outerRot = outer ? makeRot3(outer.rotation, outer.rotX, outer.rotY) : null
+  const focal = Math.max(width, height) * 1.2
+  const [u0, v0, u1, v1] = sub
+  return [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(([u, v]) => {
+    // clip transform: 3D rotation around the layer center, then offset
+    let P = rotApply(clipRot, mx * (u - 0.5) * w, my * (v - 0.5) * h, 0)
+    P[0] += l.x
+    P[1] += l.y
+    P[2] += l.z ?? 0
+    // whole-track motion around the project center
+    if (outer && outerRot) {
+      P[0] *= outer.scale
+      P[1] *= outer.scale
+      P[2] *= outer.scale
+      P = rotApply(outerRot, P[0], P[1], P[2])
+      P[0] += outer.x
+      P[1] += outer.y
+      P[2] += outer.z
+    }
+    // perspective projection; the clip-space w must be proportional to
+    // the eye depth (f+z)/f — not its inverse — or the GPU interpolates
+    // the texture with inverted weights and the quad warps internally
+    const wclip = Math.max(0.05, (focal + P[2]) / focal)
+    const pw = 1 / wclip
+    return { sx: width / 2 + P[0] * pw, sy: height / 2 + P[1] * pw, u, v, w: wclip }
+  })
 }
 
 /** Row-major 3×3 rotation: Ry, then Rx, then Rz (angles in degrees). */

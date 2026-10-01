@@ -4,11 +4,30 @@
 // text to the renderer. One job at a time.
 import { app, ipcMain, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
-import { promises as fs } from 'fs'
+import { promises as fs, existsSync } from 'fs'
+import { saidError } from '@shared/said'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { ExportMuxer, mixdownWav } from './ffmpeg'
+import { resolveSpeechPython, pyLabel, type SpeechPython } from './speechPython'
+import { setting } from './appSettings'
 import type { TranscribeRequest, TranscribeResult, TranscribeSegment } from '@shared/types'
+
+// resolved once per launch; a miss is not cached, so installing faster-whisper
+// needs no restart
+// «Инструменты» → Python for speech (env KADR_PYTHON wins); a changed value resolves afresh
+let resolved: Promise<SpeechPython> | null = null
+let resolvedFor = ''
+export function speechPython(): Promise<SpeechPython> {
+  const want = setting<string>('tools.speechPython')
+  if (!resolved || resolvedFor !== want) {
+    const r = resolveSpeechPython({ env: { ...process.env, KADR_PYTHON: want }, platform: process.platform, appPath: app.getAppPath() })
+    resolved = r
+    resolvedFor = want
+    void r.then((v) => { if ('error' in v && resolved === r) resolved = null })
+  }
+  return resolved
+}
 
 let current: { muxer: ExportMuxer | null; py: ChildProcess | null; cancelled: boolean } | null = null
 
@@ -28,17 +47,25 @@ async function run(win: BrowserWindow, req: TranscribeRequest): Promise<Transcri
     if (job.cancelled) throw new Error('cancelled')
 
     // 2) whisper
+    const python = await speechPython()
+    if ('error' in python) throw new Error(python.error)
+    if (job.cancelled) throw new Error('cancelled')
+    let device = python.device
     const segments: TranscribeSegment[] = []
     let language = req.language
     let liveText = ''
+    const script = join(app.getAppPath(), 'scripts', 'transcribe.py')
+    if (!existsSync(script)) throw saidError('eDrvMissing', { path: script })
     await new Promise<void>((resolve, reject) => {
-      const py = spawn('python3', [
-        join(app.getAppPath(), 'scripts', 'transcribe.py'),
+      const py = spawn(python.command, [
+        ...python.args,
+        script,
         '--audio', wav,
         '--model', req.model,
         '--language', req.language,
         '--duration', String(req.duration)
-      ], { stdio: ['ignore', 'pipe', 'pipe'] })
+        // utf-8 pipes: on Windows python writes the ANSI code page and every word arrived as U+FFFD
+      ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } })
       job.py = py
       let buf = ''
       let err = ''
@@ -61,17 +88,22 @@ async function run(win: BrowserWindow, req: TranscribeRequest): Promise<Transcri
           } catch { /* partial line */ }
         }
       })
-      py.stderr.on('data', (c) => { err += c })
+      py.stderr.on('data', (c) => {
+        err += c
+        // transcribe.py names the device it really ran on (a failed CUDA load
+        // or kernel falls back to the CPU); the last one said wins
+        for (const m of String(c).matchAll(/whisper: (cuda|cpu)\//g)) device = m[1] as 'cuda' | 'cpu'
+      })
       py.on('error', reject)
       py.on('close', (code) => {
         job.py = null
         if (job.cancelled) reject(new Error('cancelled'))
         else if (code === 0) resolve()
-        else reject(new Error(err.slice(0, 800) || `transcribe.py exited ${code}`))
+        else reject(new Error(err.slice(-800) || `transcribe.py exited ${code}`))
       })
     })
     send(1, '')
-    return { segments, language, duration: req.duration }
+    return { segments, language, duration: req.duration, python: pyLabel(python), device }
   } finally {
     current = null
     fs.unlink(wav).catch(() => { /* never created */ })
@@ -84,6 +116,7 @@ export function registerTranscribeIpc(getWin: () => BrowserWindow | null) {
     if (!win) throw new Error('no window')
     return run(win, req)
   })
+  ipcMain.handle('speech:python', () => speechPython())
   ipcMain.handle('transcribe:cancel', () => {
     if (!current) return
     current.cancelled = true

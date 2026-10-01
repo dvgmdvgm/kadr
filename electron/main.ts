@@ -1,26 +1,42 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard } from 'electron'
-import { join, dirname, basename } from 'path'
+import { app, BrowserWindow, ipcMain, dialog, protocol, net, clipboard, shell, powerSaveBlocker } from 'electron'
+import { join, dirname, basename, extname } from 'path'
 import { promises as fs, createReadStream, statSync, existsSync, appendFileSync } from 'fs'
-import { tmpdir } from 'os'
 import { createHash, randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import {
-  probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan,
-  ExportMuxer, RawVideoEncoder, meanVolume, probeBasic
+  probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan, probeColorTags,
+  ExportMuxer, RawVideoEncoder, meanVolume, detectScenes, probeBasic, configureFfmpeg, detectEncoders,
+  makeSequence, sequenceHasAlpha, makeDenoised, configureDenoiser
 } from './ffmpeg'
-import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
+import { scanMedia } from './mediaScan'
+import { frameOf } from '@shared/sequences'
+import { rawCodec, rawTempExt, seqPattern, isSeqFrame } from '@shared/rawEncode'
+import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix, DENOISE_SUFFIX, denoiseName } from './cacheKeys'
 import { registerStorageIpc } from './storage'
-import { registerClaudeIpc } from './claude'
+import { registerMediaStatIpc } from './mediaStat'
+import { registerClaudeIpc, sweepStaleSessions } from './claude'
 import { takeTranscripts, withTranscripts } from './chats'
+import { copyCollect, planCollect } from './collect'
+import { loadResolved, saveRelative } from '@shared/projectPaths'
 import { registerTranscribeIpc } from './transcribe'
 import { registerTtsIpc } from './tts'
 import { registerVoiceIpc } from './voice'
 import { registerEnvelopeIpc } from './envelope'
 import { registerSoundsIpc } from './sounds'
-import { registerFragmentIpc, cancelFragmentRenders, stopAllCaptures } from './fragments'
+import { registerFragmentIpc, cancelFragmentRenders, stopAllCaptures, sweepRenderScratch } from './fragments'
 import { applyGpuChoice, registerGpuIpc } from './gpu'
 import { registerModelIpc } from './models'
 import { sourceHdr, hdrLut, hdrFilter, fragmentMedia } from './hdr'
+import { proxyColour } from '@shared/streamColour'
+import { uriListToPaths, readWinFileDrop } from './clipboardFiles'
+import { atomicWrite, sweepPartSidecars } from './atomicWrite'
+import { beginSession, endSession, registerBackupIpc, writeBackup } from './backups'
+import { argvProject } from '@shared/argvProject'
+import { templateOf, templateFileName } from '@shared/template'
+import { FONT_FILE } from '@shared/fontName'
+import type { SettingsStore } from './settings'
+import { appSettings, cacheDir, setting, tempDir } from './appSettings'
+import { probeTool } from './toolCheck'
 import type { ExportJob, Project } from '@shared/types'
 
 // Streamed local media under a privileged scheme so the renderer can play
@@ -42,6 +58,23 @@ protocol.registerSchemesAsPrivileged([
 // (sweepStaleSessions matches helper processes by paths under userData) must
 // never reach the other instance's. Must run before anything reads the path.
 if (process.env.KADR_USER_DATA) app.setPath('userData', process.env.KADR_USER_DATA)
+
+// One editor per userData: two would write over each other's project, stores
+// and autosaves. The lock is keyed by the userData path (so a KADR_USER_DATA
+// sandbox runs next to a live Kadr) and is OS-level — it dies with the process.
+// A second launch hands its argv to the first and quits; a .kadr in it is
+// opened there through the unsaved question (App.tsx, onOpenProject).
+if (!app.requestSingleInstanceLock()) app.exit(0)
+/** a .kadr from the launch argv, handed to the page once it asks */
+let pendingOpen = argvProject(process.argv)
+app.on('second-instance', (_e, argv) => {
+  const path = argvProject(argv)
+  if (!win || win.isDestroyed()) { pendingOpen = path ?? pendingOpen; return }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  if (path) win.webContents.send('app:open-project', path)
+})
 
 // the discrete GPU when there is one (electron/gpu.ts) — before 'ready'
 applyGpuChoice()
@@ -81,8 +114,19 @@ process.on('uncaughtException', (err) => {
 })
 
 let win: BrowserWindow | null = null
-/** window.open name of the detached preview — see src/engine/popout.ts */
-const PREVIEW_WIN = 'kadr-preview'
+// Closing the window with unsaved work asks the page first (src/App.tsx,
+// confirmDiscard). closeGuard: the page has its answer handler up — a page that
+// never loaded or was reloaded has none, and must not make the window unclosable;
+// a crashed or hung renderer is not asked either (the force-exit failsafe below).
+let closeAllowed = false
+let closeGuard = false
+let unresponsive = false
+let quitAfterClose = false
+const mustAsk = () => !!win && !win.isDestroyed() && !closeAllowed && closeGuard &&
+  !unresponsive && !win.webContents.isCrashed()
+/** window.open names of the popups the page may open: the detached preview, the
+    scopes (J8) and the mixer (K12) — see src/engine/popout.ts */
+const POPUP_WINS = new Set(['kadr-preview', 'kadr-scopes', 'kadr-mixer'])
 
 function createWindow() {
   win = new BrowserWindow({
@@ -104,13 +148,30 @@ function createWindow() {
   })
   win.setMenuBarVisibility(false)
   const owner = win
+  // K8: the microphone, for the editor's own top document only, audio only.
+  // Fragment pages run inside this same webContents (iframes from the
+  // workspace dev server) and get no capture. Every other permission keeps
+  // Electron's no-handler behaviour, which grants it.
+  win.webContents.session.setPermissionRequestHandler((wc, perm, cb, details) => {
+    if (perm !== 'media') { cb(true); return }
+    const d = details as { isMainFrame?: boolean; mediaTypes?: string[] }
+    cb(wc === owner.webContents && !!d.isMainFrame && !(d.mediaTypes ?? []).includes('video'))
+  })
+  closeAllowed = closeGuard = unresponsive = false
+  win.on('close', (e) => {
+    if (!mustAsk()) return
+    e.preventDefault()
+    owner.webContents.send('app:close-request')
+  })
+  win.on('unresponsive', () => { unresponsive = true })
+  win.on('responsive', () => { unresponsive = false })
   // A reload of the editor page forgets which fragment capture windows it
   // asked for, but main keeps them — found as windows of a project closed
   // hours earlier, still rendering 60 frames a second offscreen. The new page
   // starts the ones it wants again. Only the top document counts: the
   // fragment iframes navigate inside this same webContents all the time.
   win.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) stopAllCaptures()
+    if (details.isMainFrame && !details.isSameDocument) { stopAllCaptures(); closeGuard = false }
   })
   // The preview can be detached into a window of its own (src/engine/popout.ts).
   // The renderer opens an about:blank popup — same origin and same renderer
@@ -120,7 +181,7 @@ function createWindow() {
   // run inside this webContents too, and nothing they contain has any business
   // opening an OS window.
   win.webContents.setWindowOpenHandler(({ frameName }) => {
-    if (frameName !== PREVIEW_WIN) return { action: 'deny' }
+    if (!POPUP_WINS.has(frameName)) return { action: 'deny' }
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
@@ -134,14 +195,15 @@ function createWindow() {
     }
   })
   win.webContents.on('did-create-window', (child, { frameName }) => {
-    if (frameName !== PREVIEW_WIN) return
+    if (!POPUP_WINS.has(frameName)) return
     child.setMenuBarVisibility(false)
     child.removeMenu()
     // closing the editor must not leave the preview window behind: while one
     // is open window-all-closed never fires and the app would never quit
     const closeChild = () => { if (!child.isDestroyed()) child.destroy() }
-    owner.on('close', closeChild)
-    child.on('closed', () => owner.isDestroyed() || owner.removeListener('close', closeChild))
+    // 'closed', not 'close': a close the user cancels (unsaved work) keeps both
+    owner.on('closed', closeChild)
+    child.on('closed', () => owner.isDestroyed() || owner.removeListener('closed', closeChild))
   })
   // a killed/crashed renderer leaves a dead window and an immortal main
   // process (the running project is lost either way — autosave has it);
@@ -249,7 +311,15 @@ function mediaResponse(filePath: string, rangeHeader: string | null): Response {
   })
 }
 
+// the ffmpeg module is electron-free (node checks bundle it): hand it the settings
+const syncFfmpeg = () => configureFfmpeg({ ffmpeg: setting('tools.ffmpeg'), ffprobe: setting('tools.ffprobe'), tmp: tempDir() })
+
+// read before any window exists (shared/settings.ts, the diff in userData/settings.json)
+let settings: SettingsStore
+
 app.whenReady().then(() => {
+  settings = appSettings()
+  syncFfmpeg()
   protocol.handle('kadr', (request) => {
     const url = new URL(request.url)
     if (url.searchParams.get('t') !== MEDIA_TOKEN) {
@@ -265,20 +335,26 @@ app.whenReady().then(() => {
       return new Response('not found', { status: 404 })
     }
   })
+  beginSession()
   registerIpc()
+  registerBackupIpc()
   void pruneDecodedCache()
   void sweepPartFiles()
-  registerClaudeIpc(() => win)
+  registerClaudeIpc(() => win, settings)
   registerTranscribeIpc(() => win)
   registerTtsIpc(() => win)
   registerVoiceIpc(() => win)
   registerEnvelopeIpc()
   registerSoundsIpc()
   registerStorageIpc()
+  registerMediaStatIpc()
   registerGpuIpc()
   registerModelIpc()
   registerFragmentIpc(() => win)
   createWindow()
+  // leftovers of a hard-killed run: its helper processes, then the render temp they held.
+  // After the page loads — on Windows the listing is a PowerShell cold start (0.3–1 s).
+  win?.webContents.once('did-finish-load', () => { void sweepStaleSessions().then(sweepRenderScratch) })
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -286,6 +362,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    endSession()   // a clean exit: no restore offer next time (a crash never gets here)
     app.quit()
     // an in-flight export/muxer or any stray handle must never keep a
     // windowless process alive — a lingering instance blocks the next
@@ -294,7 +371,15 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', (e) => {
+  // a quit (tray, Cmd+Q, OS) goes through the window's question too; nothing
+  // is cancelled until the page said yes
+  if (mustAsk()) {
+    e.preventDefault()
+    quitAfterClose = true
+    win!.close()
+    return
+  }
   exportState?.muxer?.cancel()
   cancelFragmentRenders()
   void cleanupExport()
@@ -303,7 +388,7 @@ app.on('before-quit', () => {
 // ---------------------------------------------------------------------------
 
 const MEDIA_FILTERS = [
-  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'srt', 'txt', 'stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
+  { name: 'Media', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v', 'mts', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'opus', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif', 'exr', 'tif', 'tiff', 'dpx', 'tga', 'srt', 'txt', 'stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
   { name: '3D (STL, 3MF, STEP, OBJ, glTF)', extensions: ['stl', '3mf', 'obj', 'glb', 'gltf', 'step', 'stp'] },
   { name: 'All files', extensions: ['*'] }
 ]
@@ -324,6 +409,11 @@ let exportState: {
   rawErr: Error | null
 } | null = null
 
+/** the last finished export — the only file «Показать в папке» / «Открыть» may touch (the page is scriptable) */
+let lastExport: string | null = null
+/** powerSaveBlocker id while an export runs; null = not held */
+let awakeId: number | null = null
+
 function sendProgress(p: import('@shared/types').ExportProgress) {
   win?.webContents.send('export:progress', p)
 }
@@ -334,13 +424,13 @@ const userStorePath = (name: string) =>
   join(app.getPath('userData'), `${name.replace(/[^a-z0-9-]/gi, '')}.json`)
 
 // preview proxies: keyed by source identity, built one at a time (weak CPU)
-const proxyDir = () => join(app.getPath('userData'), 'proxies')
+const proxyDir = () => cacheDir('proxies')
 let proxyChain: Promise<unknown> = Promise.resolve()
 
 async function requestProxy(
   srcPath: string,
   duration: number,
-  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string; rebuild?: boolean }
 ): Promise<string> {
   const stat = statSync(srcPath)
   // an HDR source is tone-mapped to SDR in its proxy (electron/hdr.ts)
@@ -350,6 +440,8 @@ async function requestProxy(
   const key = mediaCacheKey(srcPath, stat.size, stat.mtimeMs, proxySuffix(opts?.alpha, !!hdr))
   const ext = opts?.alpha ? 'webm' : 'mp4'
   const out = join(proxyDir(), `${key}.${ext}`)
+  // «Пересобрать прокси» (H7): the cached copy goes first
+  if (opts?.rebuild) await fs.rm(out, { force: true })
   try {
     await fs.access(out)
     return out
@@ -362,9 +454,16 @@ async function requestProxy(
     } catch { /* still missing */ }
     const tmp = join(proxyDir(), `${key}.part.${ext}`)
     try {
+      // an H.264 proxy is tagged with the space the preview shows its SOURCE in (J11);
+      // the alpha proxy (VP9) stays as it was
+      let colour = null
+      if (!opts?.alpha) {
+        const t = await probeColorTags(srcPath)
+        colour = proxyColour({ codec: t.codec, height: t.height, space: t.matrix, primaries: t.primaries, transfer: t.transfer, hdr: !!hdr })
+      }
       await makeProxy(srcPath, tmp, duration, (p) => {
         win?.webContents.send('proxy:progress', { path: srcPath, progress: p })
-      }, opts)
+      }, { ...opts, colour })
       await fs.rename(tmp, out)
     } catch (err) {
       fs.unlink(tmp).catch(() => { /* nothing to clean */ })
@@ -380,7 +479,7 @@ async function requestProxy(
 // full-res H.264 intermediates for sources Chromium cannot decode (export
 // reads these instead of the original video stream; audio still reads the
 // original). Same identity key and queue discipline as proxies.
-const decodedDir = () => join(app.getPath('userData'), 'decoded')
+const decodedDir = () => cacheDir('decoded')
 let decodedChain: Promise<unknown> = Promise.resolve()
 
 async function requestDecoded(
@@ -445,6 +544,44 @@ async function requestDecoded(
   return out
 }
 
+// K9: denoised copies of sources (afftdn, electron/ffmpeg.ts makeDenoised) — the
+// preview plays one in place of the source and the export mixes the same file.
+// REBUILDABLE like a proxy: named after the source and the strength, built into
+// a `.part` sidecar, one at a time.
+const denoisedDir = () => cacheDir('denoised')
+let denoiseChain: Promise<unknown> = Promise.resolve()
+const denoiseJobs = new Map<string, Promise<string>>()
+
+function ensureDenoised(srcPath: string, nr: number): Promise<string> {
+  const stat = statSync(srcPath)
+  const key = denoiseName(mediaCacheKey(srcPath, stat.size, stat.mtimeMs, DENOISE_SUFFIX), nr)
+  const out = join(denoisedDir(), `${key}.flac`)
+  let job = denoiseJobs.get(out)
+  if (job) return job
+  job = (async () => {
+    try {
+      if ((await fs.stat(out)).size > 0) return out
+    } catch { /* not built yet */ }
+    await fs.mkdir(denoisedDir(), { recursive: true })
+    const run = denoiseChain.then(async () => {
+      const tmp = join(denoisedDir(), `${key}.part.flac`)
+      try {
+        await makeDenoised(srcPath, tmp, nr)
+        await fs.rename(tmp, out)
+      } catch (err) {
+        fs.unlink(tmp).catch(() => { /* nothing to clean */ })
+        throw err
+      }
+    })
+    denoiseChain = run.catch(() => { /* keep the queue alive */ })
+    await run
+    return out
+  })().finally(() => denoiseJobs.delete(out))
+  denoiseJobs.set(out, job)
+  return job
+}
+configureDenoiser(ensureDenoised)
+
 /**
  * Keep the decode cache from eating the disk. A lossless colour+matte
  * intermediate costs ~250 MB per minute of 1080p60 and every edit of a
@@ -452,9 +589,9 @@ async function requestDecoded(
  * startup only — nothing can be reading these files yet — and drops the
  * least recently touched entries until the folder is back under the cap.
  */
-const DECODED_CACHE_CAP = 10e9
-
 async function pruneDecodedCache(): Promise<void> {
+  // «Хранилище и кэш» → the decoded cap (GB)
+  const DECODED_CACHE_CAP = setting<number>('storage.decodedCapGB') * 1e9
   try {
     const dir = decodedDir()
     const names = await fs.readdir(dir)
@@ -484,8 +621,7 @@ async function pruneDecodedCache(): Promise<void> {
  * Directories (the reverse worker's scratch `.tmp` dir) are left alone.
  */
 async function sweepPartFiles(): Promise<void> {
-  const dirs = ['decoded', 'proxies', 'reversed', 'fragment-renders']
-    .map((d) => join(app.getPath('userData'), d))
+  const dirs = [...['decoded', 'proxies', 'fragment-renders', 'denoised'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
   let dropped = 0
   for (const dir of dirs) {
     let names: string[]
@@ -571,13 +707,13 @@ async function rememberDir(kind: string, filePath: string) {
       data = JSON.parse(await fs.readFile(userStorePath(DIRS_STORE), 'utf8'))
     } catch { /* fresh store */ }
     data[kind] = dirname(filePath)
-    await fs.writeFile(userStorePath(DIRS_STORE), JSON.stringify(data, null, 1))
+    await atomicWrite(userStorePath(DIRS_STORE), JSON.stringify(data, null, 1))
   } catch { /* best effort */ }
 }
 
 function registerIpc() {
   ipcMain.handle('proxy:request', (_e, srcPath: string, duration: number,
-    opts?: { alpha?: boolean; codec?: string }) =>
+    opts?: { alpha?: boolean; codec?: string; rebuild?: boolean }) =>
     requestProxy(srcPath, duration, opts)
   )
 
@@ -590,8 +726,14 @@ function registerIpc() {
     measureLoudness(srcPath, start, duration)
   )
 
+  ipcMain.handle('audio:denoise', (_e, srcPath: string, nr: number) => ensureDenoised(String(srcPath), Number(nr)))
+
   ipcMain.handle('media:mean-volume', (_e, srcPath: string, start: number, duration: number) =>
     meanVolume(srcPath, start, duration)
+  )
+
+  ipcMain.handle('media:scenes', (_e, srcPath: string, start: number, duration: number, threshold?: number) =>
+    detectScenes(srcPath, start, duration, threshold)
   )
 
   ipcMain.handle(
@@ -610,7 +752,33 @@ function registerIpc() {
   })
 
   ipcMain.handle('store:write', async (_e, name: string, data: unknown) => {
-    await fs.writeFile(userStorePath(name), JSON.stringify(data, null, 1))
+    const p = userStorePath(name)
+    // the renderer logs this: it names the store's file, not the .part sidecar
+    await atomicWrite(p, JSON.stringify(data, null, 1)).catch((err: NodeJS.ErrnoException) => {
+      throw new Error(`${p}: ${err.code ?? err.message}`)
+    })
+  })
+
+  // project templates (card H3): userData/templates/<name>.kadr, structure only
+  const templatesDir = () => join(app.getPath('userData'), 'templates')
+  ipcMain.handle('template:list', async () => {
+    let names: string[]
+    try { names = (await fs.readdir(templatesDir())).filter((n) => /\.kadr$/i.test(n)) } catch { return [] }
+    const out: { name: string; project: Project }[] = []
+    for (const n of names) {
+      try {
+        const project = JSON.parse(await fs.readFile(join(templatesDir(), n), 'utf8'))
+        if (Array.isArray(project?.tracks)) out.push({ name: n.slice(0, -5), project })
+      } catch { /* not a project: not a template either */ }
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name))
+  })
+  ipcMain.handle('template:save', async (_e, name: string, project: Project) => {
+    const file = templateFileName(String(name ?? ''))
+    await fs.mkdir(templatesDir(), { recursive: true })
+    // stripped here too: whatever the (scriptable) page sends, no media lands in a template
+    await atomicWrite(join(templatesDir(), file + '.kadr'), JSON.stringify(templateOf(project), null, 1))
+    return file
   })
 
   ipcMain.handle('media:open-dialog', async () => {
@@ -625,6 +793,25 @@ function registerIpc() {
   })
 
   ipcMain.on('media:token', (e) => { e.returnValue = MEDIA_TOKEN })
+  // sync on purpose: the renderer's store is built from it before the first frame
+  ipcMain.on('settings:get', (e) => { e.returnValue = settings.snapshot() })
+  ipcMain.handle('settings:set', async (_e, patch) => { const s = await settings.set(patch); syncFfmpeg(); return s })
+  // «Проверить» next to a tool path: its version line, or why it did not answer
+  ipcMain.handle('settings:probe-tool', (_e, key: string, value: string) => probeTool(String(key), String(value ?? '')))
+  // «Перезапустить Kadr»: the page already asked about unsaved work
+  ipcMain.on('app:relaunch', () => {
+    app.relaunch()
+    closeAllowed = true
+    win?.close()
+  })
+  ipcMain.on('app:close-guard', () => { closeGuard = true })
+  // the launch's own .kadr — handed out once (StrictMode asks twice in dev)
+  ipcMain.handle('app:argv-project', () => { const p = pendingOpen; pendingOpen = null; return p })
+  ipcMain.on('app:close', () => {
+    closeAllowed = true
+    win?.close()
+    if (quitAfterClose) app.quit()
+  })
   ipcMain.handle('media:probe', (_e, path: string) => probeMedia(path))
   ipcMain.handle('media:probe-basic', (_e, path: string) => probeBasic(String(path)))
   ipcMain.handle('media:fragment-media', (_e, path: string, projectDir: string, opts?: { name?: string; maxSide?: number }) =>
@@ -656,6 +843,49 @@ function registerIpc() {
     await fs.rename(out + '.part', out)
     return out
   }
+
+  // Folder import and image sequences (card H6): folders are walked here, never
+  // in the page (10 000 files must not freeze it)
+  ipcMain.handle('media:open-folder-dialog', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      properties: ['openDirectory', 'multiSelections'],
+      defaultPath: await lastDir('media')
+    })
+    if (r.canceled || !r.filePaths.length) return []
+    void rememberDir('media', r.filePaths[0])
+    return r.filePaths
+  })
+  ipcMain.handle('media:scan', (_e, paths: string[]) => scanMedia(paths.map(String)))
+  // A run becomes ONE clip: an intermediate the fast decode path reads, stored
+  // BY PATH like a download (the asset's path IS it — a rebuildable cache that
+  // the Storage panel may clear would take the clip offline with no way back).
+  // Keyed by the run, the fps and the first and last frames' size + mtime.
+  ipcMain.handle('media:sequence', async (_e, run: { pattern: string; first: number; count: number; name: string }, fps: number) => {
+    const firstFile = frameOf(run.pattern, run.first)
+    const [a, b] = await Promise.all([fs.stat(firstFile), fs.stat(frameOf(run.pattern, run.first + run.count - 1))])
+    const alpha = await sequenceHasAlpha(firstFile)
+    const tag = createHash('sha1')
+      .update(JSON.stringify([run.pattern, run.first, run.count, fps, a.size, a.mtimeMs, b.size, b.mtimeMs]))
+      .digest('hex').slice(0, 10)
+    const ext = alpha ? 'webm' : 'mp4'
+    // flat in imported/: the Storage panel attributes each FILE there to the asset whose path it is
+    const dir = await importedDir()
+    const base = String(run.name || 'sequence').replace(/[^\w.-]+/g, '_').replace(/\.[^.]*$/, '').slice(-80)
+    const out = join(dir, `seq-${tag}-${base}.${ext}`)
+    try {
+      if ((await fs.stat(out)).size > 0) return out // the same run at the same fps, built before
+    } catch { /* not built yet */ }
+    const tmp = join(dir, `seq-${tag}-${base}.part.${ext}`)
+    try {
+      await makeSequence(run, fps, tmp, { alpha }, (p) => win?.webContents.send('proxy:progress', { path: run.pattern, progress: p }))
+      await fs.rename(tmp, out)
+    } catch (err) {
+      fs.unlink(tmp).catch(() => { /* nothing to clean */ })
+      throw err
+    }
+    win?.webContents.send('proxy:progress', { path: run.pattern, progress: 1 })
+    return out
+  })
 
   // Media dragged out of a browser arrives as an http(s) URL — download it
   // into userData/imported (cached by URL hash) and let the normal probe
@@ -709,11 +939,13 @@ function registerIpc() {
   ipcMain.handle('media:clipboard-paste', async () => {
     let uriList = ''
     try { uriList = clipboard.read('text/uri-list') || '' } catch { /* format absent */ }
-    const paths: string[] = []
-    for (const line of uriList.split(/\r?\n/)) {
-      const u = line.trim()
-      if (!u.startsWith('file://')) continue
-      try { paths.push(decodeURIComponent(new URL(u).pathname)) } catch { /* malformed */ }
+    let paths = uriListToPaths(uriList)
+    if (!paths.length && process.platform === 'win32' && clipboard.availableFormats().includes('text/uri-list')) {
+      paths = await readWinFileDrop()
+      if (!paths.length) {
+        const first = clipboard.readBuffer('FileNameW').toString('utf16le').replace(/\0+$/, '')
+        if (first) paths = [first]
+      }
     }
     if (paths.length) return paths
     const img = clipboard.readImage()
@@ -755,6 +987,44 @@ function registerIpc() {
     return writeImported(out, buf)
   })
 
+  // K8: a microphone take, a WAV the page encoded. Next to a saved project
+  // (`<project>/media/recordings`, so it travels and is saved relative), else in
+  // userData/recordings — REFERENCED either way: the clip points at this file.
+  ipcMain.handle('media:save-recording', async (_e, data: Uint8Array, projectPath: string | null) => {
+    if (!data?.byteLength) throw new Error('empty recording')
+    const dir = projectPath ? join(dirname(projectPath), 'media', 'recordings') : join(app.getPath('userData'), 'recordings')
+    await fs.mkdir(dir, { recursive: true })
+    const out = join(dir, `take-${new Date().toISOString().replace(/[:.]/g, '-')}.wav`)
+    return writeImported(out, Buffer.from(data.buffer, data.byteOffset, data.byteLength))
+  })
+
+  ipcMain.handle('fonts:lib', async (_e, projectPath: string) => {
+    const dir = join(dirname(projectPath), 'kadr-lib', 'fonts')
+    try { return (await fs.readdir(dir)).filter((f) => FONT_FILE.test(f)).sort().map((f) => join(dir, f)) } catch { return [] }
+  })
+  // J2: a LUT joins the project in kadr-lib/luts so it travels with the folder
+  ipcMain.handle('lut:import', async (_e, src: string, projectPath: string) => {
+    const dir = join(dirname(projectPath), 'kadr-lib', 'luts')
+    await fs.mkdir(dir, { recursive: true })
+    const data = await fs.readFile(src)
+    const ext = extname(src), stem = basename(src, ext)
+    for (let i = 1; ; i++) {
+      const out = join(dir, i === 1 ? stem + ext : `${stem}-${i}${ext}`)
+      const had = await fs.readFile(out).catch(() => null)
+      if (had?.equals(data)) return out
+      if (!had) { await fs.writeFile(out, data); return out }
+    }
+  })
+  ipcMain.handle('lut:open-dialog', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      properties: ['openFile'],
+      defaultPath: await lastDir('lut'),
+      filters: [{ name: 'LUT (.cube)', extensions: ['cube'] }]
+    })
+    if (r.canceled || !r.filePaths[0]) return null
+    void rememberDir('lut', r.filePaths[0])
+    return r.filePaths[0]
+  })
   ipcMain.handle('dialog:pick-dir', async (_e, title?: string) => {
     const r = await dialog.showOpenDialog(win!, {
       title: title || undefined,
@@ -810,27 +1080,42 @@ function registerIpc() {
   })
 
   ipcMain.handle('project:read', async (_e, path: string): Promise<Project> => {
-    return takeTranscripts(JSON.parse(await fs.readFile(path, 'utf-8')))
+    // a save that died mid-write left its full-size sidecar next to the file
+    void sweepPartSidecars(dirname(path), basename(path) + '.part-')
+    // paths inside the project's folder are stored relative to it (H8) — resolved here,
+    // so the renderer only ever holds absolute ones
+    return loadResolved(takeTranscripts(JSON.parse(await fs.readFile(path, 'utf-8'))), path)
   })
 
   ipcMain.handle('project:write', async (_e, path: string, project: Project) => {
-    await fs.writeFile(path, JSON.stringify(await withTranscripts(project), null, 1), 'utf-8')
+    await atomicWrite(path, JSON.stringify(await withTranscripts(saveRelative(project, path), settings.effective('claude.embedChats').value === true), null, 1))
   })
 
-  // periodic safety net: <name>.autosave.kadr next to the saved project
-  // (Downloads for never-saved ones); tmp+rename so a crash mid-write can
-  // never leave a torn file
+  // «Собрать проект» (H8): the plan (sizes, free space) first, then the copy with progress
+  let collecting: { cancelled: boolean } | null = null
+  ipcMain.handle('project:collect-plan', (_e, project: Project, path: string) => planCollect(project, path))
+  ipcMain.handle('project:collect-run', async (_e, project: Project, path: string) => {
+    if (collecting) throw new Error('collect already running')
+    const signal = (collecting = { cancelled: false })
+    try {
+      const plan = await planCollect(project, path)
+      return await copyCollect(plan.items, (p) => win?.webContents.send('project:collect-progress', p), signal)
+    } finally {
+      collecting = null
+    }
+  })
+  ipcMain.handle('project:collect-cancel', () => { if (collecting) collecting.cancelled = true })
+
+  // periodic safety net: a versioned backup in userData/backups (electron/backups.ts),
+  // and <name>.autosave.kadr next to a saved project for those who open it by hand
   ipcMain.handle('project:autosave', async (_e, project: Project, mainPath: string | null) => {
-    const dir = mainPath ? dirname(mainPath) : app.getPath('downloads')
-    const base = mainPath
-      ? basename(mainPath, '.kadr')
-      : (project.name || 'Untitled').replace(/[^\p{L}\p{N}._ -]/gu, '').trim() || 'Untitled'
-    const out = join(dir, `${base}.autosave.kadr`)
-    const tmp = `${out}.tmp`
-    await fs.writeFile(tmp, JSON.stringify(await withTranscripts(project), null, 1), 'utf-8')
-    await fs.rename(tmp, out)
+    const json = JSON.stringify(await withTranscripts(project, settings.effective('claude.embedChats').value === true), null, 1)
+    const out = await writeBackup(json, mainPath, project)
+    if (mainPath) await atomicWrite(join(dirname(mainPath), `${basename(mainPath, '.kadr')}.autosave.kadr`), json)
     return out
   })
+
+  ipcMain.handle('encoders:list', () => detectEncoders())
 
   ipcMain.handle('export:dialog', async (_e, defaultName: string, ext: string) => {
     const r = await dialog.showSaveDialog(win!, {
@@ -844,8 +1129,12 @@ function registerIpc() {
 
   ipcMain.handle('export:begin', async (_e, job: ExportJob) => {
     await cleanupExport()
-    const videoTemp = join(tmpdir(), `kadr-export-${Date.now()}.mp4`)
-    const fh = job.preset.audioOnly ? null : await fs.open(videoTemp, 'w')
+    // a PNG sequence is written where the user asked (numbered) and never muxed
+    const videoTemp = job.preset.container === 'png'
+      ? seqPattern(job.outputPath)
+      : join(tempDir(), `kadr-export-${Date.now()}.${rawTempExt(rawCodec(job.preset))}`)
+    // the fast encoder's chunks land here; a PNG sequence has no single file to open
+    const fh = job.preset.audioOnly || job.preset.container === 'png' ? null : await fs.open(videoTemp, 'w')
     exportState = {
       job, videoTemp, fh, muxer: null, raw: null, rawEncoded: false,
       rawWss: null, rawChain: Promise.resolve(), rawErr: null
@@ -861,7 +1150,7 @@ function registerIpc() {
   // returns a local WebSocket port for the frame stream (0 = use IPC)
   ipcMain.handle('export:raw-begin', async (
     _e, width: number, height: number, fps: number,
-    outWidth?: number, outHeight?: number
+    outWidth?: number, outHeight?: number, alpha?: boolean
   ) => {
     if (!exportState) throw new Error('no export in progress')
     const st = exportState
@@ -872,8 +1161,10 @@ function registerIpc() {
     st.rawEncoded = true
     st.raw.start({
       width, height, outWidth, outHeight, fps,
-      codec: preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo,
-      bitrate: preset.videoBitrate,
+      codec: rawCodec(preset),
+      bitrate: preset.videoBitrate, fit: preset.fit,
+      rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
+      videoCodec: preset.videoCodec, alpha,
       out: st.videoTemp
     })
     try {
@@ -936,14 +1227,22 @@ function registerIpc() {
     const st = exportState
     await st.fh?.close()
     st.fh = null
+    if (st.job.preset.container === 'png') {
+      // the frames ARE the export: done, and kept
+      lastExport = st.videoTemp.replace('%06d', '000001')
+      sendProgress({ phase: 'done', progress: 1 })
+      await cleanupExport(true)
+      return
+    }
     st.muxer = new ExportMuxer()
     try {
       // raw path already produced the final video stream — never re-encode it
       const job = st.rawEncoded
         ? { ...st.job, preset: { ...st.job.preset, ffmpegVideo: 'copy' as const } }
         : st.job
-      await st.muxer.run(job, st.videoTemp, sendProgress)
-      sendProgress({ phase: 'done', progress: 1 })
+      const loudness = await st.muxer.run(job, st.videoTemp, sendProgress)
+      lastExport = st.job.outputPath
+      sendProgress({ phase: 'done', progress: 1, ...(loudness && { loudness }) })
       await cleanupExport()
     } catch (err: any) {
       const cancelled = err?.message === 'cancelled'
@@ -957,6 +1256,18 @@ function registerIpc() {
       })
       await cleanupExport(keep)
     }
+  })
+
+  ipcMain.handle('export:awake', (_e, on?: boolean) => {
+    if (on === true && awakeId === null) awakeId = powerSaveBlocker.start('prevent-app-suspension')
+    if (on === false && awakeId !== null) { powerSaveBlocker.stop(awakeId); awakeId = null }
+    return awakeId !== null && powerSaveBlocker.isStarted(awakeId)
+  })
+
+  ipcMain.handle('export:reveal', async (_e, open: boolean) => {
+    if (!lastExport) return
+    if (open) await shell.openPath(lastExport)
+    else shell.showItemInFolder(lastExport)
   })
 
   ipcMain.handle('export:cancel', async () => {
@@ -976,7 +1287,13 @@ async function cleanupExport(keepVideo = false) {
   st.raw?.kill()
   st.rawWss?.close()
   try { await st.fh?.close() } catch { /* already closed */ }
-  if (!keepVideo) {
+  if (!keepVideo && st.job.preset.container === 'png') {
+    // an unfinished sequence is not an export (the preload's encoder drops what it writes after this)
+    const dir = dirname(st.videoTemp)
+    for (const f of await fs.readdir(dir).catch(() => [])) {
+      if (isSeqFrame(st.videoTemp, f)) await fs.unlink(join(dir, f)).catch(() => { /* taken */ })
+    }
+  } else if (!keepVideo) {
     try { await fs.unlink(st.videoTemp) } catch { /* never created */ }
   }
 }

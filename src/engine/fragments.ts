@@ -4,7 +4,9 @@ import { create } from 'zustand'
 import type { FragmentInfo, Project } from '@shared/types'
 import { dirOf } from '@shared/paths'
 import { useEditor } from '@/state/store'
+import { allTracks } from '@shared/timelines'
 import { logWarn } from './log'
+import { tr } from '../i18n'
 
 interface FragServerState {
   url: string | null
@@ -82,7 +84,7 @@ export async function createFragment(
 export async function syncProjectFragments(project: Project, projectPath: string | null): Promise<void> {
   if (!projectPath) return
   const ids = [...new Set(
-    project.tracks.flatMap((t) => t.clips)
+    allTracks(project).flatMap((t) => t.clips)
       .filter((c) => c.kind === 'remotion' && c.fragmentId)
       .map((c) => c.fragmentId!)
   )]
@@ -91,7 +93,7 @@ export async function syncProjectFragments(project: Project, projectPath: string
     const changed = await window.kadr.fragmentRelocate(dirOf(projectPath), ids)
     if (changed.length) console.info(`[kadr] fragments relocated to the project folder: ${changed.join(', ')}`)
   } catch (err) {
-    logWarn('фрагменты', 'не удалось перенести папки фрагментов к проекту', err)
+    logWarn(tr('lgFragments'), tr('lmFragMoveFail'), err)
   }
 }
 

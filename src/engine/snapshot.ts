@@ -6,14 +6,17 @@
 // This is also the embedded Claude's "eyes": kadr_snapshot returns the PNG
 // path for it to Read.
 import { useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { dirOf } from '@shared/paths'
 import {
   setForceCaptureAll, captureReady, captureTargets, captureVersion, pokeCaptureSync
 } from './fragmentCapture'
 import { ensureFragmentServer } from './fragments'
 import { importFiles } from './mediaImport'
+import { loadLuts } from './lut'
 import { logWarn } from './log'
 import { token } from '@/theme'
+import { trf, tr } from '../i18n'
 
 let previewCanvas: HTMLCanvasElement | null = null
 let previewPlayer: { setSourceQuality(on: boolean): void; drawNow(): void } | null = null
@@ -30,10 +33,10 @@ export function registerPreviewCanvas(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const hasFragmentsNear = (t: number): boolean => {
-  const p = useEditor.getState().project
+  const p = flattenProject(useEditor.getState().project)
   return p.tracks.some(
     (tr) => tr.kind === 'video' && !tr.muted && tr.clips.some(
-      (c) => c.kind === 'remotion' && t >= c.start - 2 && t < c.start + c.duration + 0.75
+      (c) => c.kind === 'remotion' && !c.disabled && t >= c.start - 2 && t < c.start + c.duration + 0.75
     )
   )
 }
@@ -52,7 +55,7 @@ async function snapshotDir(opts: { dir?: string; interactive?: boolean }): Promi
   const pp = useEditor.getState().projectPath
   if (pp) return dirOf(pp)
   if (opts.interactive) {
-    const dir = await window.kadr.pickDirectory('Куда сохранить снимок кадра')
+    const dir = await window.kadr.pickDirectory(tr('eSnPickDir'))
     if (!dir) throw new Error('snapshot cancelled')
     return dir
   }
@@ -93,6 +96,7 @@ async function inShotMode<T>(times: number[], fn: () => Promise<T>): Promise<T> 
 async function settleAt(t: number): Promise<void> {
   const st = () => useEditor.getState()
   if (Math.abs(t - st().playhead) > 1e-9) st().setPlayhead(t)
+  await loadLuts(st().project) // J2
   const forced = hasFragmentsNear(t)
   // give the player a tick to notice the src swaps (previewLoading rises),
   // then wait for seeks + captures, then one idle-draw period (~4 fps)
@@ -148,7 +152,7 @@ async function settleAt(t: number): Promise<void> {
         got: await window.kadr.fragmentCaptureQuery(x.fragmentId),
         v: captureVersion(x.fragmentId)
       })))
-      logWarn('снимок', `фрагменты не успели нарисовать кадр ${t.toFixed(2)} с за 20 с — снимок может быть неполным`, dbg)
+      logWarn(tr('lgSnapshot'), trf('lmSnapLate', { t: t.toFixed(2) }), dbg)
     }
   }
   await sleep(forced ? 250 : 600)
@@ -277,7 +281,7 @@ function sheetLabel(t: number, fps: number): string {
   const last = beats.length ? beats.reduce((a, b) => (b.time > a.time ? b : a)) : null
   if (last) {
     const b = last as { bar?: number; beatInBar?: number }
-    out += ` · такт ${b.bar}.${b.beatInBar ?? 1}`
+    out += trf('eSnBar', { bar: `${b.bar}.${b.beatInBar ?? 1}` })
   }
   return out
 }

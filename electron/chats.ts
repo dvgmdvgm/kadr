@@ -65,14 +65,17 @@ async function transcriptOf(id: string): Promise<string | null> {
 }
 
 /** The project as it goes to disk: its chats' transcripts embedded, and
- *  ids with nothing to resume (a chat never written to) left out. */
-export async function withTranscripts(p: Project): Promise<Project> {
+ *  ids with nothing to resume (a chat never written to) left out. With
+ *  `embed` off (setting `claude.embedChats`) only the ids go: sending the file
+ *  sends no conversations, and the chats still resume from Claude's own store. */
+export async function withTranscripts(p: Project, embed = true): Promise<Project> {
   const out: Record<string, string> = {}
   for (const id of p.claudeChats ?? []) {
     const text = await transcriptOf(id)
     if (text) out[id] = text
   }
-  return { ...p, claudeChats: Object.keys(out), claudeTranscripts: out }
+  const { claudeTranscripts: _, ...rest } = p
+  return embed ? { ...rest, claudeChats: Object.keys(out), claudeTranscripts: out } : { ...rest, claudeChats: Object.keys(out) }
 }
 
 /** The project as the renderer gets it: transcripts moved into memory here. */

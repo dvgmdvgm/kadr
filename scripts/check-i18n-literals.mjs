@@ -1,0 +1,176 @@
+// Source scan: no user-visible text is written outside src/i18n.ts, and every
+// clickable element and form field has a name. No app, no network.
+//
+// The bug this guards: the English UI showing Russian, and vice versa — a
+// session-log message, a tooltip or an error from main written as a literal
+// in one language shows in that language whatever the user picked. And a
+// clickable div without a role, or a field without a label, is invisible to a
+// screen reader.
+//
+// Rules (TS AST over src/**/*.ts(x), electron/*.ts, shared/*.ts):
+//  1. JSX text, and a literal given to title / aria-label / placeholder / alt,
+//     comes from the table — except the proper nouns and codes in ALLOW.
+//  2. No Cyrillic in a string or template literal anywhere — components and
+//     .ts modules alike (errors thrown or returned included): the renderer
+//     says it through tr()/trf(), main throws `saidError(key, args)`
+//     (shared/said.ts) and the renderer says that in the UI language.
+//  2a. Every key main says exists in the table.
+//  3. log*(source, msg) never gets a literal with words (a file name aside):
+//     both go through tr().
+//  3a. The Python drivers the app spawns (scripts/*.py but check-*, python/*.py)
+//      carry no Cyrillic string outside docstrings — they print `said(key, …)`
+//      — and every key they say is in the table (I12).
+//  4. The English table carries no Cyrillic.
+//  5. An element that is not a control but takes onClick has a role.
+//  6. An <input>/<select>/<textarea> sits in a <label> or has aria-label(ledby).
+// Run: node scripts/check-i18n-literals.mjs
+import { readFileSync, readdirSync } from 'fs'
+import { dirname, join, relative } from 'path'
+import { fileURLToPath } from 'url'
+import ts from 'typescript'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+let fails = 0
+const check = (name, hits) => {
+  console.log(`${hits.length ? 'FAIL' : 'PASS'}  ${name}${hits.length ? ` — ${hits.length}` : ''}`)
+  for (const h of hits) console.log('      ' + h)
+  if (hits.length) fails++
+}
+
+// proper nouns, product names, key names, units and codes that read the same in both languages
+const ALLOW = new Set([
+  'Kadr', 'Claude', 'Claude Code', 'Python', 'BPM', 'Remotion:', 'Ctrl+S', '· Ctrl+S', 'Ctrl+Shift+S', 'Esc', 'OK',
+  'Русский', 'English', 'Sans', 'Arial Black', 'Serif', 'Mono', 'large-v3 —', 'medium —', 'base —',
+  '~/kadr-fragments', 'claude', 'http://127.0.0.1:1080', 'fps ·', 'RU', 'EN',
+  'е'   // shared/keymap.ts: the palette's search folds ё into е — a letter, not text
+])
+const CYR = /[Ѐ-ӿ]/
+const WORD = /[A-Za-zЀ-ӿ]{2,}/
+const ATTRS = new Set(['title', 'aria-label', 'placeholder', 'alt'])
+const CONTROLS = new Set(['button', 'a', 'input', 'select', 'textarea', 'label', 'summary', 'option'])
+const FIELDS = new Set(['input', 'select', 'textarea'])
+
+const walk = (d, re) => readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+  e.isDirectory() ? walk(join(d, e.name), re) : re.test(e.name) ? [join(d, e.name)] : [])
+const files = [
+  ...walk(join(root, 'src'), /\.tsx?$/),
+  ...readdirSync(join(root, 'electron')).filter((f) => /\.ts$/.test(f)).map((f) => join(root, 'electron', f)),
+  ...walk(join(root, 'shared'), /\.ts$/)
+].filter((f) => !/[\\/](i18n|icons)\.tsx?$/.test(f))
+
+const literal = (e) => {
+  if (!e) return null
+  if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return e.text
+  if (ts.isTemplateExpression(e)) return e.head.text + e.templateSpans.map((s) => s.literal.text).join('')
+  if (ts.isConditionalExpression(e)) return literal(e.whenTrue) || literal(e.whenFalse)
+  if (ts.isBinaryExpression(e)) return literal(e.left) || literal(e.right)
+  if (ts.isParenthesizedExpression(e)) return literal(e.expression)
+  return null
+}
+const allowed = (s) => ALLOW.has(s.trim().replace(/\s+/g, ' '))
+
+const text = [], cyr = [], logs = [], roles = [], labels = []
+for (const file of files) {
+  const src = readFileSync(file, 'utf8')
+  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true, file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS)
+  const rel = relative(root, file).replace(/\\/g, '/')
+  const at = (n, s) => `${rel}:${sf.getLineAndCharacterOfPosition(n.getStart()).line + 1}  ${s.trim().replace(/\s+/g, ' ').slice(0, 80)}`
+  const tsx = rel.endsWith('.tsx')
+  const tagOf = (n) => (ts.isJsxElement(n) ? n.openingElement : n)
+  const inLabel = (n) => {
+    for (let p = n.parent; p; p = p.parent) if (ts.isJsxElement(p) && p.openingElement.tagName.getText() === 'label') return true
+    return false
+  }
+  ;(function visit(n) {
+    if (ts.isJsxText(n) && WORD.test(n.text) && !allowed(n.text)) text.push(at(n, n.text))
+    if (ts.isJsxAttribute(n) && ATTRS.has(n.name.getText())) {
+      const init = n.initializer
+      const lit = init && (ts.isStringLiteral(init) ? init.text : ts.isJsxExpression(init) ? literal(init.expression) : null)
+      if (lit && WORD.test(lit) && !allowed(lit)) text.push(at(n, `${n.name.getText()}=${lit}`))
+    }
+    const strs = ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n) ? [n.text]
+      : ts.isTemplateExpression(n) ? [n.head.text, ...n.templateSpans.map((s) => s.literal.text)] : []
+    if (strs.some((s) => CYR.test(s)) && !ts.isJsxAttribute(n.parent) && !allowed(strs.join('')) && !ts.isTemplateSpan(n.parent)) {
+      cyr.push(at(n, strs.join('…')))
+    }
+    if (ts.isCallExpression(n) && /^log(Error|Warn|Info)$/.test(n.expression.getText())) {
+      for (const a of n.arguments.slice(0, 2)) {
+        const lit = literal(a)
+        if (lit && WORD.test(lit.replace(/[\w.-]+\.[a-z0-9]{2,4}\b/gi, ''))) logs.push(at(a, lit))
+      }
+    }
+    if (ts.isJsxElement(n) || ts.isJsxSelfClosingElement(n)) {
+      const open = tagOf(n)
+      const tag = open.tagName.getText()
+      const names = open.attributes.properties.filter(ts.isJsxAttribute).map((a) => a.name.getText())
+      if (/^[a-z]/.test(tag) && !CONTROLS.has(tag) && names.includes('onClick') && !names.includes('role'))
+        roles.push(at(n, `<${tag}> with onClick and no role`))
+      const type = open.attributes.properties.filter(ts.isJsxAttribute).find((a) => a.name.getText() === 'type')?.initializer?.getText()
+      if (FIELDS.has(tag) && !/hidden|file/.test(type ?? '') && !names.some((x) => x === 'aria-label' || x === 'aria-labelledby') && !inLabel(n))
+        labels.push(at(n, `<${tag}${type ? ' type=' + type : ''}> with no label`))
+    }
+    ts.forEachChild(n, visit)
+  })(sf)
+}
+
+// the English table: everything between `const en` and the end of its object literal
+const i18n = readFileSync(join(root, 'src/i18n.ts'), 'utf8')
+const enAt = i18n.indexOf('const en')
+const en = i18n.slice(enAt, i18n.indexOf('\n}\n', enAt))
+const enCyr = en.split('\n').map((l, i) => [l, i]).filter(([l]) => CYR.test(l.replace(/\/\/.*$/, '')))
+  .map(([l]) => 'src/i18n.ts (en)  ' + l.trim().slice(0, 80))
+
+check('no user-visible literal outside i18n.ts (JSX text, title, aria-label, placeholder, alt)', text)
+check('no Cyrillic literal in main or renderer .ts outside i18n', cyr)
+// main's Saids: a key missing from the table would read as the bare key
+const keys = new Set([...i18n.slice(0, enAt).matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]))
+const saidKeys = files.filter((f) => /[\\/]electron[\\/]/.test(f)).flatMap((f) => {
+  const src = readFileSync(f, 'utf8')
+  return [...src.matchAll(/said(?:Error)?\(\s*'(\w+)'|\bkey: '(\w+)'/g)]
+    .map((m) => [relative(root, f).replace(/\\/g, '/'), m[1] ?? m[2]])
+})
+check(`every key main says is in the table (${saidKeys.length} uses)`,
+  saidKeys.filter(([, k]) => !keys.has(k)).map(([f, k]) => `${f}  ${k}`))
+// I12: the Python drivers the app spawns (scripts/*.py but the checks, python/*.py —
+// not the vendored python/ttsqc, whose console CLI is its own) say through
+// `said(key, …)` too. Triple-quoted strings count as docstrings; every other
+// string literal with Cyrillic reaches stdout/stderr and so the UI.
+const drivers = [
+  ...readdirSync(join(root, 'scripts')).filter((f) => /\.py$/.test(f) && !/^check-/.test(f)).map((f) => join(root, 'scripts', f)),
+  ...readdirSync(join(root, 'python')).filter((f) => /\.py$/.test(f)).map((f) => join(root, 'python', f))
+]
+const pyStrings = (src) => {
+  const out = []
+  for (let i = 0, line = 1; i < src.length; i++) {
+    const c = src[i]
+    if (c === '\n') line++
+    else if (c === '#') while (i + 1 < src.length && src[i + 1] !== '\n') i++
+    else if (c === '"' || c === "'") {
+      const triple = src.startsWith(c.repeat(3), i)
+      const end = triple ? c.repeat(3) : c
+      let j = i + end.length
+      while (j < src.length && !src.startsWith(end, j)) j += src[j] === '\\' ? 2 : 1
+      const body = src.slice(i + end.length, j)
+      if (!triple) out.push([line, body])
+      line += body.split('\n').length - 1
+      i = j + end.length - 1
+    }
+  }
+  return out
+}
+const pyCyr = [], pyKeys = []
+for (const f of drivers) {
+  const src = readFileSync(f, 'utf8')
+  const rel = relative(root, f).replace(/\\/g, '/')
+  for (const [line, s] of pyStrings(src)) if (CYR.test(s)) pyCyr.push(`${rel}:${line}  ${s.slice(0, 80)}`)
+  for (const m of src.matchAll(/\bsaid\(\s*['"](\w+)/g)) pyKeys.push([rel, m[1]])
+}
+check(`no Cyrillic string in the Python drivers (${drivers.length} files)`, pyCyr)
+check(`every key a Python driver says is in the table (${pyKeys.length} uses)`,
+  pyKeys.filter(([, k]) => !keys.has(k)).map(([f, k]) => `${f}  ${k}`))
+check('session-log sources and messages go through tr()', logs)
+check('the English table has no Russian', enCyr)
+check('every clickable non-control element has a role', roles)
+check('every input, select and textarea has a label', labels)
+console.log(fails ? `\n${fails} FAILED` : '\nall passed')
+process.exit(fails ? 1 : 0)

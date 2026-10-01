@@ -6,11 +6,11 @@
 // draws on every clip that shows that part of the file — which is correct, and
 // it is also why a regeneration (which rewrites the file) has to fix them all.
 import type { Clip, Project, Track, AudioDefect } from '@shared/types'
+import { relAtOffset, sourceOffset } from '@shared/speedRamp'
 
 /** Source second of this clip's asset → project second; null if outside it. */
 export function srcToProject(clip: Clip, t: number): number | null {
-  const speed = clip.speed || 1
-  const rel = (t - clip.inPoint) / speed
+  const rel = relAtOffset(clip, t - clip.inPoint)
   if (rel < 0 || rel > clip.duration) return null
   return clip.start + rel
 }
@@ -25,15 +25,14 @@ export interface VisibleSpan {
 
 /** The visible part of a source span on one clip, or null if none of it shows. */
 export function spanToProject(clip: Clip, a: number, b: number): VisibleSpan | null {
-  const speed = clip.speed || 1
   const lo = clip.inPoint
-  const hi = clip.inPoint + clip.duration * speed
+  const hi = clip.inPoint + sourceOffset(clip, clip.duration)
   const from = Math.max(a, lo)
   const to = Math.min(b, hi)
   if (to <= from) return null
   return {
-    start: clip.start + (from - lo) / speed,
-    end: clip.start + (to - lo) / speed,
+    start: clip.start + relAtOffset(clip, from - lo),
+    end: clip.start + relAtOffset(clip, to - lo),
     clippedIn: a < lo,
     clippedOut: b > hi
   }
@@ -99,6 +98,5 @@ export function placeDefects(project: Project, defects?: AudioDefect[]): DefectP
 
 /** Project second → source second of this clip's asset (for hand-placed marks). */
 export function projectToSrc(clip: Clip, t: number): number {
-  const speed = clip.speed || 1
-  return clip.inPoint + (t - clip.start) * speed
+  return clip.inPoint + sourceOffset(clip, t - clip.start)
 }

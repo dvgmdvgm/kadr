@@ -1,9 +1,11 @@
-import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { spawn, type ChildProcess } from 'child_process'
+import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+import { spawn, spawnSync, type ChildProcess } from 'child_process'
+import { readdirSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import type { KadrApi, ExportProgress } from '@shared/types'
-import { rawEncodeArgs } from '@shared/rawEncode'
+import { rawEncodeArgs, rawTempExt, isSeqFrame, ALPHA_MODE_HELP, knowsAlphaMode } from '@shared/rawEncode'
+import { running, type SettingsSnapshot } from '@shared/settings'
 
 // Direct export encoder: ffmpeg is spawned HERE, in the renderer process
 // (sandbox is off), so raw frames go straight from JS memory into its stdin
@@ -13,20 +15,43 @@ import { rawEncodeArgs } from '@shared/rawEncode'
 let rawEnc: ChildProcess | null = null
 let rawEncErr = ''
 let rawEncExit: Promise<void> | null = null
+let rawOut = ''
 
 // capability token for the kadr:// media protocol (issue #13). Sync on purpose:
 // fileUrl must work from the renderer's very first frame.
 const MEDIA_TOKEN: string = ipcRenderer.sendSync('media:token')
 
+function dropSequence(pattern: string) {
+  try {
+    for (const f of readdirSync(dirname(pattern))) {
+      if (isSeqFrame(pattern, f)) try { unlinkSync(join(dirname(pattern), f)) } catch { /* taken */ }
+    }
+  } catch { /* the folder went */ }
+}
+
+// K11: asked once per ffmpeg path, on the first transparent export (~1 s, sync)
+const alphaModeOf = new Map<string, boolean>()
+const alphaMode = (bin: string) => {
+  if (!alphaModeOf.has(bin)) alphaModeOf.set(bin, knowsAlphaMode(spawnSync(bin, ALPHA_MODE_HELP, { encoding: 'utf8' }).stdout ?? ''))
+  return alphaModeOf.get(bin)!
+}
+
 const api: KadrApi = {
   rawEncodeStart: (o) => {
-    const out = join(tmpdir(), `kadr-export-raw-${Date.now()}.mp4`)
-    const child = spawn(process.env.KADR_FFMPEG || 'ffmpeg', rawEncodeArgs({ ...o, out }), {
+    // the settings' ffmpeg (as at launch, env first) and export temp folder
+    const snap: SettingsSnapshot = ipcRenderer.sendSync('settings:get')
+    // a container that holds the codec; a PNG sequence brings its own numbered path
+    const out = o.out ?? join(String(running('storage.tempDir', snap) || tmpdir()), `kadr-export-raw-${Date.now()}.${rawTempExt(o.codec)}`)
+    const bin = String(running('tools.ffmpeg', snap))
+    const child = spawn(bin, rawEncodeArgs({ ...o, out, alphaMode: !!o.alpha && alphaMode(bin) }), {
       stdio: ['pipe', 'ignore', 'pipe']
     })
     rawEnc = child
+    rawOut = out
     rawEncErr = ''
     child.stderr!.on('data', (c) => { rawEncErr += c })
+    // a kill mid-frame is EPIPE here; the frame's write callback already reports it
+    child.stdin!.on('error', () => { /* see rawEncodeFrame */ })
     rawEncExit = new Promise<void>((resolve, reject) => {
       child.on('close', (code) => {
         rawEnc = null
@@ -66,12 +91,18 @@ const api: KadrApi = {
     rawEncExit = null
   },
   rawEncodeKill: () => {
+    // a killed PNG sequence is not an export: its frames go once ffmpeg has let go of them
+    const seq = rawOut.includes('%06d') ? rawOut : ''
+    if (seq && rawEnc) rawEnc.once('close', () => dropSequence(seq))
     try { rawEnc?.kill('SIGKILL') } catch { /* gone */ }
     rawEnc = null
     rawEncExit = null
   },
 
   openMediaDialog: () => ipcRenderer.invoke('media:open-dialog'),
+  openFolderDialog: () => ipcRenderer.invoke('media:open-folder-dialog'),
+  scanMedia: (paths) => ipcRenderer.invoke('media:scan', paths),
+  buildSequence: (run, fps) => ipcRenderer.invoke('media:sequence', run, fps),
   probeMedia: (path) => ipcRenderer.invoke('media:probe', path),
   fileUrl: (path) => {
     // Windows paths (D:\dir\file) must become /D:/dir/file — a raw drive
@@ -88,6 +119,7 @@ const api: KadrApi = {
   },
   downloadMedia: (url) => ipcRenderer.invoke('media:download', url),
   saveBlobMedia: (name, mime, data) => ipcRenderer.invoke('media:save-blob', name, mime, data),
+  saveRecording: (data, projectPath) => ipcRenderer.invoke('media:save-recording', data, projectPath),
   portalFiles: (key) => ipcRenderer.invoke('media:portal-files', key),
   clipboardMedia: () => ipcRenderer.invoke('media:clipboard-paste'),
   dropLog: (entry) => ipcRenderer.send('debug:drop-log', entry),
@@ -96,12 +128,42 @@ const api: KadrApi = {
   openProjectDialog: () => ipcRenderer.invoke('project:open-dialog'),
   readProject: (path) => ipcRenderer.invoke('project:read', path),
   writeProject: (path, project) => ipcRenderer.invoke('project:write', path, project),
+  collectPlan: (project, path) => ipcRenderer.invoke('project:collect-plan', project, path),
+  collectRun: (project, path) => ipcRenderer.invoke('project:collect-run', project, path),
+  collectCancel: () => ipcRenderer.invoke('project:collect-cancel'),
+  onCollectProgress: (cb) => {
+    const handler = (_e: unknown, p: { done: number; total: number; file: string }) => cb(p)
+    ipcRenderer.on('project:collect-progress', handler)
+    return () => ipcRenderer.removeListener('project:collect-progress', handler)
+  },
   autosaveProject: (project, mainPath) => ipcRenderer.invoke('project:autosave', project, mainPath),
+  backupOffer: () => ipcRenderer.invoke('backup:offer'),
+  revealBackup: (file) => ipcRenderer.invoke('backup:reveal', file),
+  onCloseRequest: (cb) => {
+    const handler = () => cb()
+    ipcRenderer.on('app:close-request', handler)
+    ipcRenderer.send('app:close-guard')
+    return () => ipcRenderer.removeListener('app:close-request', handler)
+  },
+  closeWindow: () => ipcRenderer.send('app:close'),
+  onOpenProject: (cb) => {
+    const handler = (_e: unknown, path: string) => cb(path)
+    ipcRenderer.on('app:open-project', handler)
+    void ipcRenderer.invoke('app:argv-project').then((p: string | null) => { if (p) cb(p) })
+    return () => ipcRenderer.removeListener('app:open-project', handler)
+  },
 
   storageScan: (projects, open) => ipcRenderer.invoke('storage:scan', projects, open),
   storagePrune: (req) => ipcRenderer.invoke('storage:prune', req),
   readUserStore: (name) => ipcRenderer.invoke('store:read', name),
   writeUserStore: (name, data) => ipcRenderer.invoke('store:write', name, data),
+  listTemplates: () => ipcRenderer.invoke('template:list'),
+  saveTemplate: (name, project) => ipcRenderer.invoke('template:save', name, project),
+  settingsGet: () => ipcRenderer.sendSync('settings:get'),
+  settingsSet: (patch) => ipcRenderer.invoke('settings:set', patch),
+  probeTool: (key, value) => ipcRenderer.invoke('settings:probe-tool', key, value),
+  relaunch: () => ipcRenderer.send('app:relaunch'),
+  setZoom: (factor) => webFrame.setZoomFactor(factor),
 
   reverseMedia: (path, start, duration, info) =>
     ipcRenderer.invoke('media:reverse', path, start, duration, info),
@@ -112,10 +174,15 @@ const api: KadrApi = {
   },
   requestProxy: (path, duration, opts) => ipcRenderer.invoke('proxy:request', path, duration, opts),
   requestDecoded: (path, duration, opts) => ipcRenderer.invoke('media:decoded', path, duration, opts),
+  libFonts: (projectPath) => ipcRenderer.invoke('fonts:lib', projectPath),
+  lutImport: (src, projectPath) => ipcRenderer.invoke('lut:import', src, projectPath),
+  openLutDialog: () => ipcRenderer.invoke('lut:open-dialog'),
   pickDirectory: (title) => ipcRenderer.invoke('dialog:pick-dir', title),
   saveSnapshot: (dir, baseName, png) => ipcRenderer.invoke('snapshot:save', dir, baseName, png),
   measureLoudness: (path, start, duration) => ipcRenderer.invoke('media:loudness', path, start, duration),
   meanVolume: (path, start, duration) => ipcRenderer.invoke('media:mean-volume', path, start, duration),
+  audioDenoise: (path, nr) => ipcRenderer.invoke('audio:denoise', path, nr),
+  detectScenes: (path, start, duration, threshold) => ipcRenderer.invoke('media:scenes', path, start, duration, threshold),
   audioEnvelope: (req) => ipcRenderer.invoke('audio:envelope', req),
   audioAnalyze: (req) => ipcRenderer.invoke('audio:analyze', req),
   soundLibrary: (rescan) => ipcRenderer.invoke('sounds:library', !!rescan),
@@ -127,15 +194,18 @@ const api: KadrApi = {
   },
 
   exportDialog: (name, ext) => ipcRenderer.invoke('export:dialog', name, ext),
+  hwEncoders: () => ipcRenderer.invoke('encoders:list'),
   exportBegin: (job) => ipcRenderer.invoke('export:begin', job),
   exportVideoChunk: (data, position) => ipcRenderer.invoke('export:video-chunk', data, position),
-  exportRawBegin: (width, height, fps, outWidth, outHeight) =>
-    ipcRenderer.invoke('export:raw-begin', width, height, fps, outWidth, outHeight),
+  exportRawBegin: (width, height, fps, outWidth, outHeight, alpha) =>
+    ipcRenderer.invoke('export:raw-begin', width, height, fps, outWidth, outHeight, alpha),
   exportRawFrame: (data) => ipcRenderer.invoke('export:raw-frame', data),
   exportRawEnd: () => ipcRenderer.invoke('export:raw-end'),
   exportUseVideo: (path) => ipcRenderer.invoke('export:use-video', path),
   exportVideoDone: () => ipcRenderer.invoke('export:video-done'),
   exportCancel: () => ipcRenderer.invoke('export:cancel'),
+  exportAwake: (on) => ipcRenderer.invoke('export:awake', on),
+  exportReveal: (open) => ipcRenderer.invoke('export:reveal', open),
   onExportProgress: (cb) => {
     const handler = (_e: unknown, p: ExportProgress) => cb(p)
     ipcRenderer.on('export:progress', handler)
@@ -161,6 +231,8 @@ const api: KadrApi = {
   },
   fragmentTypecheck: (id) => ipcRenderer.invoke('fragment:typecheck', id),
   probeBasic: (path) => ipcRenderer.invoke('media:probe-basic', path),
+  statMany: (paths) => ipcRenderer.invoke('media:stat-many', paths),
+  relinkScan: (folder, wanted) => ipcRenderer.invoke('media:relink-scan', folder, wanted),
   fragmentMedia: (path, projectDir, opts) => ipcRenderer.invoke('media:fragment-media', path, projectDir, opts),
   fragmentInspect: (id) => ipcRenderer.invoke('fragment:inspect', id),
   fragmentCollide: (id, step) => ipcRenderer.invoke('fragment:collide', id, step),
@@ -214,6 +286,7 @@ const api: KadrApi = {
 
   transcribe: (req) => ipcRenderer.invoke('transcribe:run', req),
   transcribeCancel: () => ipcRenderer.invoke('transcribe:cancel'),
+  speechPython: () => ipcRenderer.invoke('speech:python'),
   onTranscribeProgress: (cb) => {
     const handler = (_e: unknown, p: { progress: number; text: string }) => cb(p)
     ipcRenderer.on('transcribe:progress', handler)
@@ -228,6 +301,8 @@ const api: KadrApi = {
   claudeInput: (data) => ipcRenderer.send('claude:input', data),
   claudeResize: (cols, rows) => ipcRenderer.send('claude:resize', cols, rows),
   claudeClose: () => ipcRenderer.invoke('claude:close'),
+  claudeStatus: () => ipcRenderer.invoke('claude:status'),
+  revealClaudeEnv: () => ipcRenderer.send('claude:reveal-env'),
   onClaudeData: (cb) => {
     const handler = (_e: unknown, data: string) => cb(data)
     ipcRenderer.on('claude:data', handler)

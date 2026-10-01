@@ -10,6 +10,7 @@ import { create } from 'zustand'
 import type { Clip, MediaAsset, Project } from '@shared/types'
 import { useEditor } from '@/state/store'
 import { clipSourceTime } from './player'
+import { speedAt } from '@shared/speedRamp'
 
 interface OnionState {
   on: boolean
@@ -87,7 +88,7 @@ export function onionFrame(project: Project, clipId: string | null, t: number):
   const asset = clip && project.assets.find((a) => a.id === clip.assetId)
   if (!clip || !asset) return null
   const rel = Math.max(0, Math.min(clip.duration - 1e-3, t - clip.start))
-  return { clip, asset, time: clipSourceTime(clip, asset, rel), speed: clip.speed || 1 }
+  return { clip, asset, time: clipSourceTime(clip, asset, rel), speed: speedAt(clip, rel) }
 }
 
 /** follow the selection: picking another footage clip while the onion is up shows that one */

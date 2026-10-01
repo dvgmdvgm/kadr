@@ -6,10 +6,12 @@
 // only set it or ask whether one exists. Everything here is scriptable through
 // kadr_eval, so anything held here is effectively public to the page.
 import { create } from 'zustand'
-import { useEditor, uid } from '../state/store'
+import { useEditor, useSettings, uid } from '../state/store'
 import { dirOf, baseOf } from '@shared/paths'
 import { parseSrt } from './subtitles'
+import { saveUserStore } from './userStore'
 import type { MediaAsset, TextDoc, TtsParams, TtsSettings, TtsVoice, VoiceRun } from '@shared/types'
+import { tr, trf } from '../i18n'
 
 export const TTS_DEFAULTS: TtsSettings = {
   voiceId: '',
@@ -87,7 +89,7 @@ function loadTtsCache(): TtsSettings {
 }
 
 function persistTts(settings: TtsSettings) {
-  window.kadr.writeUserStore(TTS_FILE, settings).catch(() => { /* disk hiccup */ })
+  void saveUserStore(TTS_FILE, settings)
   try {
     localStorage.setItem(TTS_LS_KEY, JSON.stringify(settings))
   } catch { /* cache only */ }
@@ -113,6 +115,12 @@ export const useTtsSettings = create<TtsSettingsState>((set) => ({
     const fromFile = await window.kadr.readUserStore(TTS_FILE)
     if (fromFile && typeof fromFile === 'object') {
       const settings = sanitizeTtsSettings(fromFile)
+      // the detector's Python moved to the settings («Инструменты»); a value set here goes over once
+      if (settings.ttsqcPython) {
+        if (useSettings.getState().effective('tools.detectorPython').source === 'default') useSettings.getState().set('tools.detectorPython', settings.ttsqcPython)
+        settings.ttsqcPython = ''
+        persistTts(settings)
+      }
       useTtsSettings.setState({ settings })
       try {
         localStorage.setItem(TTS_LS_KEY, JSON.stringify(settings))
@@ -209,19 +217,19 @@ function textOfDoc(content: string, format: 'srt' | 'txt'): string {
 async function resolveSource(opts: SpeakOpts): Promise<{ text: string; name: string }> {
   if (opts.textDocId) {
     const doc = useEditor.getState().project.texts?.find((t) => t.id === opts.textDocId)
-    if (!doc) throw new Error('текст не найден в проекте')
+    if (!doc) throw new Error(tr('eTtsNoTextDoc'))
     const content = await window.kadr.readTextFile(doc.path)
-    if (content === null) throw new Error(`не читается файл текста: ${doc.path}`)
+    if (content === null) throw new Error(trf('eTtsDocUnreadable', { path: doc.path }))
     return { text: textOfDoc(content, doc.format), name: opts.name || doc.name }
   }
   if (opts.path) {
     const content = await window.kadr.readTextFile(opts.path)
-    if (content === null) throw new Error(`не читается файл: ${opts.path}`)
+    if (content === null) throw new Error(trf('eTtsFileUnreadable', { path: opts.path }))
     const fmt = /\.srt$/i.test(opts.path) ? 'srt' : 'txt'
     return { text: textOfDoc(content, fmt), name: opts.name || baseOf(opts.path) }
   }
   if (opts.text != null) return { text: opts.text, name: opts.name || 'voice' }
-  throw new Error('нечего озвучивать: не задан ни текст, ни файл')
+  throw new Error(tr('eTtsNothing'))
 }
 
 /**
@@ -234,19 +242,19 @@ async function resolveSource(opts: SpeakOpts): Promise<{ text: string; name: str
 export async function speakText(opts: SpeakOpts = {}): Promise<SpeakResult> {
   const st = () => useEditor.getState()
   const { text, name } = await resolveSource(opts)
-  if (!text.trim()) throw new Error('текст пуст')
+  if (!text.trim()) throw new Error(tr('eTtsTextEmpty'))
 
   let dir = opts.dir ?? null
   if (!dir) {
     const pp = st().projectPath
-    dir = pp ? dirOf(pp) : await window.kadr.pickDirectory('Куда сохранить озвучку')
+    dir = pp ? dirOf(pp) : await window.kadr.pickDirectory(tr('eTtsPickDir'))
     if (!dir) throw new Error('cancelled')
   }
 
   const base = `${dir}/${sanitizeName(name)}`
   const outPath = await freeVoiceFile(base)
   const params = ttsParams(opts.params)
-  if (!params.voiceId) throw new Error('не выбран голос')
+  if (!params.voiceId) throw new Error(tr('eTtsNoVoice'))
   const tempo = opts.tempo ?? ttsTempo()
 
   const res = await window.kadr.ttsSpeak({
@@ -282,7 +290,7 @@ export async function speakText(opts: SpeakOpts = {}): Promise<SpeakResult> {
   const placed = st().addVoiceOver({
     asset, run, texts: [scriptDoc], trackId: opts.trackId ?? null, at
   })
-  if (!placed) throw new Error('не удалось положить клип на таймлайн')
+  if (!placed) throw new Error(tr('eTtsPlaceFail'))
 
   return {
     runId: run.id,

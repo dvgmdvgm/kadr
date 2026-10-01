@@ -12,6 +12,10 @@ import { useT } from '@/i18n'
  */
 let openCount = 0
 export const modalsOpen = () => openCount > 0
+/** a surface that is not a Modal but owns the keyboard like one (the command palette) */
+export function useCountsAsModal() {
+  useEffect(() => { openCount++; return () => { openCount-- } }, [])
+}
 
 const FOCUSABLE =
   'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled),' +
@@ -25,7 +29,7 @@ const FOCUSABLE =
  * dialogs had on their own.
  */
 export function Modal({
-  title, onClose, children, actions, className, wide, closeDisabled, titleIcon
+  title, onClose, children, actions, className, wide, closeDisabled, titleIcon, bare
 }: {
   title: string
   onClose: () => void
@@ -36,6 +40,8 @@ export function Modal({
   /** true while an operation must not be interrupted (an export in flight) */
   closeDisabled?: boolean
   titleIcon?: ReactNode
+  /** the children lay out the body themselves (a sidebar beside a `.modal-body`) */
+  bare?: boolean
 }) {
   const t = useT()
   const box = useRef<HTMLDivElement>(null)
@@ -81,6 +87,7 @@ export function Modal({
   return (
     <div
       className="modal-back"
+      role="presentation"
       onClick={() => { if (!closeDisabled) onClose() }}
       onKeyDown={onKeyDown}
     >
@@ -106,7 +113,7 @@ export function Modal({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <div className="modal-body">{children}</div>
+        {bare ? children : <div className="modal-body">{children}</div>}
         {actions && <div className="modal-foot"><div className="modal-actions">{actions}</div></div>}
       </div>
     </div>

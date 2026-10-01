@@ -7,7 +7,8 @@ import { create } from 'zustand'
 import type { SoundLibrary, SfxEntry } from '@shared/types'
 import { useSettings } from '@/state/store'
 import { loadSoundLibrary, findSfx, addSound, sfxFamilies, SFX_USES } from '@/engine/sounds'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, type TKey } from '@/i18n'
+import { soundTitle } from '@shared/sfxTitle'
 import { Icon, Spinner } from './icons'
 import { Modal } from './Modal'
 
@@ -27,7 +28,7 @@ const useKey = (use: string) =>
 
 const fmt = (sec: number) => (sec >= 60
   ? `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`
-  : `${sec < 1 ? sec.toFixed(2) : sec.toFixed(1)} с`)
+  : `${sec < 1 ? sec.toFixed(2) : sec.toFixed(1)} ${tr('secUnit')}`)
 
 export function SoundsDialog() {
   const t = useT()
@@ -134,7 +135,7 @@ export function SoundsDialog() {
     <div key={s.id} className={s.origin === 'user' ? 'snd-row user' : 'snd-row'} data-sound={s.id}>
       {rowButtons(s.id, s.path)}
       <span className="snd-name" title={s.note ? `${s.id}\n${s.note}` : s.id}>
-        {s.id.split('/').pop()!.replace(/\.[a-z0-9]+$/i, '')}
+        {soundTitle(s.id)}
         {s.note && <span className="dim snd-desc">{s.note}</span>}
       </span>
       <span className="snd-dur dim">{fmt(s.duration)}</span>
@@ -157,7 +158,6 @@ export function SoundsDialog() {
       onClose={() => useSoundsUi.getState().setOpen(false)}
       titleIcon={<Icon name="sfx" size={17} />}
       className="sounds-dialog"
-      actions={<button onClick={() => useSoundsUi.getState().setOpen(false)}>{t('close')}</button>}
     >
       <div className="side-tabs snd-tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'sfx'} className={tab === 'sfx' ? 'active' : ''}

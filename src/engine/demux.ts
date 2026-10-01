@@ -6,6 +6,7 @@
 // on machines and files this path can't handle.
 import * as MP4Box from 'mp4box'
 import type { MediaAsset } from '@shared/types'
+import { previewColour, heightGuess, type ColourInit } from '@shared/streamColour'
 
 /** non-faststart files keep moov at the end — give up early and fall back */
 const HEAD_LIMIT = 16 * 1024 * 1024
@@ -56,17 +57,18 @@ export class Mp4FrameSource {
   private ctsShift = 0
   private sampleScale = 0
   private scratch: Uint8Array | null = null
+  /** number of the last sample queued since the last jump — see ingestSamples */
+  private lastSample = -1
+  /** the key frame a jump seeked mp4box to; nothing is queued before it — see ingestSamples */
+  private jumpSample = -1
 
-  /** 0.5 for colour-over-matte intermediates — see normalizeColor. */
-  private heightScale = 1
+  /** H.264/HEVC: the space the preview shows this stream in, from the stream
+   *  itself (null = the decoder's own); undefined = other codecs, see normalizeColor */
+  private colour: ColourInit | null | undefined
 
-  static async open(
-    asset: MediaAsset,
-    opts?: { alphaPacked?: boolean }
-  ): Promise<Mp4FrameSource | null> {
+  static async open(asset: MediaAsset): Promise<Mp4FrameSource | null> {
     try {
       const src = new Mp4FrameSource(asset)
-      if (opts?.alphaPacked) src.heightScale = 0.5
       if (await src.init()) return src
       src.close()
       return null
@@ -97,6 +99,23 @@ export class Mp4FrameSource {
   private ingestSamples(file: MP4File, samples: Sample[]) {
     if (this.fatal) return
     for (const s of samples) {
+      // Every sample goes to the decoder ONCE, in decode order. After a seek,
+      // mp4box re-extracts the samples it still holds AND extracts them again
+      // from the re-pump: init()'s jump(0) fed I0…P20 then I0 again whenever
+      // the head pump had swept the file before isConfigSupported answered,
+      // and that IDR flushed P20 out ahead of its B-frames — frames 17–19
+      // exported as frame 20 in some runs only (card J10).
+      if (s.number <= this.lastSample) continue
+      // ...and nothing before the key frame the jump asked for: mp4box hands
+      // out a batch it was still filling (30 at a time, cut short by data not
+      // yet appended) AHEAD of the sought samples. On a small faststart file
+      // a delta led → «a key frame is required» → element fallback (card
+      // J13); a leading key skipped the GOPs up to it without a word.
+      if (this.jumpSample >= 0) {
+        if (s.number !== this.jumpSample) continue
+        this.jumpSample = -1
+      }
+      this.lastSample = s.number
       this.sampleScale = s.timescale
       const chunk = new EncodedVideoChunk({
         type: s.is_sync ? 'key' : 'delta',
@@ -190,6 +209,9 @@ export class Mp4FrameSource {
     const support = await VideoDecoder.isConfigSupported(config).catch(() => null)
     if (!support?.supported) return false
     this.config = config
+    if (/^(avc[13]|hvc1|hev1)\./.test(track.codec)) {
+      this.colour = previewColour(this.sampleEntry() ?? {}, track.video?.height || track.track_height)
+    }
     if (this.fragmented) {
       // fragmented streams put moov first, so extraction was armed inside
       // onReady before any moof was parsed: chunks already queue from sample
@@ -209,17 +231,24 @@ export class Mp4FrameSource {
     return true
   }
 
+  /** the track's sample entry that carries a decoder configuration box */
+  private sampleEntry() {
+    try {
+      const trak = this.file.getTrackById(this.trackId)
+      for (const e of trak.mdia.minf.stbl.stsd.entries) if (e.avcC ?? e.hvcC ?? e.vpcC ?? e.av1C) return e
+    } catch { /* no sample table */ }
+    return undefined
+  }
+
   /** avcC/hvcC/vpcC/av1C box payload (without the 8-byte box header) */
   private description(): Uint8Array | undefined {
     try {
-      const trak = this.file.getTrackById(this.trackId)
-      for (const entry of trak.mdia.minf.stbl.stsd.entries) {
-        const box = entry.avcC ?? entry.hvcC ?? entry.vpcC ?? entry.av1C
-        if (box) {
-          const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN)
-          box.write(stream)
-          return new Uint8Array(stream.buffer, 8)
-        }
+      const entry = this.sampleEntry()
+      const box = entry && (entry.avcC ?? entry.hvcC ?? entry.vpcC ?? entry.av1C)
+      if (box) {
+        const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN)
+        box.write(stream)
+        return new Uint8Array(stream.buffer, 8)
       }
     } catch { /* some codecs carry no description */ }
     return undefined
@@ -362,6 +391,8 @@ export class Mp4FrameSource {
     this.pendingChunks = []
     this.gopBuffer = []
     this.skipTargetUs = null
+    this.lastSample = -1
+    this.jumpSample = -1
     this.current?.close()
     this.current = null
     this.ahead?.close()
@@ -383,7 +414,14 @@ export class Mp4FrameSource {
     this.file.stop()
     // seek in unshifted media time so the chosen keyframe is never late
     const shiftSec = this.sampleScale > 0 ? this.ctsShift / this.sampleScale : 0
-    const si = this.file.seek(Math.max(0, srcT + shiftSec), true)
+    let t = Math.max(0, srcT + shiftSec)
+    const trak = (() => { try { return this.file.getTrackById(this.trackId) } catch { return null } })()
+    // past the video track's end mp4box skips the track and leaves nextSample
+    // where it was — seek the last sample's GOP instead (the tail frame holds)
+    const last = trak?.samples?.[trak.samples.length - 1]
+    if (last) t = Math.min(t, last.cts / last.timescale)
+    const si = this.file.seek(t, true)
+    this.jumpSample = trak?.samples?.length ? trak.nextSample : -1
     this.file.start()
     void this.pump(si.offset)
   }
@@ -489,25 +527,30 @@ export class Mp4FrameSource {
   }
 
   /**
-   * Untagged streams: <video> and WebCodecs guess the YUV matrix differently
-   * (BT.601 vs BT.709), which would shift export colors away from what the
-   * preview shows. Re-wrap such frames with the same heuristic the element
-   * pipeline uses — HD gets BT.709, SD gets BT.601. Tagged frames pass as-is.
+   * <video> and WebCodecs disagree on any H.264 stream that is not FULLY
+   * described (primaries, transfer and matrix): the element guesses by height
+   * (SD BT.601, HD BT.709), WebCodecs says BT.709 for all of them — and fills
+   * `f.colorSpace` with that guess, so the frame cannot tell (card J9: SD
+   * footage exported up to 41/255 off the preview). H.264 and HEVC are
+   * therefore re-wrapped by what the STREAM says (shared/streamColour.ts); others
+   * keep the old rule, re-wrapping only a frame whose matrix is empty.
    */
   private async normalizeColor(f: VideoFrame): Promise<VideoFrame> {
+    // Packed alpha intermediates are fully described (makeDecoded), so
+    // previewColour leaves them to the decoder, whose frames match the element.
+    const want = this.colour !== undefined ? this.colour
+      : f.colorSpace?.matrix ? null
+      : heightGuess(f.codedHeight ?? 0)
+    if (!want || !f.format) return f
+    // already so (an HD stream WebCodecs guessed right): no CPU copy per frame
     const cs = f.colorSpace
-    if ((cs && cs.matrix) || !f.format) return f
+    if (cs && cs.primaries === want.primaries && cs.transfer === want.transfer &&
+      cs.matrix === want.matrix && cs.fullRange === want.fullRange) return f
     try {
       const size = f.allocationSize()
       if (!this.scratch || this.scratch.byteLength < size) this.scratch = new Uint8Array(size)
       const buf = this.scratch.subarray(0, size)
       const layout = await f.copyTo(buf)
-      // Packed alpha intermediates always carry a BT.709 picture (the packer
-      // converts anything else) — and they must be re-wrapped here rather
-      // than tagged in the file, because a tagged frame goes through
-      // Chromium's colour-managed upload and comes out with lifted
-      // mid-tones, which would corrupt the alpha matte in the bottom half.
-      const hd = this.heightScale !== 1 || (f.codedHeight ?? 0) >= 720
       const nf = new VideoFrame(buf, {
         format: f.format,
         codedWidth: f.codedWidth,
@@ -518,9 +561,7 @@ export class Mp4FrameSource {
         visibleRect: f.visibleRect ?? undefined,
         displayWidth: f.displayWidth,
         displayHeight: f.displayHeight,
-        colorSpace: hd
-          ? { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }
-          : { primaries: 'smpte170m', transfer: 'smpte170m', matrix: 'smpte170m', fullRange: false }
+        colorSpace: want
       })
       f.close()
       return nf

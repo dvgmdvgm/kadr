@@ -32,17 +32,19 @@ const MAP = {
   again: 'rotate-cw', reload: 'rotate-ccw', loop: 'repeat', rewind: 'rewind',
   eye: 'eye', eyeOff: 'eye-off', broom: 'brush-cleaning',
   diamond: 'diamond', diamondMinus: 'diamond-minus',
+  pipette: 'pipette', compare: 'square-split-horizontal',
   square: 'square', circle: 'circle', triangle: 'triangle',
   image: 'image', film: 'film',
   arrowRight: 'arrow-right', download: 'download', save: 'save',
-  folderOpen: 'folder-open', filePlus: 'file-plus',
-  settings: 'settings-2', crop: 'crop', layers: 'layers', atom: 'atom',
+  folder: 'folder', folderPlus: 'folder-plus', folderOpen: 'folder-open', filePlus: 'file-plus',
+  settings: 'settings-2', search: 'search', crop: 'crop', layers: 'layers', atom: 'atom',
   transition: 'blend', junction: 'git-commit-horizontal',
   gauge: 'gauge', grip: 'grip-vertical', language: 'languages',
   popout: 'picture-in-picture-2', popin: 'picture-in-picture',
   alert: 'triangle-alert',
   beat: 'metronome', sfx: 'bell-ring', reactive: 'activity',
-  sliders: 'sliders-horizontal', onion: 'layers-2'
+  sliders: 'sliders-horizontal', onion: 'layers-2', solo: 'headphones',
+  grid: 'layout-grid', list: 'list', sortAsc: 'arrow-up-narrow-wide', sortDesc: 'arrow-down-wide-narrow'
 }
 
 const body = (file) => {

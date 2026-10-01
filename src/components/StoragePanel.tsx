@@ -2,30 +2,38 @@ import { useCallback, useEffect, useState } from 'react'
 import type { StorageGroupId, StorageScan } from '@shared/types'
 import { scanStorage, pruneStorage } from '@/engine/storage'
 import { logError } from '@/engine/log'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, trf, type TKey } from '@/i18n'
 import { Icon } from './icons'
 
 const NAME: Record<StorageGroupId, TKey> = {
   proxies: 'stProxies',
   decoded: 'stDecoded',
   fragments: 'stFragments',
+  denoised: 'stDenoised',
   ttsqcCache: 'stTtsqcCache',
   reversed: 'stReversed',
   imported: 'stImported',
-  voiceRuns: 'stVoiceRuns'
+  recordings: 'stRecordings',
+  voiceRuns: 'stVoiceRuns',
+  backups: 'stBackups',
+  templates: 'stTemplates'
 }
 const ABOUT: Record<StorageGroupId, TKey> = {
   proxies: 'stProxiesAbout',
   decoded: 'stDecodedAbout',
   fragments: 'stFragmentsAbout',
+  denoised: 'stDenoisedAbout',
   ttsqcCache: 'stTtsqcCacheAbout',
   reversed: 'stReversedAbout',
   imported: 'stImportedAbout',
-  voiceRuns: 'stVoiceRunsAbout'
+  recordings: 'stRecordingsAbout',
+  voiceRuns: 'stVoiceRunsAbout',
+  backups: 'stBackupsAbout',
+  templates: 'stTemplatesAbout'
 }
 
 /** bytes → «1.4 ГБ»: the number is for a human, the unit comes from i18n */
-function size(n: number, t: (k: TKey) => string): string {
+export function size(n: number, t: (k: TKey) => string): string {
   if (n < 1024) return `${n} ${t('stB')}`
   if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} ${t('stKB')}`
   if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} ${t('stMB')}`
@@ -52,7 +60,7 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
     try {
       setScan(await scanStorage())
     } catch (err) {
-      logError('хранилище', 'не удалось посчитать занятое место', err)
+      logError(tr('lgStorage'), tr('lmStSize'), err)
     } finally {
       setBusy(false)
     }
@@ -65,13 +73,13 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
     setAsk(null)
     try {
       const r = await pruneStorage({ group: a.group, scope: a.scope, project: a.project })
-      if (r.error) logError('хранилище', `удаление отклонено: ${r.error}`)
+      if (r.error) logError(tr('lgStorage'), trf('lmStRefused', { why: r.error }))
       else setFreed({ removed: r.removed, bytes: r.bytes })
       // re-count instead of showing what was just deleted: a line that still
       // claims 2.5 GB after freeing them is simply a lie
       setScan(await scanStorage())
     } catch (err) {
-      logError('хранилище', 'удалить не удалось', err)
+      logError(tr('lgStorage'), tr('lmStDelFail'), err)
     } finally {
       setBusy(false)
     }
@@ -163,7 +171,7 @@ export function StoragePanel({ onClose }: { onClose: () => void }) {
                       <span className="st-size">{size(g.bytes, t)}</span>
                       <span className="st-files">{g.files}</span>
                       <button
-                        disabled={busy || g.files === 0}
+                        disabled={busy || g.files === 0 || !g.rebuildable}
                         onClick={() => setAsk({
                           group: g.id, scope: 'stale', files: g.files, bytes: g.bytes
                         })}

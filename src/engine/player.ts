@@ -1,12 +1,28 @@
 import type { Project, Clip, Track, MediaAsset } from '@shared/types'
-import { Compositor, type LayerDraw } from '@/gl/compositor'
+import { Compositor, type LayerDraw, type LayerGeom } from '@/gl/compositor'
 import { glowParams } from '@/gl/glow'
 import { getCaptureFrame } from './fragmentCapture'
 import { chromiumCanDecode } from './codecs'
+import { playsProxy } from '@shared/proxyChoice'
+import { packSourceHeight } from '@shared/streamColour'
+import { gradeAt } from '@shared/colour'
+import { blendOf } from '@shared/blend'
+import { keyAt } from '@shared/key'
+import { curveTable } from '@shared/curves'
+import { lutFor } from './lut'
+import { compareProject, useColourUi } from './colourUi'
+import { stripColour } from './colourEdit'
 import { evalAnim } from './anim'
+import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
+import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
+import { speedAt } from '@shared/speedRamp'
 import { getTextLayer } from './text'
-import { attachAudio, detachAudio, setElementGain, isRouted, resumeAudio } from './audio'
+import { attachAudio, detachAudio, setElementGain, setElementPan, setElementTrack, setMasterGain, isRouted, resumeAudio, setElementFx, setTrackFx, pruneBuses } from './audio'
+import { denoisedFor } from './denoise'
+import { clampPan } from '@shared/pan'
 import { logError } from './log'
+import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
+import { tr } from '../i18n'
 
 export interface ActiveLayer {
   clip: Clip
@@ -14,29 +30,64 @@ export interface ActiveLayer {
   asset?: MediaAsset
 }
 
-/** Source-media time for a clip-local timeline offset, honoring speed and looping. */
-export function clipSourceTime(clip: Clip, asset: MediaAsset | undefined, rel: number): number {
-  const speed = clip.speed || 1
-  let srcRel = rel * speed
-  if (asset && asset.kind !== 'image' && asset.duration > 0) {
-    const span = Math.max(0.05, asset.duration - clip.inPoint)
-    if (srcRel >= span) srcRel %= span // extended beyond the source — loop
-  }
-  return clip.inPoint + srcRel
+/** Is the track heard? Muted never; while any track is soloed, only the
+    soloed ones (E9). The picture ignores solo — it is a listening tool. */
+export function trackHeard(project: Project, track: Track): boolean {
+  return !track.muted && (!!track.solo || !project.tracks.some((t) => t.solo))
 }
 
-/** Combined fade-in/out gain (0..1) at a clip-local time. */
-export function fadeFactor(
-  clip: Clip,
-  rel: number,
-  fades?: { fadeIn: number; fadeOut: number }
-): number {
+/** The project the export renders: disabled clips gone (E9), so neither the
+    mix, the frames, the fragment renders nor the offline check see them.
+    Returns the same object when nothing is disabled. */
+export function withoutDisabled(project: Project): Project {
+  if (!project.tracks.some((t) => t.clips.some((c) => c.disabled))) return project
+  return { ...project, tracks: project.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => !c.disabled) })) }
+}
+
+export { clipSourceTime }
+
+/** Source frames per project frame, for frame blending in the export: below 1
+    the successor frame is blended in. Alpha sources and freezes never blend
+    (a freeze would fade into the frame after the one it holds). */
+export function sourceFrameRate(clip: Clip, asset: MediaAsset, fps: number, rel = 0): number {
+  if (asset.hasAlpha || clip.freezeAt !== undefined) return 1
+  return (speedAt(clip, rel) * (asset.fps || fps)) / fps
+}
+
+/** Paused, does the element show another SOURCE frame than `desired`? A flat
+    40 ms used to be the test: fine at 1× (the playhead samples mid-frame), but
+    a faster clip (or a ramp, L3) samples anywhere in a frame, so the preview
+    sat one frame off the export. Without a known fps the old tolerance stands. */
+function offFrame(cur: number, desired: number, asset: MediaAsset | undefined): boolean {
+  const fps = asset?.fps
+  if (!(fps! > 0)) return Math.abs(cur - desired) > 0.04
+  return Math.floor(cur * fps! + 1e-6) !== Math.floor(desired * fps! + 1e-6)
+}
+
+/** Does the clip's element play (rather than sit paused and follow by seeks)?
+    Not in reverse, not while paused, and never for a freeze frame. */
+export function elementRuns(clip: Clip, playing: boolean, rate: number): boolean {
+  return playing && rate > 0 && clip.freezeAt === undefined
+}
+
+/** K4: a clip's pan at timeline time t — its own (clip-local keys) plus its
+    track's (project-time keys), clamped; the export's segments carry the same */
+export function panAt(clip: Pick<Clip, 'pan' | 'start'>, track: Pick<Track, 'pan'>, t: number): number {
+  return clampPan(evalAnim(clip.pan, t - clip.start) + evalAnim(track.pan, t))
+}
+
+type Fades = { fadeIn: number; fadeOut: number; inCurve?: FadeCurve; outCurve?: FadeCurve }
+
+/** Combined fade-in/out gain (0..1) at a clip-local time. Linear without
+    `fades` (video opacity); the audio callers pass overlapFades, which carries
+    the clip's curves (K2). */
+export function fadeFactor(clip: Clip, rel: number, fades?: Fades): number {
   let f = 1
   const fi = fades ? fades.fadeIn : clip.fadeIn ?? 0
   const fo = fades ? fades.fadeOut : clip.fadeOut ?? 0
-  if (fi > 0.001 && rel < fi) f *= Math.max(0, rel / fi)
+  if (fi > 0.001 && rel < fi) f *= fadeGain(fades?.inCurve, rel / fi)
   const tail = clip.duration - rel
-  if (fo > 0.001 && tail < fo) f *= Math.max(0, tail / fo)
+  if (fo > 0.001 && tail < fo) f *= fadeGain(fades?.outCurve, tail / fo)
   return f
 }
 
@@ -44,12 +95,12 @@ export function fadeFactor(
  * Auto-crossfade: when clips overlap on the same track, the overlap behaves
  * as a fade-out of the earlier clip into a fade-in of the later one (audio).
  */
-export function overlapFades(track: Track, clip: Clip): { fadeIn: number; fadeOut: number } {
+export function overlapFades(track: Track, clip: Clip): Fades {
   let fadeIn = clip.fadeIn ?? 0
   let fadeOut = clip.fadeOut ?? 0
   const end = clip.start + clip.duration
   for (const o of track.clips) {
-    if (o.id === clip.id) continue
+    if (o.id === clip.id || o.disabled) continue
     const oEnd = o.start + o.duration
     // an earlier clip covers our head — fade in over the overlap
     if (o.start <= clip.start + 1e-6 && oEnd > clip.start + 1e-6 && oEnd < end - 1e-6) {
@@ -60,7 +111,12 @@ export function overlapFades(track: Track, clip: Clip): { fadeIn: number; fadeOu
       fadeOut = Math.max(fadeOut, end - o.start)
     }
   }
-  return { fadeIn, fadeOut }
+  return { fadeIn, fadeOut, inCurve: clip.fadeInCurve, outCurve: clip.fadeOutCurve }
+}
+
+/** a clip's audio level at clip-local `rel`: its gain, the track's and the fades — the preview and the scrub (K7) */
+export function audioLevelAt(clip: Clip, track: Track, rel: number): number {
+  return Math.max(0, evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip)))
 }
 
 /** Visible video layers at time t, in draw order (bottom first). */
@@ -70,7 +126,7 @@ export function videoLayersAt(project: Project, t: number): ActiveLayer[] {
     const track = project.tracks[i]
     if (track.kind !== 'video' || track.muted) continue
     const active = track.clips
-      .filter((c) => t >= c.start && t < c.start + c.duration)
+      .filter((c) => !c.disabled && t >= c.start && t < c.start + c.duration)
       .sort((a, b) => a.start - b.start)
     for (const clip of active) {
       layers.push({
@@ -87,10 +143,11 @@ export function videoLayersAt(project: Project, t: number): ActiveLayer[] {
 export function audibleClipsAt(project: Project, t: number): ActiveLayer[] {
   const out: ActiveLayer[] = []
   for (const track of project.tracks) {
-    if (track.muted) continue
+    if (!trackHeard(project, track)) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted) continue
+      if (clip.kind !== 'media' || clip.muted || clip.disabled || clip.freezeAt !== undefined) continue
       if (t < clip.start || t >= clip.start + clip.duration) continue
+      if (!audioFollowsSpeed(speedAt(clip, t - clip.start))) continue // silent, as in the export
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (asset?.hasAudio) out.push({ clip, track, asset })
     }
@@ -104,7 +161,7 @@ export function upcomingClipsAt(project: Project, t: number, horizon: number): A
   for (const track of project.tracks) {
     if (track.muted) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'media') continue
+      if (clip.kind !== 'media' || clip.disabled) continue
       if (clip.start <= t || clip.start > t + horizon) continue
       const asset = project.assets.find((a) => a.id === clip.assetId)
       if (asset && asset.kind !== 'image') out.push({ clip, track, asset })
@@ -147,9 +204,78 @@ const pools = new Set<MediaPool>()
 /** how many media elements the preview holds (debug panel, tests) */
 export function previewPoolStats() {
   let elements = 0
-  for (const p of pools) elements += p.size
-  return { pools: pools.size, elements, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift) }
+  const sources: string[] = []
+  for (const p of pools) { elements += p.size; sources.push(...p.sources()) }
+  return {
+    pools: pools.size, elements, sources, resyncs: playbackHealth.resyncs, drift: Object.fromEntries(playbackHealth.drift),
+    fps: frameMeter.fps, dropped: frameMeter.dropped
+  }
 }
+
+/**
+ * The preview's frame rate and dropped frames while playing (the readout in
+ * the preview menu). A timeline frame is DROPPED when its moment on the wall
+ * clock passed with no draw in it. Slots are counted from the playback's
+ * first draw shifted by half a frame, so draws that keep pace sit mid-slot
+ * and vsync jitter under half a frame drops nothing; a display slower than
+ * the timeline (59.94 Hz under 60 fps) drops what it really cannot show.
+ */
+export class FrameMeter {
+  fps = 0
+  dropped = 0
+  private t0 = -1
+  private lastSlot = -1
+  private recent: number[] = []
+
+  /** a new playback: counts start from zero */
+  start() {
+    this.fps = 0
+    this.dropped = 0
+    this.t0 = -1
+    this.lastSlot = -1
+    this.recent = []
+  }
+
+  /** a draw at rAF time `ts` (ms) of a timeline running at `fps` */
+  draw(ts: number, fps: number) {
+    if (this.t0 < 0) this.t0 = ts
+    const slot = Math.floor(((ts - this.t0) * fps) / 1000 + 0.5)
+    if (this.lastSlot >= 0 && slot > this.lastSlot + 1) this.dropped += slot - this.lastSlot - 1
+    this.lastSlot = Math.max(this.lastSlot, slot)
+    this.recent.push(ts)
+    while (this.recent.length && this.recent[0] <= ts - 1000) this.recent.shift()
+    const span = ts - this.recent[0]
+    this.fps = this.recent.length > 1 && span > 0 ? ((this.recent.length - 1) * 1000) / span : 0
+  }
+}
+const frameMeter = new FrameMeter()
+
+/** the preview menu's quality: the backing store's scale (Compositor.scale) */
+export const PREVIEW_SCALE = { full: 1, half: 0.5, quarter: 0.25 } as const
+export type PreviewQuality = keyof typeof PREVIEW_SCALE
+
+/** «Прокси при воспроизведении» (proxy.ts keeps it in step with the setting);
+    `scale` — the preview's quality (Preview.tsx keeps it in step) */
+export const previewPrefs = { proxies: true, scale: 1 as number }
+
+/** J8: the scopes' feed. A shown scopes panel holds `want` up; the player then
+    reads a small downscale of each finished frame (before «До и после» draws
+    over it, so the scopes follow the result) — every draw while paused, at most
+    15 a second while playing — and hands it to the listeners when it arrives. */
+export const scopeTap = {
+  want: 0,
+  /** a new subscriber or a read that could not start: redraw and read again */
+  stale: true,
+  frame: null as { px: Uint8Array; w: number; h: number; t: number } | null,
+  listeners: new Set<() => void>()
+}
+export function subscribeScopes(fn: () => void): () => void {
+  scopeTap.want++
+  scopeTap.stale = true
+  scopeTap.listeners.add(fn)
+  return () => { scopeTap.want--; scopeTap.listeners.delete(fn) }
+}
+const SCOPE_MS = 1000 / 15
 
 export class MediaPool {
   private items = new Map<string, HTMLVideoElement | HTMLImageElement>()
@@ -169,6 +295,11 @@ export class MediaPool {
     return this.items.size
   }
 
+  /** the URLs its elements are pointed at (previewPoolStats: which file plays) */
+  sources() {
+    return [...this.srcs.values()]
+  }
+
   setSourceOverride(clipId: string, path: string | null) {
     if (path) this.overrides.set(clipId, path)
     else this.overrides.delete(clipId)
@@ -179,8 +310,12 @@ export class MediaPool {
     const override = this.overrides.get(clipId)
     // the original is used for source quality (snapshots) unless it cannot be
     // shown right: undecodable (HEVC) or HDR (the proxy is the tone-mapped one)
-    const useProxy = !override && this.opts.proxy && !!asset.proxyPath &&
-      (!this.sourceQuality || !chromiumCanDecode(asset.codec) || !!asset.hdr)
+    // with proxies switched off, only a source that cannot be shown right still plays its proxy
+    // the bin's per-asset choice (H7) overrides the global toggle both ways
+    const useProxy = !override && this.opts.proxy && !!asset.proxyPath && playsProxy(asset, {
+      proxies: previewPrefs.proxies, canDecode: chromiumCanDecode(asset),
+      sourceQuality: this.sourceQuality
+    })
     const url = window.kadr.fileUrl(override ?? (useProxy ? asset.proxyPath! : asset.path))
     if (!el) {
       if (asset.kind === 'image') {
@@ -334,7 +469,8 @@ export function frameSignature(
     drawTransition: (type: string, p: number, op: number) => parts.push(`T${type}|${p}|${op}`),
     drawLayer: (l: LayerDraw) => parts.push(`L${sig(l)}`),
     drawLayerFx: (layers: LayerDraw[], blur: number, glows: unknown[], rel: number) =>
-      parts.push(`F${blur}|${JSON.stringify(glows)}|${rel}|${layers.map(sig).join('~')}`)
+      parts.push(`F${blur}|${JSON.stringify(glows)}|${rel}|${layers.map(sig).join('~')}`),
+    drawBlended: (mode: string, draw: () => void) => { parts.push(`M${mode}`); draw(); parts.push('m') }
   }
   try {
     drawFrame(rec as unknown as Compositor, project, t, pool, frames, blends, packed)
@@ -370,7 +506,7 @@ export function drawFrame(
     const trackOpacity = Math.min(1, Math.max(0, track.gain ?? 1))
     if (trackOpacity <= 0.001) continue
     const active = track.clips
-      .filter((c) => t >= c.start && t < c.start + c.duration)
+      .filter((c) => !c.disabled && t >= c.start && t < c.start + c.duration)
       .sort((a, b) => a.start - b.start)
     const assetOf = (c: Clip) =>
       c.assetId ? project.assets.find((a) => a.id === c.assetId) : undefined
@@ -420,6 +556,64 @@ export function drawFrame(
   }
 }
 
+/** where a clip sits at timeline time t: its transform plus its track's motion */
+export function clipPlacement(clip: Clip, track: Track, t: number): Omit<LayerGeom, 'srcWidth' | 'srcHeight'> {
+  const rel = t - clip.start
+  const tr = clip.transform
+  const motion = track.motion
+  return {
+    fit: clip.fit,
+    flipX: clip.flipX,
+    flipY: clip.flipY,
+    x: evalAnim(tr.x, rel),
+    y: evalAnim(tr.y, rel),
+    scale: evalAnim(tr.scale, rel),
+    rotation: evalAnim(tr.rotation, rel),
+    rotX: tr.rotX ? evalAnim(tr.rotX, rel) : 0,
+    rotY: tr.rotY ? evalAnim(tr.rotY, rel) : 0,
+    z: tr.z ? evalAnim(tr.z, rel) : 0,
+    // whole-track motion keyframes live in absolute project time
+    outer: motion
+      ? {
+          x: evalAnim(motion.x, t),
+          y: evalAnim(motion.y, t),
+          scale: evalAnim(motion.scale, t),
+          rotation: evalAnim(motion.rotation, t),
+          rotX: evalAnim(motion.rotX, t),
+          rotY: evalAnim(motion.rotY, t),
+          z: evalAnim(motion.z, t)
+        }
+      : undefined
+  }
+}
+
+/**
+ * The layer a visual clip draws at t, without touching a decoder: the size
+ * is the asset's (a proxy or a decoded frame has the same aspect, and the
+ * fit only sees the aspect). Null for audio or a missing asset.
+ */
+export function clipGeom(project: Project, track: Track, clip: Clip, t: number): LayerGeom | null {
+  let srcWidth = project.width
+  let srcHeight = project.height
+  if (clip.kind === 'remotion') {
+    srcWidth = clip.fragmentMeta?.width ?? project.width
+    srcHeight = clip.fragmentMeta?.height ?? project.height
+  } else if (clip.kind !== 'text') {
+    const asset = clip.assetId ? project.assets.find((a) => a.id === clip.assetId) : undefined
+    if (!asset || asset.kind === 'audio' || !asset.width || !asset.height) return null
+    srcWidth = asset.width
+    srcHeight = asset.height
+  }
+  return { srcWidth, srcHeight, ...clipPlacement(clip, track, t) }
+}
+
+/** J2: the clip's LUT and its intensity at clip-local `rel`; nothing while the file loads or at 0 */
+function lutAt(clip: Clip, rel: number) {
+  const table = clip.lut && lutFor(clip.lut.path)
+  const mix = table ? Math.min(1, Math.max(0, evalAnim(clip.lut!.intensity, rel))) : 0
+  return table && mix > 0 ? { table, mix } : undefined
+}
+
 function drawClipLayer(
   comp: Compositor,
   project: Project,
@@ -440,27 +634,8 @@ function drawClipLayer(
     const shapes = clip.maskShapes ?? (clip.maskShape ? [clip.maskShape] : [])
     const cropV = (a: { value: number } | undefined) =>
       a ? Math.min(0.5, Math.max(0, evalAnim(a, rel))) : 0
-    const motion = track.motion
     const common = {
-      x: evalAnim(tr.x, rel),
-      y: evalAnim(tr.y, rel),
-      scale: evalAnim(tr.scale, rel),
-      rotation: evalAnim(tr.rotation, rel),
-      rotX: tr.rotX ? evalAnim(tr.rotX, rel) : 0,
-      rotY: tr.rotY ? evalAnim(tr.rotY, rel) : 0,
-      z: tr.z ? evalAnim(tr.z, rel) : 0,
-      // whole-track motion keyframes live in absolute project time
-      outer: motion
-        ? {
-            x: evalAnim(motion.x, t),
-            y: evalAnim(motion.y, t),
-            scale: evalAnim(motion.scale, t),
-            rotation: evalAnim(motion.rotation, t),
-            rotX: evalAnim(motion.rotX, t),
-            rotY: evalAnim(motion.rotY, t),
-            z: evalAnim(motion.z, t)
-          }
-        : undefined,
+      ...clipPlacement(clip, track, t),
       opacity: evalAnim(tr.opacity, rel) * fadeFactor(clip, rel) * trackOpacity,
       crop: m
         ? ([cropV(m.left), cropV(m.top), cropV(m.right), cropV(m.bottom)] as [number, number, number, number])
@@ -476,7 +651,11 @@ function drawClipLayer(
             featherOut: Math.max(0, evalAnim(ms.featherOut, rel)),
             invert: ms.invert
           }))
-        : undefined
+        : undefined,
+      key: keyAt(clip.key, rel, evalAnim),
+      grade: gradeAt(clip.grade, rel, evalAnim),
+      lut: lutAt(clip, rel),
+      curve: curveTable(clip.wheels, clip.curves)
     }
     if (common.opacity <= 0.001) return
     // enabled outer glows render the layer through the effect pass; smoke is
@@ -487,13 +666,16 @@ function drawClipLayer(
     const blurFx = (clip.effects ?? []).find((e) => e.enabled && e.type === 'blur')
     const blurSize = typeof blurFx?.params.size === 'number' ? blurFx.params.size : 0
     const blurFrac = Math.max(0, blurSize) / Math.max(1, project.height)
-    const emit = (...layers: LayerDraw[]) => {
+    const draw = (layers: LayerDraw[]) => {
       if (glows.length || blurFrac > 0.0002) {
         comp.drawLayerFx(layers, blurFrac, glows.map((g) => glowParams(g.params)), rel)
       } else {
         for (const l of layers) comp.drawLayer(l)
       }
     }
+    // J3: a blend mode takes the whole clip (effects, frame blend) through one composite pass
+    const mode = blendOf(clip.blend)
+    const emit = (...layers: LayerDraw[]) => (mode ? comp.drawBlended(mode, () => draw(layers)) : draw(layers))
     if (clip.kind === 'remotion') {
       // captured fragments draw like any layer — masks/3D/transitions work;
       // uncaptured ones render through the iframe overlay instead
@@ -527,17 +709,17 @@ function drawClipLayer(
       if (asset.kind === 'audio') return
       const vf = frames?.get(clip.id)
       if (vf) {
-        // alpha sources decode as colour-over-matte (2× tall) — the shader
+        // alpha sources decode as colour-over-matte (packHeight) — the shader
         // splits the halves, the layer keeps its logical size
         const ap = packed?.has(clip.id) ?? false
-        const half = (h: number) => (ap ? h / 2 : h)
+        const half = (h: number) => (ap ? packSourceHeight(h) : h)
         const layers: LayerDraw[] = [{
           source: vf as unknown as TexImageSource,
           cacheKey: clip.id,
           dynamic: true,
           alphaPacked: ap,
           srcWidth: vf.displayWidth || asset.width,
-          srcHeight: half(vf.displayHeight || asset.height * (ap ? 2 : 1)),
+          srcHeight: vf.displayHeight ? half(vf.displayHeight) : asset.height,
           ...common
         }]
         const bl = blends?.get(clip.id)
@@ -556,7 +738,7 @@ function drawClipLayer(
             source: bl.frame as unknown as TexImageSource,
             cacheKey: `${clip.id}:b`,
             srcWidth: bl.frame.displayWidth || asset.width,
-            srcHeight: half(bl.frame.displayHeight || asset.height * (ap ? 2 : 1)),
+            srcHeight: bl.frame.displayHeight ? half(bl.frame.displayHeight) : asset.height,
             opacity: fw
           })
         }
@@ -590,7 +772,11 @@ function drawClipLayer(
 }
 
 interface PlayerHooks {
-  getState(): { project: Project; playhead: number; playing: boolean }
+  getState(): {
+    project: Project; playhead: number; playing: boolean
+    /** signed clock rate (J/K/L), the loop switch, the range it loops and play in→out's stop */
+    playRate: number; loop: boolean; range: { start: number; end: number } | null; playEnd: number | null
+  }
   setPlayhead(t: number): void
   setPlaying(p: boolean): void
   setLoading(l: boolean): void
@@ -614,16 +800,24 @@ export class Player {
   private wasLoading = false
   private lastDrawnProject: Project | null = null
   private lastDrawnT = -1
+  private lastUi: unknown = null
+  private scopeAt = -Infinity
+  private scopeT = 0
   private stableTicks = 0
   /** playback clock anchor — see tick() */
-  private anchor: { ts: number; t: number } | null = null
+  private anchor: ClockAnchor | null = null
   private lastSet = -1
 
   constructor(private hooks: PlayerHooks) {}
 
-  /** Frame snapshots: decode originals instead of preview proxies while on. */
+  /** Frame snapshots: decode originals instead of preview proxies, and draw
+      at the project size whatever the preview quality, while on. */
   setSourceQuality(on: boolean) {
     this.pool.sourceQuality = on
+  }
+
+  private renderScale() {
+    return this.pool.sourceQuality ? 1 : previewPrefs.scale
   }
 
   /** Draw the current state synchronously. Snapshots call this right before
@@ -633,13 +827,32 @@ export class Player {
   drawNow() {
     if (!this.comp) return
     const { project, playhead } = this.hooks.getState()
+    this.comp.scale = this.renderScale()
     drawFrame(this.comp, project, playhead, this.pool)
     this.lastDrawnProject = project
     this.lastDrawnT = playhead
   }
 
+  /** J6 pipette: the mean colour (0…255) of 5×5 px of clip `clipId` ALONE, with
+      its colour off, at (fx, fy) of the frame — what its key should take out.
+      The preview is drawn again right after, so nothing of it is ever seen. */
+  sampleSource(clipId: string, fx: number, fy: number): [number, number, number] | null {
+    if (!this.comp) return null
+    const { project, playhead } = this.hooks.getState()
+    const track = project.tracks.find((tr) => tr.clips.some((c) => c.id === clipId))
+    const clip = track?.clips.find((c) => c.id === clipId)
+    if (!track || !clip) return null
+    const bare = stripColour(clip)
+    const solo: Project = { ...project, background: '#000000', tracks: [{ ...track, muted: false, gain: 1, clips: [bare] }] }
+    this.comp.scale = this.renderScale()
+    drawFrame(this.comp, solo, playhead, this.pool)
+    const rgb = this.comp.meanAt(fx, fy)
+    this.drawNow()
+    return rgb
+  }
+
   attach(canvas: HTMLCanvasElement) {
-    this.comp = new Compositor(canvas)
+    this.comp = new Compositor(canvas, { alpha: true })
     // A GPU reset (driver hiccup, another app eating VRAM, Chromium force-losing
     // the oldest context once a renderer holds 16) turns every GL call into a
     // no-op. Left alone the preview simply goes black and STAYS black with
@@ -667,10 +880,10 @@ export class Player {
       // and texture in it is gone — a fresh Compositor rebuilds them, and its
       // texture cache starts empty so sources re-upload on the next draw
       try {
-        this.comp = new Compositor(canvas)
+        this.comp = new Compositor(canvas, { alpha: true })
         this.hooks.setGpuLost(false)
       } catch (err) {
-        logError('превью', 'контекст GPU вернулся, но композитор не пересобрался', err)
+        logError(tr('lgPreview'), tr('lmGlCtx'), err)
       }
     }
     canvas.addEventListener('webglcontextlost', this.onLost)
@@ -685,7 +898,7 @@ export class Player {
       } catch (err) {
         if (ts - lastErrLog > 2000) {
           lastErrLog = ts
-          logError('превью', 'кадр не отрисовался', err)
+          logError(tr('lgPreview'), tr('lmDrawFail'), err)
         }
       }
       schedule()
@@ -728,40 +941,70 @@ export class Player {
   }
 
   private tick(ts: number) {
-    const { project, playhead, playing } = this.hooks.getState()
+    const { project, playhead, playing, playRate, loop, range, playEnd } = this.hooks.getState()
+    const rate = playing ? playRate || 1 : 1
 
     let t = playhead
     if (playing) {
+      if (!this.anchor) frameMeter.start() // a new playback (a re-rate keeps counting)
       resumeAudio()
       // anchored clock: rAF timestamps are vsync-aligned, so projecting from
       // a fixed anchor gives constant velocity — accumulating per-frame
-      // deltas would fold frame-time jitter into the motion (visible judder)
-      if (!this.anchor || Math.abs(playhead - this.lastSet) > 1e-9) {
-        this.anchor = { ts, t: playhead } // started or externally scrubbed
+      // deltas would fold frame-time jitter into the motion (visible judder).
+      // A new rate re-anchors where the playhead is, as a scrub does.
+      if (!this.anchor || Math.abs(playhead - this.lastSet) > 1e-9 || this.anchor.rate !== rate) {
+        this.anchor = { ts, t: playhead, rate } // started, externally scrubbed or re-rated
       }
       const dur = this.hooks.duration()
-      t = this.anchor.t + (ts - this.anchor.ts) / 1000
-      if (t >= dur) {
-        t = dur
-        this.hooks.setPlaying(false)
-      }
+      const [lo, hi] = loop ? (range ? [range.start, range.end] : [0, dur]) : [0, playEnd ?? dur]
+      const c = advanceClock(this.anchor, ts, lo, hi, loop)
+      t = c.t
+      if (c.wrapped) this.anchor = { ts, t, rate }
+      if (c.stop) this.hooks.setPlaying(false)
       this.hooks.setPlayhead(t)
       this.lastSet = t
     } else {
       this.anchor = null
+      frameMeter.fps = 0
     }
 
-    this.syncMedia(project, t, playing)
+    this.syncMedia(project, t, playing, rate)
+    setMasterGain(project.masterGain ?? 1)
 
     // paused with nothing changed: idle at ~4 fps instead of a full 60 fps
     // composite (texture re-uploads of every visible video are not free) —
     // late-arriving seeks still show up within a quarter second
-    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT
+    const scale = this.renderScale()
+    const ui = useColourUi.getState()
+    const scopes = scopeTap.want > 0
+    if (scopes && this.comp) {
+      const f = this.comp.scopeFetch()
+      if (f) {
+        scopeTap.frame = { ...f, t: this.scopeT }
+        for (const fn of scopeTap.listeners) fn()
+      }
+    }
+    const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale ||
+      ui !== this.lastUi || (scopes && scopeTap.stale)
     if (dirty) this.stableTicks = 0
     else this.stableTicks++
     const skipDraw = !dirty && this.stableTicks > 20 && this.stableTicks % 15 !== 0
     if (this.comp && !skipDraw) {
+      this.comp.scale = scale
       drawFrame(this.comp, project, t, this.pool)
+      if (scopes && (!playing || ts - this.scopeAt >= SCOPE_MS)) {
+        const started = this.comp.scopeRead()
+        scopeTap.stale = !started
+        if (started) { this.scopeAt = ts; this.scopeT = t }
+      }
+      // J6 «До и после»: the left of the divider again, the selected clip without its colour
+      const before = compareProject(project)
+      if (before) {
+        this.comp.clipLeft(ui.split)
+        try { drawFrame(this.comp, before, t, this.pool) } finally { this.comp.clipLeft(null) }
+      }
+      this.lastUi = ui
+      if (playing) frameMeter.draw(ts, project.fps || 30)
       this.lastDrawnProject = project
       this.lastDrawnT = t
     }
@@ -773,7 +1016,15 @@ export class Player {
     if (this.gcCounter % 30 === 0) this.pool.evictExcept(clipsAround(project, t))
   }
 
-  private syncMedia(project: Project, t: number, playing: boolean) {
+  /** K9: a denoised clip on an audio track plays its source's denoised copy once it exists (the export mixes the same file) */
+  private denoiseSource(clip: Clip, track: Track, asset: MediaAsset) {
+    this.pool.setSourceOverride(clip.id, denoisedFor(clip, track, asset))
+  }
+
+  private syncMedia(project: Project, t: number, playing: boolean, rate: number) {
+    // Reverse has no element path (a <video> only plays forward): the elements
+    // are handled as paused and follow the clock by seeking, muted — frames
+    // are painted by per-frame seeks, and beyond ~2× the seeks skip frames.
     playbackHealth.drift.clear() // the clips audible on THIS frame
     const activeIds = new Set<string>()
     const seen = new Set<string>()
@@ -783,10 +1034,14 @@ export class Player {
       (l) => l.asset && l.asset.kind === 'video'
     )
     const audible = audibleClipsAt(project, t)
+    // K9: track effects on the buses (a bus that never had any is not made for them)
+    for (const tr of project.tracks) if (tr.kind === 'audio') setTrackFx(tr.id, tr.audioFx)
+    pruneBuses(project.tracks)
 
     for (const { clip, track, asset } of [...visual, ...audible]) {
       if (seen.has(clip.id)) continue
       seen.add(clip.id)
+      this.denoiseSource(clip, track, asset!)
       const el = this.pool.get(clip.id, asset!)
       if (!(el instanceof HTMLVideoElement)) continue
       activeIds.add(clip.id)
@@ -794,24 +1049,28 @@ export class Player {
       const rel = t - clip.start
       const desired = clipSourceTime(clip, asset, rel)
       const isAudible = audible.some((a) => a.clip.id === clip.id)
-      el.muted = !isAudible || !playing
-      this.pool.setVolume(el, Math.max(0,
-        evalAnim(clip.gain, rel) * track.gain * fadeFactor(clip, rel, overlapFades(track, clip))
-      ))
-      // Chromium throws on rates outside [0.0625, 16]; beyond the cap the
-      // element free-runs at the clamped rate and the resync below keeps it
-      // on the master clock with periodic seeks
-      el.playbackRate = Math.min(16, Math.max(0.0625, clip.speed || 1))
+      const running = elementRuns(clip, playing, rate) // a freeze sits paused on its frame
+      const eff = speedAt(clip, rel) * (running ? rate : 1) // a ramp re-rates the element every frame
+      // beyond Chromium's cap the audio is silent, as for a clip that fast (shared/audioSpeed.ts)
+      el.muted = !isAudible || !running || !audioFollowsSpeed(eff)
+      this.pool.setVolume(el, audioLevelAt(clip, track, rel))
+      setElementPan(el, panAt(clip, track, t))
+      setElementTrack(el, track.kind === 'audio' ? track.id : '')
+      setElementFx(el, clip.audioFx)
+      // Chromium throws on rates outside [1/16, 16]; beyond the cap the clip
+      // is muted (shared/audioSpeed.ts), the element free-runs at the clamped
+      // rate and the resync below keeps it on the master clock with seeks
+      el.playbackRate = Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, eff))
 
       if (el.readyState < 2) loading = true
-      if (playing) {
+      if (running) {
         // Resync discipline: a seek on a software-decoded element takes
         // ~0.1-0.2 s, during which the master clock runs on — naively
         // reseeking on every drift made each correction land already
         // behind, storming into a seek-per-few-frames flicker at high
         // clip speeds. Never reseek mid-seek, scale the tolerance with
         // speed, and aim slightly AHEAD so the seek lands on time.
-        const speed = clip.speed || 1
+        const speed = eff
         const tolerance = Math.max(0.15, 0.08 * speed)
         if (isAudible && !el.seeking && !el.paused) playbackHealth.drift.set(clip.id, el.currentTime - desired)
         if (!el.seeking && Math.abs(el.currentTime - desired) > tolerance) {
@@ -821,17 +1080,18 @@ export class Player {
         if (el.paused) el.play().catch(() => { /* not ready yet */ })
       } else {
         if (!el.paused) el.pause()
-        if (Math.abs(el.currentTime - desired) > 0.04 && el.readyState >= 1 && !el.seeking) {
+        if (offFrame(el.currentTime, desired, asset) && el.readyState >= 1 && !el.seeking) {
           el.currentTime = desired
         }
-        if (el.seeking) loading = true
+        if (el.seeking && !playing) loading = true // reverse seeks all the time: no spinner for that
       }
     }
 
     // preroll: seek clips that start within ~2s so cuts don't flash black
-    for (const { clip, asset } of upcomingClipsAt(project, t, 2)) {
+    for (const { clip, track, asset } of upcomingClipsAt(project, t, 2)) {
       if (seen.has(clip.id)) continue
       seen.add(clip.id)
+      this.denoiseSource(clip, track, asset!)
       const el = this.pool.get(clip.id, asset!)
       if (!(el instanceof HTMLVideoElement)) continue
       activeIds.add(clip.id) // keep it from being paused-collected mid-seek

@@ -5,11 +5,15 @@
 // keeps the captured players synced to the editor clock.
 import type { Anim, Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
 import { evalAnim } from './anim'
-import { fadeFactor, overlapFades } from './player'
+import { GRADE_KEYS } from '@shared/colour'
+import { blendOf } from '@shared/blend'
+import { fadeFactor, overlapFades, trackHeard } from './player'
 import { ensureFragmentServer } from './fragments'
 import { logError, logWarn } from './log'
 import { useFragmentParams } from './fragmentParams'
+import { tr, say } from '../i18n'
 
 export interface CaptureFrame {
   data: Uint8Array
@@ -42,7 +46,7 @@ export function setForceCaptureAll(on: boolean) {
   forceAll = on
   // a snapshot takes the fragments at the project's full width; live preview
   // goes back to ≤1280 afterwards (already running windows are resized)
-  const p = useEditor.getState().project
+  const p = flattenProject(useEditor.getState().project)
   for (const [id, { clipId }] of active) {
     const clip = p.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)
     const [w, h] = captureSize(clip, p)
@@ -127,7 +131,7 @@ export function fragmentNeedsCapture(track: Track, clip: Clip, project?: Project
     const t = project.tracks[i]
     if (t.kind !== 'video' || t.muted) continue
     for (const c of t.clips) {
-      if (c.start >= end || c.start + c.duration <= clip.start) continue
+      if (c.disabled || c.start >= end || c.start + c.duration <= clip.start) continue
       if (c.kind !== 'remotion' || ownNeedsCapture(t, c)) return true
     }
   }
@@ -140,9 +144,18 @@ function ownNeedsCapture(track: Track, clip: Clip): boolean {
   const tr = clip.transform
   if (animActive(tr.rotX) || animActive(tr.rotY) || animActive(tr.z)) return true
   if (track.motion) return true
+  // the iframe overlay only knows contain and no mirror
+  if ((clip.fit && clip.fit !== 'contain') || clip.flipX || clip.flipY) return true
   const m = clip.mask
   if (m && [m.left, m.top, m.right, m.bottom].some((a) => animActive(a))) return true
   if ((clip.maskShapes?.length ?? 0) > 0 || clip.maskShape) return true
+  // J1: the grade is shader-only
+  const g = clip.grade
+  if (g && GRADE_KEYS.some((k) => animActive(g[k]))) return true
+  if (clip.lut) return true // J2
+  if (blendOf(clip.blend)) return true // J3: mixes with the GL picture under it
+  if (clip.key) return true // J4: shader-only
+  if (clip.wheels || clip.curves) return true // J7: shader-only
   if (clip.transitionIn && clip.transitionIn.type !== 'none') return true
   if (clip.transitionOut && clip.transitionOut.type !== 'none') return true
   const end = clip.start + clip.duration
@@ -158,7 +171,7 @@ function wanted(project: Project, t: number): Map<string, { clip: Clip; track: T
   for (const track of project.tracks) {
     if (track.kind !== 'video' || track.muted) continue
     for (const clip of track.clips) {
-      if (clip.kind !== 'remotion' || !clip.fragmentId) continue
+      if (clip.kind !== 'remotion' || !clip.fragmentId || clip.disabled) continue
       if (t < clip.start - 2 || t >= clip.start + clip.duration + 0.75) continue
       if (!forceAll && !fragmentNeedsCapture(track, clip, project)) continue
       out.set(clip.fragmentId, { clip, track })
@@ -178,8 +191,8 @@ export function captureRequested(fragmentId: string): boolean {
 }
 
 export function wireFragmentCapture() {
-  window.kadr.onFragmentCaptureLog?.(({ id, level, msg }) => {
-    ;(level === 'error' ? logError : logWarn)('захват фрагмента', `${id}: ${msg}`)
+  window.kadr.onFragmentCaptureLog?.(({ id, level, msg, said }) => {
+    ;(level === 'error' ? logError : logWarn)(tr('lgCapture'), `${id}: ${said ? say(said) : msg}`)
   })
   window.kadr.onFragmentFrame(({ id, w, h, data }) => {
     if (!active.has(id)) return
@@ -195,7 +208,7 @@ export function wireFragmentCapture() {
     const s = useEditor.getState()
     const rel = s.playhead - clip.start
     const inside = rel >= 0 && rel < clip.duration
-    const vol = clip.muted || track.muted || !inside
+    const vol = clip.muted || !trackHeard(flattenProject(s.project), track) || !inside
       ? 0
       : Math.min(1, evalAnim(clip.gain, Math.max(0, rel)) * track.gain *
           fadeFactor(clip, Math.max(0, rel), overlapFades(track, clip)))
@@ -203,7 +216,9 @@ export function wireFragmentCapture() {
       kadr: true,
       type: 'sync',
       frame: fragmentFrameAt(clip, rel),
-      playing: s.playing && inside,
+      // reverse has no play path on the page: it follows by seeking, like a scrub
+      playing: s.playing && s.playRate > 0 && inside,
+      rate: s.playRate,
       volume: vol
     })
     // a capture window has no parent to say 'ready' to, so the parameters
@@ -227,7 +242,7 @@ export function wireFragmentCapture() {
   // nobody tracked, rendering until the app quit.
   const reconcileOnce = async () => {
     const s = useEditor.getState()
-    const want = wanted(s.project, s.playhead)
+    const want = wanted(flattenProject(s.project), s.playhead)
     for (const id of [...active.keys()]) {
       if (!want.has(id)) {
         active.delete(id)
@@ -242,7 +257,7 @@ export function wireFragmentCapture() {
       active.set(id, { clipId: clip.id })
       try {
         const url = await ensureFragmentServer()
-        const [cw, ch] = captureSize(clip, s.project)
+        const [cw, ch] = captureSize(clip, flattenProject(s.project))
         await window.kadr.fragmentCaptureStart(
           id, `${url}/?comp=${encodeURIComponent(id)}`, cw, ch, clip.fragmentMeta?.fps ?? 60
         )

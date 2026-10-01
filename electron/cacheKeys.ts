@@ -27,16 +27,29 @@ export function mediaCacheKey(
     .slice(0, 20)
 }
 
+/** a project's folder of backups (electron/backups.ts): BY PATH, never by name —
+    a user's projects are routinely all called "Untitled" (see storage.ts) */
+export const projectKey = (projectPath: string): string =>
+  createHash('sha1').update(projectPath).digest('hex').slice(0, 20)
+
 /** proxies: an alpha proxy is a different artefact (webm), so a different key;
     an HDR source's proxy is tone-mapped to SDR (shared/hdr.ts) — ':sdr' plus
     the conversion's generation, so neither a proxy built before that existed
-    nor one made with an older curve is taken for the current one */
+    nor one made with an older curve is taken for the current one; ':c' = tagged with
+    its source's colour space (J11) — an untagged proxy showed an HD source BT.601 */
 const SDR = `:sdr${HDR_VERSION > 1 ? HDR_VERSION : ''}`
-export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : sdr ? SDR : '')
+export const proxySuffix = (alpha?: boolean, sdr?: boolean) => (alpha ? ':a' : (sdr ? SDR : '') + ':c')
 
-/** decoded: packed colour+matte, plain alpha, an HDR source tone-mapped, or none of these */
+/** decoded: packed colour+matte, plain alpha, an HDR source tone-mapped, or none of these;
+    ':p2' = J12's pack (matte in range once, gaps, full tags) — ':p' ones exported 0.92× dark */
 export const decodedSuffix = (opts?: { alpha?: boolean; packed?: boolean; sdr?: boolean }) =>
-  opts?.packed ? ':p' : opts?.alpha ? ':a' : opts?.sdr ? SDR : ''
+  opts?.packed ? ':p2' : opts?.alpha ? ':a' : opts?.sdr ? SDR : ''
+
+/** K9: a denoised copy, `<key>-<nr>.flac`: the key is the source's alone, so the
+    storage panel ties every strength of it to the project (the part after '-'
+    is afftdn's `nr`, dB — another strength is another file) */
+export const DENOISE_SUFFIX = ':dn'
+export const denoiseName = (key: string, nr: number) => `${key}-${+nr.toFixed(2)}`
 
 /** reversed: the same source cut differently is a different render */
 export const reverseSuffix = (start: number, duration: number) =>

@@ -4,22 +4,30 @@
 // muxes/transcodes into the final file.
 import { Muxer, StreamTarget } from 'mp4-muxer'
 import type {
-  ExportPreset, ExportProgress, Project, AudioSegment, MediaAsset
+  ExportPreset, ExportProgress, Project, MediaAsset
 } from '@shared/types'
 import { uid } from '@/state/store'
 import { Compositor } from '@/gl/compositor'
 import {
-  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime, overlapFades,
+  MediaPool, drawFrame, frameSignature, videoLayersAt, clipSourceTime, sourceFrameRate, withoutDisabled,
   type BlendFrame
 } from './player'
 import { Mp4FrameSource } from './demux'
 import { chromiumCanDecode } from './codecs'
-import { evalAnim } from './anim'
 import { activity } from './autosave'
-import { projectDuration } from '@/state/store'
+import { projectDuration, useEditor } from '@/state/store'
+import { flattenProject } from './nesting'
+import { registerLibFonts } from './fonts'
+import { loadLuts } from './lut'
 import { logInfo, logWarn } from './log'
+import {
+  rawEncodeArgs, outputRect, exportFrameCount, rawCodec, videoCodecOf, pickEncoder, seqPattern, VIDEO_CODECS
+} from '@shared/rawEncode'
 import { flushParamSaves } from './fragmentParams'
 import { refreshStaleBakes } from './audioReact'
+import { missingForExport } from './offline'
+import { collectRangeAudio, rangeExtras, type ExtrasChoice } from './subtitles'
+import { tr, trf } from '../i18n'
 
 export interface ExportHandle {
   cancel(): void
@@ -31,55 +39,6 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export interface TimeRange {
   start: number
   end: number
-}
-
-/**
- * Audio segments intersected with the export range and shifted to its start.
- * Clips extended beyond their source loop, which yields several sub-segments;
- * speed is handed to ffmpeg as an atempo chain, fades as afade windows.
- */
-function collectAudioSegments(project: Project, range: TimeRange): AudioSegment[] {
-  const segs: AudioSegment[] = []
-  for (const track of project.tracks) {
-    if (track.muted) continue
-    for (const clip of track.clips) {
-      if (clip.kind !== 'media' || clip.muted) continue
-      const asset = project.assets.find((a) => a.id === clip.assetId)
-      if (!asset?.hasAudio) continue
-      const speed = clip.speed || 1
-      const span = Math.max(0.05, asset.duration - clip.inPoint) // source seconds available
-      const from = Math.max(clip.start, range.start)
-      const to = Math.min(clip.start + clip.duration, range.end)
-      if (to - from < 0.001) continue
-      const gain = evalAnim(clip.gain, 0) * track.gain
-      // overlapping neighbours on the track auto-crossfade
-      const { fadeIn, fadeOut } = overlapFades(track, clip)
-
-      let local = from - clip.start // clip-local timeline position
-      const localEnd = to - clip.start
-      while (local < localEnd - 0.001) {
-        const srcOff = (local * speed) % span
-        const untilWrap = (span - srcOff) / speed // timeline seconds until the loop wraps
-        const segDur = Math.min(untilWrap, localEnd - local)
-        // clip-global fades clipped to this sub-segment's local window
-        const fiLocal = local < fadeIn ? Math.min(fadeIn - local, segDur) : 0
-        const tail = clip.duration - (local + segDur)
-        const foLocal = tail < fadeOut ? Math.min(fadeOut - tail, segDur) : 0
-        segs.push({
-          path: asset.path,
-          inPoint: clip.inPoint + srcOff,
-          duration: segDur * speed,
-          start: clip.start + local - range.start,
-          gain,
-          speed,
-          fadeIn: fiLocal,
-          fadeOut: foLocal
-        })
-        local += segDur
-      }
-    }
-  }
-  return segs
 }
 
 function avcCodecString(width: number, height: number, fps: number): string {
@@ -99,6 +58,8 @@ export interface ExportOptions {
       desktop-NLE quality; 'webcodecs' keeps the old in-browser encoder
       (faster, but Chromium's OpenH264 ignores the preset bitrate) */
   encoder?: 'x264' | 'webcodecs'
+  /** G7: title, chapters and subtitles — moved into the range here, written by the mux */
+  extras?: ExtrasChoice
 }
 
 export function startExport(
@@ -123,6 +84,12 @@ export function startExport(
   }
 
   async function run(): Promise<void> {
+    // a switched-off clip (E9) is not in the film: not mixed, drawn, rendered or checked for
+    project = withoutDisabled(flattenProject(project))
+    // a moved or renamed source used to render black and fail at the mux:
+    // refuse up front (before the busy check: nothing awaits between it and the flag) and say which files
+    const missing = await missingForExport(project, range)
+    if (missing.length) throw new Error(`${tr('exportOffline')}: ${missing.join(', ')}`)
     // ONE export at a time. The raw encoder in the preload is a single global
     // ffmpeg, and main's export state and the fragment render queue are shared
     // too: a second export started while one ran (a script's and the dialog's,
@@ -130,20 +97,26 @@ export function startExport(
     // the very end («write after end» / «write ECANCELED»), and until then the
     // second one sat on the first one's fragment renders looking frozen.
     if (activity.exporting) {
-      throw new Error('уже идёт другой экспорт — дождитесь его или отмените')
+      throw new Error(tr('eExBusy'))
     }
     activity.exporting = true
+    // an export can take hours: the system must not sleep under it
+    void window.kadr.exportAwake(true)
     try {
       await runInner()
     } finally {
       activity.exporting = false
+      void window.kadr.exportAwake(false)
     }
   }
 
   async function runInner(): Promise<void> {
     // remotion fragments render exactly once (content-hash cached) and turn
     // into ordinary media clips for the rest of the pipeline
+    // text clips draw with the project's kadr-lib fonts: they must have loaded
+    await registerLibFonts(useEditor.getState().projectPath)
     project = await materializeFragments(project, onProgress, () => cancelled)
+    await loadLuts(project) // J2: no frame draws before its clip's LUT is there
     if (cancelled) throw new Error('cancelled')
     const width = preset.width === 'project' ? project.width : preset.width
     const height = preset.height === 'project' ? project.height : preset.height
@@ -151,6 +124,25 @@ export function startExport(
     const span: TimeRange = range ?? { start: 0, end: projectDuration(project) }
     const duration = span.end - span.start
     if (duration <= 0) throw new Error('empty project')
+
+    // which encoder runs the codec HERE (G6): a hardware one chosen elsewhere (a
+    // user preset from another machine, kadr_export) that does not open here
+    // gives way to the CPU one instead of failing; HEVC/AV1 need a build that has one
+    const vcodec = videoCodecOf(preset)
+    if (!preset.audioOnly) {
+      const enc = pickEncoder(vcodec, preset.videoEncoder, await window.kadr.hwEncoders())
+      if (!enc) throw new Error(trf('lmNoEncoder', { codec: tr(`vc${vcodec}`) }))
+      const fam = preset.videoEncoder
+      if (fam && fam !== 'x264' && VIDEO_CODECS[vcodec].hw && enc !== `${vcodec}_${fam}`) {
+        logWarn(tr('lgExport'), trf('lmHwMissing', { enc: `${vcodec}_${fam}`, alt: enc }))
+      }
+      // H.264 stays 'copy' + a family (rawCodec); every other codec names its encoder
+      preset = vcodec === 'h264'
+        ? { ...preset, videoEncoder: enc === 'libx264' ? 'x264' : fam }
+        : { ...preset, ffmpegVideo: enc }
+    }
+    // G6: a transparent background on an alpha codec keeps the framebuffer's coverage
+    const alpha = project.background === 'transparent' && !!VIDEO_CODECS[vcodec].alpha && !preset.audioOnly
 
     await window.kadr.exportBegin({
       projectName: project.name,
@@ -160,7 +152,9 @@ export function startExport(
       height,
       fps,
       duration,
-      audioSegments: collectAudioSegments(project, span)
+      audioSegments: collectRangeAudio(project, span.start, span.end),
+      ...(project.masterGain !== undefined ? { masterGain: project.masterGain } : {}),
+      extras: await rangeExtras(project, span.start, span.end, opts?.extras)
     })
 
     if (preset.audioOnly) {
@@ -179,7 +173,7 @@ export function startExport(
     const canvas = document.createElement('canvas')
     canvas.width = rw
     canvas.height = rh
-    const comp = new Compositor(canvas)
+    const comp = new Compositor(canvas, { alpha })
     comp.setSize(rw, rh)
     const pool = new MediaPool()
     // clip end times for the passed-clip cleanup below (the project is
@@ -203,7 +197,8 @@ export function startExport(
     // synchronously, so the loop keeps decoding/drawing the next frames
     // while up to RAW_AHEAD transfers are still in flight (ffmpeg encodes
     // in its own process in parallel anyway).
-    const useRaw = opts?.encoder !== 'webcodecs'
+    // Chromium's encoder writes H.264 only: every other codec takes the raw path
+    const useRaw = opts?.encoder !== 'webcodecs' || vcodec !== 'h264'
     const rawBuf = useRaw ? new Uint8Array(rw * rh * 4) : null
     const RAW_AHEAD = 3
     const rawInFlight: Promise<void>[] = []
@@ -235,19 +230,25 @@ export function startExport(
     const slots: Uint8Array[] = []
     const slotPending: (Promise<void> | null)[] = [null, null]
     if (useRaw) {
-      const codec = preset.ffmpegVideo === 'copy' ? 'libx264' : preset.ffmpegVideo
+      const codec = rawCodec(preset)
       try {
-        rawDirect = await window.kadr.rawEncodeStart({
+        const enc = {
           width: rw, height: rh, outWidth: width, outHeight: height,
-          fps, codec, bitrate: preset.videoBitrate
-        })
+          fps, codec, bitrate: preset.videoBitrate, fit: preset.fit,
+          rateControl: preset.rateControl, crf: preset.crf, x264Preset: preset.x264Preset,
+          videoCodec: vcodec, alpha,
+          // a PNG sequence goes straight to its folder, numbered; nothing to mux
+          ...(vcodec === 'png' && { out: seqPattern(outputPath) })
+        }
+        logInfo(tr('lgExport'), rawEncodeArgs({ ...enc, out: 'pipe' }).join(' '))
+        rawDirect = await window.kadr.rawEncodeStart(enc)
         for (let s = 0; s < 2; s++) slots.push(new Uint8Array(rw * rh * 4))
       } catch (err) {
-        logWarn('экспорт', 'прямой кодировщик недоступен, работаю запасным путём', err)
+        logWarn(tr('lgExport'), tr('lmExpDirect'), err)
         rawDirect = null
       }
       if (!rawDirect) {
-        const wsPort = await window.kadr.exportRawBegin(rw, rh, fps, width, height)
+        const wsPort = await window.kadr.exportRawBegin(rw, rh, fps, width, height, alpha)
         if (wsPort > 0) {
           rawWs = await new Promise<WebSocket | null>((res) => {
             const s = new WebSocket(`ws://127.0.0.1:${wsPort}`)
@@ -257,7 +258,7 @@ export function startExport(
           })
         }
       }
-      console.info(`[kadr] export encoder: ffmpeg x264 (${rawDirect ? 'direct' : rawWs ? 'ws' : 'ipc'} pipe)`)
+      console.info(`[kadr] export encoder: ffmpeg ${rawCodec(preset)} (${rawDirect ? 'direct' : rawWs ? 'ws' : 'ipc'} pipe)`)
     } else {
       muxer = new Muxer({
         target: new StreamTarget({
@@ -293,18 +294,14 @@ export function startExport(
 
     // webcodecs path renders into the muxed stream directly ('copy' presets
     // never re-encode), so its frames must already be preset-sized: blit the
-    // project-sized canvas into a centered fit rectangle when sizes differ
+    // project-sized canvas into the preset's fit / fill / stretch rectangle when sizes differ
     let fit: { c: HTMLCanvasElement; g: CanvasRenderingContext2D
                dx: number; dy: number; dw: number; dh: number } | null = null
     if (!useRaw && (width !== rw || height !== rh)) {
       const c = document.createElement('canvas')
       c.width = width
       c.height = height
-      const s = Math.min(width / rw, height / rh)
-      const dw = Math.round(rw * s)
-      const dh = Math.round(rh * s)
-      fit = { c, g: c.getContext('2d')!,
-              dx: Math.floor((width - dw) / 2), dy: Math.floor((height - dh) / 2), dw, dh }
+      fit = { c, g: c.getContext('2d')!, ...outputRect(preset.fit, rw, rh, width, height) }
     }
 
     // stage timing accumulators — one summary line at export end shows where
@@ -317,7 +314,7 @@ export function startExport(
       mark = now
     }
     try {
-      const totalFrames = Math.max(1, Math.round(duration * fps))
+      const totalFrames = exportFrameCount(duration, fps)
       for (let k = 0; k < totalFrames; k++) {
         if (cancelled) throw new Error('cancelled')
         if (encodeError) throw encodeError
@@ -413,7 +410,7 @@ export function startExport(
           while (encoder!.encodeQueueSize > 8) await sleep(4)
         }
         if (k % 5 === 0 || k === totalFrames - 1) {
-          onProgress({ phase: 'video', progress: (k + 1) / totalFrames })
+          onProgress({ phase: 'video', progress: (k + 1) / totalFrames, frames: totalFrames })
         }
         mark = performance.now()
         if (k % 30 === 29) {
@@ -482,6 +479,8 @@ export function startExport(
       // further progress arrives via onExportProgress events
       await window.kadr.exportVideoDone()
     } catch (err) {
+      // frames still in the pipe fail with the kill below — nobody awaits them any more
+      for (const p of slotPending) p?.catch(() => { /* the export is over */ })
       if (rawDirect) window.kadr.rawEncodeKill()
       await window.kadr.exportCancel().catch(() => { /* already gone */ })
       throw err
@@ -550,7 +549,7 @@ export function startExport(
           // shader splits it back apart, pixel for pixel.
           const alt = await alphaPackedFallback(asset)
           if (alt) {
-            src = await Mp4FrameSource.open(alt, { alphaPacked: true })
+            src = await Mp4FrameSource.open(alt)
             if (src) packed?.add(clip.id)
           }
         }
@@ -586,9 +585,7 @@ export function startExport(
         // per-pixel alpha the two passes stack (0.5 → 0.56 effective alpha,
         // measured), so alpha sources stay unblended — exactly as they were
         // before they had a fast decode path at all.
-        const srcRate = asset.hasAlpha
-          ? 1
-          : ((clip.speed || 1) * (asset.fps || fps)) / fps
+        const srcRate = sourceFrameRate(clip, asset, fps, t - clip.start)
         waits.push(
           s.frameAt(srcT).then(
             (f) => {
@@ -608,7 +605,7 @@ export function startExport(
               }
               // no frame is never acceptable — fall back so the output can
               // only ever be slower, not frozen
-              logWarn('экспорт', `${asset.name}: быстрый декодер не дал кадр, перехожу на перемотку`)
+              logWarn(tr('lgExport'), trf('lmExpNoFrame', { name: asset.name }))
               sources.set(clip.id, null)
               packed?.delete(clip.id) // element frames are plain RGBA
               s.close()
@@ -616,7 +613,7 @@ export function startExport(
             },
             () => {
               // fast path died (codec quirk?) — element seeks from here on
-              logWarn('экспорт', `${asset.name}: быстрый декодер отказал, перехожу на перемотку`)
+              logWarn(tr('lgExport'), trf('lmExpDecoderFail', { name: asset.name }))
               sources.set(clip.id, null)
               packed?.delete(clip.id) // element frames are plain RGBA
               s.close()
@@ -658,7 +655,7 @@ function alphaPackedFallback(asset: MediaAsset): Promise<MediaAsset | null> {
         { packed: true, alpha: true, codec: asset.codec })
       return { ...asset, path }
     })().catch((err) => {
-      logWarn('экспорт', `${asset.name}: упаковать альфу не вышло, остаюсь на перемотке`, err)
+      logWarn(tr('lgExport'), trf('lmExpAlphaFail', { name: asset.name }), err)
       return null
     })
     alphaPacks.set(asset.path, p)
@@ -697,15 +694,16 @@ function intermediateFallback(asset: MediaAsset): Promise<MediaAsset | null> {
     p = (async () => {
       const { codec, hasAlpha, rotation, hdr } = await videoTraits(asset)
       const turned = !!rotation && rotation % 360 !== 0
-      if (chromiumCanDecode(codec) && !turned && !hdr) return null
-      const why = !chromiumCanDecode(codec) ? `'${codec}' is not decodable by Chromium`
+      const decodes = chromiumCanDecode({ codec, pixFmt: asset.pixFmt })
+      if (decodes && !turned && !hdr) return null
+      const why = !decodes ? `'${codec}' is not decodable by Chromium`
         : turned ? `it is shown rotated ${rotation}°` : `it is HDR (${hdr})`
       console.info(`[kadr] ${asset.name}: ${why} — building a ${hasAlpha ? 'VP9+alpha' : 'H.264'} intermediate`)
       const path = await window.kadr.requestDecoded(asset.path, asset.duration,
         { alpha: !!hasAlpha, codec })
       return { ...asset, path }
     })().catch((err) => {
-      logWarn('экспорт', `${asset.name}: запасное декодирование не удалось`, err)
+      logWarn(tr('lgExport'), trf('lmExpFallbackFail', { name: asset.name }), err)
       return null
     })
     undecodable.set(asset.path, p)
@@ -734,9 +732,9 @@ async function materializeFragments(
   // bake that is there — a dead export would be the worse outcome.
   try {
     const n = await refreshStaleBakes(project)
-    if (n) logInfo('экспорт', `звук под фрагментами обновлён перед рендером: ${n}`)
+    if (n) logInfo(tr('lgExport'), trf('lmExpRebaked', { n }))
   } catch (err) {
-    logWarn('экспорт', 'не удалось обновить звук под фрагментом — рендер с прежним', err)
+    logWarn(tr('lgExport'), tr('lmExpRebakeFail'), err)
   }
   const p = JSON.parse(JSON.stringify(project)) as Project
   const rendered = new Map<string, string>() // fragmentId → assetId

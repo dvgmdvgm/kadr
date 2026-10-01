@@ -4,6 +4,7 @@
 // iteration); `remotion render` runs exactly once per fragment content hash
 // at export time.
 import { app, ipcMain, BrowserWindow } from 'electron'
+import { cacheDir, setting } from './appSettings'
 import { spawn, execFileSync, ChildProcess } from 'child_process'
 import { promises as fs, existsSync, readdirSync, statSync, readFileSync, realpathSync } from 'fs'
 import { join, basename, dirname } from 'path'
@@ -11,6 +12,8 @@ import { createHash } from 'crypto'
 import { homedir, tmpdir } from 'os'
 import { connect } from 'net'
 import type { FragmentSpec, FragmentInfo } from '@shared/types'
+import { FONT_FILE } from '@shared/fontName'
+import { workspaceTool, type WorkspaceTool } from './toolSpawn'
 // files Kadr keeps in the workspace's src/_kadr (see electron/fragment-kit)
 import VITE_CONFIG from './fragment-kit/vite.config.ts?raw'
 import PLAYER_TSX from './fragment-kit/player.tsx?raw'
@@ -20,10 +23,11 @@ import WEBPACK_TS from './fragment-kit/webpack.ts?raw'
 import ASSETS_D_TS from './fragment-kit/assets.d.ts?raw'
 import KIT_THREE_TSX from './fragment-kit/three.tsx?raw'
 
-export const WORKSPACE = process.env.KADR_FRAGMENTS_DIR || join(homedir(), 'kadr-fragments')
-const FRAG_DIR = () => join(WORKSPACE, 'src', 'fragments')
-const PROJECTS_DIR = () => join(WORKSPACE, 'src', '_projects')
-const KADR_DIR = () => join(WORKSPACE, 'src', '_kadr')
+// «Инструменты» → the fragments folder (restart; env KADR_FRAGMENTS_DIR wins)
+export const workspace = (): string => setting<string>('tools.fragmentsDir') || join(homedir(), 'kadr-fragments')
+const FRAG_DIR = () => join(workspace(), 'src', 'fragments')
+const PROJECTS_DIR = () => join(workspace(), 'src', '_projects')
+const KADR_DIR = () => join(workspace(), 'src', '_kadr')
 
 /** A saved project's folder in the workspace (src/_projects/<key>):
     readable, and unique per project path. */
@@ -110,12 +114,17 @@ const WS_DEV_DEPS: Record<string, string> = {
   typescript: '5.5.4',
   vite: '5.4.8'
 }
+// remotion unpacks its Chrome with extract-zip 2.0.1 over yauzl 2, which on
+// Node >= 24.16 (nodejs/node#63487) stops after a few entries and lets the
+// process exit 0: no browser, no video, no error. yauzl 3 reads the archive whole.
+const WS_OVERRIDES: Record<string, string> = { yauzl: '3.4.0' }
 const PKG_JSON = JSON.stringify({
   name: 'kadr-fragments',
   private: true,
   description: 'Kadr video editor: Remotion fragment compositions (managed; src/fragments/* are yours)',
   dependencies: WS_DEPS,
-  devDependencies: WS_DEV_DEPS
+  devDependencies: WS_DEV_DEPS,
+  overrides: WS_OVERRIDES
 }, null, 2) + '\n'
 
 const TSCONFIG = `{
@@ -281,16 +290,17 @@ async function regenRegistry() {
     some declared package is not installed yet. Only ADDS: a version the
     user pinned, a dependency of their own, an option they set are kept. */
 async function migrateWorkspace(): Promise<boolean> {
-  const pkgPath = join(WORKSPACE, 'package.json')
+  const pkgPath = join(workspace(), 'package.json')
   try {
     const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'))
     let changed = false
     const has = (n: string) => !!(pkg.dependencies?.[n] || pkg.devDependencies?.[n])
     for (const [n, v] of Object.entries(WS_DEPS)) if (!has(n)) { (pkg.dependencies ??= {})[n] = v; changed = true }
     for (const [n, v] of Object.entries(WS_DEV_DEPS)) if (!has(n)) { (pkg.devDependencies ??= {})[n] = v; changed = true }
+    for (const [n, v] of Object.entries(WS_OVERRIDES)) if (!pkg.overrides?.[n]) { (pkg.overrides ??= {})[n] = v; changed = true }
     if (changed) await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
   } catch { /* unreadable package.json: npm install will say so */ }
-  const tsPath = join(WORKSPACE, 'tsconfig.json')
+  const tsPath = join(workspace(), 'tsconfig.json')
   try {
     const ts = JSON.parse(await fs.readFile(tsPath, 'utf8'))
     const co = (ts.compilerOptions ??= {})
@@ -299,8 +309,23 @@ async function migrateWorkspace(): Promise<boolean> {
     if (!co.paths?.['@kadr/*']) { co.paths = { ...(co.paths ?? {}), '@kadr/*': ['src/_kadr/*'] }; changed = true }
     if (changed) await fs.writeFile(tsPath, JSON.stringify(ts, null, 2) + '\n')
   } catch { /* hand-edited with comments: leave it alone */ }
-  return [...Object.keys(WS_DEPS), ...Object.keys(WS_DEV_DEPS)]
-    .some((n) => !existsSync(join(WORKSPACE, 'node_modules', n, 'package.json')))
+  const installed = (n: string) => {
+    try { return JSON.parse(readFileSync(join(workspace(), 'node_modules', n, 'package.json'), 'utf8')).version as string } catch { return null }
+  }
+  return [...Object.keys(WS_DEPS), ...Object.keys(WS_DEV_DEPS)].some((n) => !installed(n)) ||
+    Object.entries(WS_OVERRIDES).some(([n, v]) => { const got = installed(n); return !!got && got !== v })
+}
+
+/**
+ * remotion deletes its Chrome zip only after a WHOLE extraction, so a zip
+ * still lying there means a half-unpacked browser (see WS_OVERRIDES) — whose
+ * exe then fails every render with spawn EFTYPE. Drop it; the render fetches
+ * it again.
+ */
+async function healBrowserCache(): Promise<void> {
+  const dir = join(workspace(), 'node_modules', '.remotion', 'chrome-headless-shell')
+  const names = await fs.readdir(dir).catch(() => [] as string[])
+  if (names.some((n) => n.endsWith('.zip'))) await fs.rm(dir, { recursive: true, force: true })
 }
 
 /**
@@ -330,21 +355,21 @@ async function ensureWorkspace(
 ): Promise<{ dir: string; installed: boolean }> {
   await fs.mkdir(FRAG_DIR(), { recursive: true })
   await pruneProjectLinks()
-  await writeIfMissing(join(WORKSPACE, 'package.json'), PKG_JSON)
-  await writeManaged(join(WORKSPACE, 'vite.config.ts'), VITE_CONFIG)
-  await writeIfMissing(join(WORKSPACE, 'tsconfig.json'), TSCONFIG)
-  await writeIfMissing(join(WORKSPACE, 'index.html'), INDEX_HTML)
+  await writeIfMissing(join(workspace(), 'package.json'), PKG_JSON)
+  await writeManaged(join(workspace(), 'vite.config.ts'), VITE_CONFIG)
+  await writeIfMissing(join(workspace(), 'tsconfig.json'), TSCONFIG)
+  await writeIfMissing(join(workspace(), 'index.html'), INDEX_HTML)
   // the registry first: the player page imports lazy.ts
   if (!existsSync(join(FRAG_DIR(), 'index.ts')) || !existsSync(join(FRAG_DIR(), 'lazy.ts'))) await regenRegistry()
-  await writeManaged(join(WORKSPACE, 'player.tsx'), PLAYER_TSX)
-  await writeManaged(join(WORKSPACE, 'src', 'Root.tsx'), ROOT_TSX)
+  await writeManaged(join(workspace(), 'player.tsx'), PLAYER_TSX)
+  await writeManaged(join(workspace(), 'src', 'Root.tsx'), ROOT_TSX)
   await fs.mkdir(KADR_DIR(), { recursive: true })
   await writeManaged(join(KADR_DIR(), 'three-preview.tsx'), THREE_PREVIEW_TSX)
   await writeManaged(join(KADR_DIR(), 'runtime.ts'), RUNTIME_TS)
   await writeManaged(join(KADR_DIR(), 'webpack.ts'), WEBPACK_TS)
   await writeManaged(join(KADR_DIR(), 'assets.d.ts'), ASSETS_D_TS)
   await writeManaged(join(KADR_DIR(), 'three.tsx'), KIT_THREE_TSX)
-  await writeIfMissing(join(WORKSPACE, 'src', 'index.ts'), INDEX_TS)
+  await writeIfMissing(join(workspace(), 'src', 'index.ts'), INDEX_TS)
 
   const needInstall = await migrateWorkspace()
   let installed = false
@@ -352,13 +377,13 @@ async function ensureWorkspace(
     onProgress?.('install', 0)
     const extraEnv = await netEnv()
     await new Promise<void>((resolve, reject) => {
-      const child = spawn('npm', ['install', '--no-audit', '--no-fund'], {
-        cwd: WORKSPACE,
+      const child = spawnTool('npm', ['install', '--no-audit', '--no-fund'], {
+        cwd: workspace(),
         env: { ...process.env, ...extraEnv },
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let err = ''
-      child.stderr.on('data', (c) => { err += c })
+      child.stderr!.on('data', (c) => { err += c })
       child.on('error', reject)
       child.on('close', (code) => {
         if (code === 0) resolve()
@@ -368,7 +393,7 @@ async function ensureWorkspace(
     installed = true
     onProgress?.('install', 1)
   }
-  return { dir: WORKSPACE, installed }
+  return { dir: workspace(), installed }
 }
 
 // --------------------------------------------------------------- dev server
@@ -376,23 +401,24 @@ async function ensureWorkspace(
 let server: { child: ChildProcess | null; url: string } | null = null
 // overridable so a second, isolated instance (test bench) never shares — and
 // never restarts — the working editor's server
-const VITE_PORT = Number(process.env.KADR_FRAGMENTS_PORT) || 5621
+// «Инструменты» → the fragments server port (restart; env KADR_FRAGMENTS_PORT wins)
+const vitePort = (): number => setting<number>('tools.fragmentsPort')
 
 /** A server (possibly from a previous app run) already serving the page? */
 async function probeExisting(): Promise<string | null> {
   try {
-    const res = await fetch(`http://127.0.0.1:${VITE_PORT}/`, {
+    const res = await fetch(`http://127.0.0.1:${vitePort()}/`, {
       signal: AbortSignal.timeout(1500)
     })
     const body = await res.text()
-    if (res.ok && body.includes('player.tsx')) return `http://127.0.0.1:${VITE_PORT}`
+    if (res.ok && body.includes('player.tsx')) return `http://127.0.0.1:${vitePort()}`
   } catch { /* nothing there */ }
   return null
 }
 
 /** something accepts connections on the port (a server, maybe not answering yet) */
 const portTaken = () => new Promise<boolean>((resolve) => {
-  const sock = connect({ host: '127.0.0.1', port: VITE_PORT })
+  const sock = connect({ host: '127.0.0.1', port: vitePort() })
   const done = (v: boolean) => { sock.destroy(); resolve(v) }
   sock.once('connect', () => done(true))
   sock.once('error', () => done(false))
@@ -434,16 +460,9 @@ async function startServer(): Promise<{ url: string }> {
     server = { child: null, url: existing }
     return { url: existing }
   }
-  // a watchdog shell kills vite when this process dies — orphaned children
-  // inherit Electron's listening sockets and would block the next launch.
-  // The bin runs directly (NOT via npx — npx makes vite a grandchild the
-  // watchdog's kill couldn't reach).
-  const child = spawn('sh', ['-c',
-    `"./node_modules/.bin/vite" --port ${VITE_PORT} --strictPort & V=$!; ` +
-    `(while kill -0 ${process.pid} 2>/dev/null; do sleep 3; done; kill $V 2>/dev/null) & ` +
-    'wait $V'
-  ], {
-    cwd: WORKSPACE,
+  // a watchdog kills vite when this process dies (toolSpawn.ts)
+  const child = spawnTool('vite', ['--port', String(vitePort()), '--strictPort'], {
+    cwd: workspace(),
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -479,8 +498,18 @@ async function startServer(): Promise<{ url: string }> {
 }
 
 function stopServer() {
-  server?.child?.kill()
+  const child = server?.child
+  // on win32 vite is the watchdog's child: kill the tree, not just the watchdog
+  if (process.platform === 'win32' && child?.pid) {
+    try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F']) } catch { /* already gone */ }
+  } else child?.kill()
   server = null
+}
+
+/** spawn a workspace tool the way this platform can (toolSpawn.ts) */
+function spawnTool(tool: WorkspaceTool, args: string[], opts: Parameters<typeof spawn>[2]): ChildProcess {
+  const c = workspaceTool(tool, args, { workspace: workspace() })
+  return spawn(c.command, c.args, { ...opts, shell: c.shell, windowsHide: true })
 }
 
 // ------------------------------------------------------------ create/render
@@ -695,8 +724,6 @@ function fragmentHash(id: string): string {
   return h.digest('hex').slice(0, 16)
 }
 
-/** A font file in kadr-lib/fonts: registered by the preview and the render. */
-const FONT_FILE = /\.(woff2?|ttf|otf)$/i
 
 /**
  * The render's entry: ONE composition. The old entry (src/index.ts → Root)
@@ -721,7 +748,7 @@ async function writeRenderEntry(id: string): Promise<string> {
     const v = JSON.parse(await fs.readFile(join(FRAG_DIR(), id, 'params.json'), 'utf8'))
     params = !!v && typeof v === 'object' && !Array.isArray(v)
   } catch { /* none, or not usable: the declared defaults */ }
-  const entry = join(WORKSPACE, 'src', '_entries', 'current.tsx')
+  const entry = join(workspace(), 'src', '_entries', 'current.tsx')
   await fs.mkdir(dirname(entry), { recursive: true })
   await writeManaged(entry, [
     '// AUTO-GENERATED by Kadr for the render in progress — do not edit.',
@@ -761,8 +788,8 @@ async function writeRenderEntry(id: string): Promise<string> {
  * overrideWebpackConfig composes with the previous override.
  */
 async function writeRenderConfig(): Promise<string> {
-  const path = join(WORKSPACE, 'kadr.remotion.config.ts')
-  const user = existsSync(join(WORKSPACE, 'remotion.config.ts'))
+  const path = join(workspace(), 'kadr.remotion.config.ts')
+  const user = existsSync(join(workspace(), 'remotion.config.ts'))
   await writeManaged(path, [
     '// Managed by Kadr — do not edit. Your own settings go in remotion.config.ts,',
     '// which is loaded first; this file adds what Kadr needs on top.',
@@ -790,15 +817,23 @@ async function writeRenderConfig(): Promise<string> {
   return path
 }
 
-const renderDir = () => join(app.getPath('userData'), 'fragment-renders')
+const renderDir = () => cacheDir('fragment-renders')
 let renderChain: Promise<unknown> = Promise.resolve()
 let activeRender: ChildProcess | null = null
 let renderCancelled = false
 
 /** remotion's frame scratch dirs (PNG per frame — gigabytes on a long render) */
 const RENDER_SCRATCH = /^react-motion-render/
+/**
+ * On Windows the render's TEMP is a folder of Kadr's own: a hard kill (no
+ * cancel, no cleanup) leaves the frame dirs, Chrome's profile and the webpack
+ * bundle behind, and only a folder nobody else writes to can be emptied at the
+ * next start without guessing whose they are (sweepRenderScratch).
+ */
+const renderTmp = () => join(app.getPath('userData'), 'render-tmp')
+const scratchRoot = () => (process.platform === 'win32' ? renderTmp() : tmpdir())
 const scratchDirs = () => {
-  try { return new Set(readdirSync(tmpdir()).filter((n) => RENDER_SCRATCH.test(n))) } catch { return new Set<string>() }
+  try { return new Set(readdirSync(scratchRoot()).filter((n) => RENDER_SCRATCH.test(n))) } catch { return new Set<string>() }
 }
 let scratchBefore = new Set<string>()
 
@@ -836,14 +871,30 @@ export function cancelFragmentRenders() {
   if (!child?.pid) return
   if (process.platform === 'win32') {
     try { execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F']) } catch { /* already gone */ }
-    return
-  }
-  for (const pid of processTree(child.pid)) {
-    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+  } else {
+    for (const pid of processTree(child.pid)) {
+      try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    }
   }
   for (const name of scratchDirs()) {
-    if (!scratchBefore.has(name)) void fs.rm(join(tmpdir(), name), { recursive: true, force: true })
+    // retries: on Windows a just-killed Chrome still holds its files for a moment
+    if (!scratchBefore.has(name)) void fs.rm(join(scratchRoot(), name), { recursive: true, force: true, maxRetries: 5 })
   }
+}
+
+/**
+ * Startup, after the orphan sweep (claude.ts) killed a hard-killed run's
+ * renderer: whatever it left in render-tmp is a corpse. Windows only — POSIX
+ * renders keep the system temp, where other programs' files live too.
+ */
+export async function sweepRenderScratch(): Promise<void> {
+  if (activeRender) return
+  const names = await fs.readdir(renderTmp()).catch(() => [] as string[])
+  let removed = 0
+  for (const name of names) {
+    try { await fs.rm(join(renderTmp(), name), { recursive: true, force: true, maxRetries: 5 }); removed++ } catch { /* still held */ }
+  }
+  if (removed) console.log(`[kadr] removed ${removed} leftover render temp item(s): ${names.join(', ')}`)
 }
 
 async function renderFragment(
@@ -881,7 +932,7 @@ async function renderFragment(
   // replaces VP8 for alpha (dramatically better on sharp graphics), and a
   // low CRF keeps this intermediate visually lossless — the final export
   // pass re-encodes it once more.
-  const args = ['remotion', 'render', '--config=kadr.remotion.config.ts', 'src/_entries/current.tsx', id, tmp, '--log=error', '--image-format=png']
+  const args = ['render', '--config=kadr.remotion.config.ts', 'src/_entries/current.tsx', id, tmp, '--log=error', '--image-format=png']
   if (transparent) args.push('--codec=vp9', '--pixel-format=yuva420p', '--crf=12')
   else args.push('--codec=h264', '--crf=15')
 
@@ -896,13 +947,16 @@ async function renderFragment(
       // inside the queue: the entry is one file shared by every render
       await writeRenderEntry(id)
       await writeRenderConfig()
+      await healBrowserCache()
+      await fs.mkdir(renderTmp(), { recursive: true }) // the TEMP of a Windows render
       await new Promise<void>((resolve, reject) => {
         // remotion runs chrome AND its own ffmpeg under this; a cancel kills
         // the whole tree (cancelFragmentRenders) — killing only npx once left
         // that ffmpeg encoding for minutes as an orphan nobody could reach
-        const child = spawn('npx', args, {
-          cwd: WORKSPACE,
-          env: { ...process.env, ...extraEnv },
+        const tmpEnv = process.platform === 'win32' ? { TEMP: renderTmp(), TMP: renderTmp() } : {}
+        const child = spawnTool('remotion', args, {
+          cwd: workspace(),
+          env: { ...process.env, ...extraEnv, ...tmpEnv },
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: process.platform !== 'win32'
         })
@@ -931,8 +985,8 @@ async function renderFragment(
         child.on('close', (code) => {
           if (activeRender === child) activeRender = null
           if (renderCancelled) reject(new Error('cancelled'))
-          else if (code === 0) resolve()
-          else reject(new Error(`remotion render exited ${code}: ${tail.slice(-800)}`))
+          else if (code === 0 && existsSync(tmp)) resolve()
+          else reject(new Error(`remotion render exited ${code}${code === 0 ? ' without writing the video' : ''}: ${tail.slice(-800)}`))
         })
       })
       await fs.rename(tmp, out)
@@ -1049,11 +1103,11 @@ async function typecheckFragment(id: string): Promise<{ ok: boolean; errors: Fra
     },
     include: [`src/fragments/${id}/**/*`, 'src/_kadr/assets.d.ts']
   }
-  await fs.writeFile(join(WORKSPACE, cfgName), JSON.stringify(cfg, null, 2))
+  await fs.writeFile(join(workspace(), cfgName), JSON.stringify(cfg, null, 2))
   try {
     const out = await new Promise<string>((resolve) => {
-      const child = spawn(join(WORKSPACE, 'node_modules', '.bin', 'tsc'), ['-p', cfgName, '--pretty', 'false'], {
-        cwd: WORKSPACE, stdio: ['ignore', 'pipe', 'pipe']
+      const child = spawnTool('tsc', ['-p', cfgName, '--pretty', 'false'], {
+        cwd: workspace(), stdio: ['ignore', 'pipe', 'pipe']
       })
       let text = ''
       child.stdout!.on('data', (c) => { text += c })
@@ -1063,7 +1117,7 @@ async function typecheckFragment(id: string): Promise<{ ok: boolean; errors: Fra
     })
     const mine = [`src/fragments/${id}/`, 'src/_kadr/', ...(key ? [`src/_projects/${key}/`] : [])]
     const errors: FragmentTypeError[] = []
-    for (const line of out.split('\n')) {
+    for (const line of out.split(/\r?\n/)) { // tsc ends its lines with CRLF on Windows
       const m = line.match(/^(.+?)\((\d+),(\d+)\): error (TS\d+): (.*)$/)
       if (!m || !mine.some((p) => m[1].startsWith(p))) continue
       errors.push({ file: m[1], line: Number(m[2]), col: Number(m[3]), code: m[4], message: m[5] })
@@ -1071,7 +1125,7 @@ async function typecheckFragment(id: string): Promise<{ ok: boolean; errors: Fra
     const LIMIT = 60
     return { ok: errors.length === 0, errors: errors.slice(0, LIMIT), more: Math.max(0, errors.length - LIMIT) }
   } finally {
-    await fs.unlink(join(WORKSPACE, cfgName)).catch(() => { /* gone */ })
+    await fs.unlink(join(workspace(), cfgName)).catch(() => { /* gone */ })
   }
 }
 
@@ -1123,7 +1177,7 @@ async function captureStart(
     }
   })
   win.webContents.on('render-process-gone', (_e, d) => {
-    getWin()?.webContents.send('fragment:capture-log', { id, level: 'error', msg: `страница захвата упала: ${d.reason}` })
+    getWin()?.webContents.send('fragment:capture-log', { id, level: 'error', msg: d.reason, said: { key: 'lmCaptureCrashed', args: { reason: d.reason } } })
   })
   win.webContents.on('paint', (_ev, _dirty, image) => {
     const size = image.getSize()

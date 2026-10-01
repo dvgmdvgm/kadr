@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Clip, Project, Track } from '@shared/types'
 import { useEditor } from '@/state/store'
+import { flattenProject } from '@/engine/nesting'
 import { evalAnim } from '@/engine/anim'
-import { fadeFactor } from '@/engine/player'
+import { fadeFactor, overlapFades, trackHeard } from '@/engine/player'
 import { ensureFragmentServer, useFragmentServer } from '@/engine/fragments'
 import { fragmentNeedsCapture, fragmentFrameAt } from '@/engine/fragmentCapture'
 import { usePopout } from '@/engine/popout'
@@ -16,7 +17,7 @@ import { Icon } from './icons'
  * No rendering happens — the dev server hot-reloads Claude's edits live.
  */
 export function FragmentOverlays({ canvas }: { canvas: React.RefObject<HTMLCanvasElement> }) {
-  const project = useEditor((s) => s.project)
+  const project = flattenProject(useEditor((s) => s.project))
   const url = useFragmentServer((s) => s.url)
   const error = useFragmentServer((s) => s.error)
   const [rect, setRect] = useState<{ left: number; top: number; w: number; h: number } | null>(null)
@@ -64,7 +65,7 @@ export function FragmentOverlays({ canvas }: { canvas: React.RefObject<HTMLCanva
   // CHANGES matter: selecting a string key re-renders this component when an
   // iframe comes or goes, not on every frame of playback (the frames
   // themselves follow the clock through a store subscription, below).
-  const nearKey = useEditor((s) => nearClips(s.project, s.playhead).map((n) => `${n.key}:${n.clip.id}`).join(','))
+  const nearKey = useEditor((s) => nearClips(flattenProject(s.project), s.playhead).map((n) => `${n.key}:${n.clip.id}`).join(','))
   if (!anyFragments) return null
   // keep iframes mounted a bit around the clip so entry is seamless;
   // clips that need GL features render through pixel capture instead
@@ -107,7 +108,7 @@ function nearClips(project: Project, t: number): { clip: Clip; track: Track; key
   for (const track of [...project.tracks].reverse()) {
     if (track.kind !== 'video' || track.muted) continue
     const clips = track.clips
-      .filter((c) => c.kind === 'remotion' && c.fragmentId && !fragmentNeedsCapture(track, c, project))
+      .filter((c) => c.kind === 'remotion' && c.fragmentId && !c.disabled && !fragmentNeedsCapture(track, c, project))
       .sort((a, b) => a.start - b.start)
     let run: Clip[] = []
     const flush = () => {
@@ -237,7 +238,7 @@ function FragmentFrame({
   // the display scale at mount goes into the URL (the page sizes its 3D
   // from the first frame); later changes travel by message
   const [src] = useState(() => {
-    const l = frameLayout(clip, track, rect, useEditor.getState().project, useEditor.getState().playhead)
+    const l = frameLayout(clip, track, rect, flattenProject(useEditor.getState().project), useEditor.getState().playhead)
     return `${slotOrigin(url, slot)}/?comp=${encodeURIComponent(clip.fragmentId!)}&scale=${Math.min(1, l.scale).toFixed(3)}`
   })
 
@@ -252,19 +253,21 @@ function FragmentFrame({
       const st = useEditor.getState()
       const r = st.playhead - clip.start
       const inside = r >= 0 && r < clip.duration
-      const vol = clip.muted || track.muted || !inside
+      const vol = clip.muted || !trackHeard(flattenProject(st.project), track) || !inside
         ? 0
-        : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r))
+        : Math.min(1, evalAnim(clip.gain, r) * track.gain * fadeFactor(clip, r, overlapFades(track, clip)))
       post({
         type: 'sync',
         frame: fragmentFrameAt(clip, r),
-        playing: st.playing && inside,
+        // reverse has no play path on the page: it follows by seeking, like a scrub
+        playing: st.playing && st.playRate > 0 && inside,
+        rate: st.playRate,
         volume: vol
       })
     }
     const place = () => {
       const st = useEditor.getState()
-      const l = frameLayout(clip, track, rect, st.project, st.playhead)
+      const l = frameLayout(clip, track, rect, flattenProject(st.project), st.playhead)
       const s = el.style
       s.left = `${l.left}px`
       s.top = `${l.top}px`
@@ -289,7 +292,7 @@ function FragmentFrame({
     place()
     sync()
     const unsub = useEditor.subscribe((st, prev) => {
-      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.project !== prev.project) {
+      if (st.playhead !== prev.playhead || st.playing !== prev.playing || st.playRate !== prev.playRate || st.project !== prev.project) {
         place()
         sync()
       }

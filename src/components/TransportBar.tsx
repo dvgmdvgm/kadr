@@ -1,28 +1,43 @@
-import { useState } from 'react'
-import { useEditor, projectDuration } from '@/state/store'
+import { useEffect, useState } from 'react'
+import { useEditor, projectDuration, type HistEntry } from '@/state/store'
 import { useSettings } from '@/state/store'
 import { snapshotFrame } from '@/engine/snapshot'
 import { usePopout, togglePreviewWindow } from '@/engine/popout'
-import { useT, type TKey } from '@/i18n'
+import { useT, tr, trf, type TKey } from '@/i18n'
+import { useRecord, toggleRecording } from '@/engine/record'
 import { Icon, Spinner } from './icons'
 import { logWarn } from '@/engine/log'
 import { useOnion, toggleOnion } from '@/engine/onion'
+import { formatTime, parseTimecode } from '@/engine/timelineMath'
+import { CtxMenu } from './CtxMenu'
+import type { SettingKey } from '@shared/settings'
 
-export function formatTime(t: number, fps: number): string {
-  const sign = t < 0 ? '-' : ''
-  t = Math.abs(t)
-  const h = Math.floor(t / 3600)
-  const m = Math.floor((t % 3600) / 60)
-  const s = Math.floor(t % 60)
-  const f = Math.floor((t % 1) * fps)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${sign}${pad(h)}:${pad(m)}:${pad(s)}.${pad(f)}`
+
+/** K8: shown once a track is armed; during the count-in it reads 3, 2, 1 */
+function RecordButton() {
+  const t = useT()
+  const armed = useRecord((s) => Object.keys(s.armed).length > 0)
+  const phase = useRecord((s) => s.phase)
+  const count = useRecord((s) => s.count)
+  if (!armed && phase === 'idle') return null
+  const busy = phase !== 'idle'
+  const label = busy ? t('recStop') : t('recStart')
+  return (
+    <button className={`icon-only${busy ? ' active' : ''}`} data-act="record" data-phase={phase}
+            title={phase === 'count' ? trf('recCount', { n: count }) : label} aria-label={label} aria-pressed={busy}
+            style={{ color: 'var(--c-danger)' }} onClick={() => { void toggleRecording() }}>
+      {phase === 'count' ? <span style={{ fontVariantNumeric: 'tabular-nums' }}>{count}</span>
+        : <Icon name="circle" style={busy ? { fill: 'currentColor' } : undefined} />}
+    </button>
+  )
 }
 
 export function TransportBar() {
   const t = useT()
   const [shot, setShot] = useState<'idle' | 'busy' | 'ok' | 'fail'>('idle')
   const playing = useEditor((s) => s.playing)
+  const rate = useEditor((s) => s.playRate)
+  const loop = useEditor((s) => s.loop)
   const playhead = useEditor((s) => s.playhead)
   const fps = useEditor((s) => s.project.fps)
   const duration = useEditor((s) => projectDuration(s.project))
@@ -54,6 +69,7 @@ export function TransportBar() {
         >
           <Icon name="redo" />
         </button>
+        <HistoryMenu />
       </span>
       <span className="sep" />
       <button className="icon-only" data-act="to-start" title={t('toStart')} aria-label={t('toStart')}
@@ -73,6 +89,17 @@ export function TransportBar() {
               onClick={() => st().setPlayhead(projectDuration(st().project))}>
         <Icon name="toEnd" />
       </button>
+      <button
+        className={`icon-only${loop ? ' active' : ''}`}
+        data-act="loop"
+        title={loop ? t('loopOn') : t('loopOff')}
+        aria-label={t('actLoop')}
+        aria-pressed={loop}
+        onClick={() => st().toggleLoop()}
+      >
+        <Icon name="loop" />
+      </button>
+      <RecordButton />
       <span className="sep" />
       <button className="icon-only" data-act="split" title={t('split')} aria-label={t('split')}
               onClick={() => st().splitAtPlayhead()}>
@@ -98,7 +125,7 @@ export function TransportBar() {
             () => setShot('ok'),
             (err) => {
               if (String(err).includes('cancelled')) { setShot('idle'); return }
-              logWarn('снимок', 'снимок кадра не удался', err)
+              logWarn(tr('lgSnapshot'), tr('lmSnapFail'), err)
               setShot('fail')
             }
           ).finally(() => setTimeout(() => setShot('idle'), 2000))
@@ -117,8 +144,14 @@ export function TransportBar() {
         <Icon name={popped ? 'popin' : 'popout'} />
       </button>
       <OnionControls />
+      <PreviewMenu />
       <span className="time">
-        {formatTime(playhead, fps)} <span className="dim">/ {formatTime(duration, fps)}</span>
+        {playing && rate !== 1 && (
+          <span className="rate-badge" data-act="rate" title={t('rateLbl')}>
+            {rate < 0 ? '−' : ''}{Math.abs(rate)}×
+          </span>
+        )}
+        <TimecodeField playhead={playhead} fps={fps} /> <span className="dim">/ {formatTime(duration, fps)}</span>
         <span className="frame-counter dim">
           {' '}· {t('frameLbl')} {Math.floor(playhead * fps + 1e-6)}
           <span> / {Math.floor(duration * fps + 1e-6)}</span>
@@ -128,14 +161,54 @@ export function TransportBar() {
   )
 }
 
+/** The playhead's timecode; a click turns it into a go-to field (parseTimecode). */
+function TimecodeField({ playhead, fps }: { playhead: number; fps: number }) {
+  const t = useT()
+  const [text, setText] = useState<string | null>(null)
+  const [bad, setBad] = useState(false)
+  const close = () => { setText(null); setBad(false) }
+  if (text === null) {
+    return (
+      <button className="tc" data-act="timecode" title={t('tcGoto')} aria-label={t('tcGoto')}
+              onClick={() => setText(formatTime(playhead, fps))}>
+        {formatTime(playhead, fps)}
+      </button>
+    )
+  }
+  return (
+    <input
+      className="tc-input"
+      data-act="timecode-input"
+      autoFocus
+      spellCheck={false}
+      value={text}
+      aria-label={t('tcGoto')}
+      aria-invalid={bad}
+      title={bad ? t('tcBad') : t('tcGoto')}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => { setText(e.target.value); setBad(false) }}
+      onBlur={close}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') { e.preventDefault(); close() }
+        if (e.key !== 'Enter') return
+        const to = parseTimecode(text, fps, playhead)
+        if (to === null) { setBad(true); return }
+        useEditor.getState().setPlayhead(to)
+        close()
+      }}
+    />
+  )
+}
+
 export function LangSwitch() {
+  const t = useT()
   const lang = useSettings((s) => s.lang)
   const setLang = useSettings((s) => s.setLang)
   return (
     <button
       className="lang"
       data-act="lang"
-      title={lang === 'ru' ? 'Язык интерфейса: русский' : 'Interface language: English'}
+      title={t('langTitle')}
       onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')}
     >
       <Icon name="language" size={14} /> {lang === 'ru' ? 'RU' : 'EN'}
@@ -191,5 +264,137 @@ function OnionControls() {
         </>
       )}
     </span>
+  )
+}
+
+/** L2: the undo history as a list — the redo side above «now», the undo side below,
+ *  newest first; a click jumps there (exactly that many undos or redos). The
+ *  agent's entries (B8) carry a bot glyph, and each of its turns a heading. */
+function HistoryMenu() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const past = useEditor((s) => s.past)
+  const future = useEditor((s) => s.future)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // a list of rows, top to bottom; `jump` is what a click hands jumpHistory
+  const list = (rows: { e: HistEntry; jump: number }[]) => rows.map(({ e, jump }, i) => (
+    <div key={jump} className="hist-group">
+      {e.turn && e.turn !== rows[i - 1]?.e.turn
+        ? <div className="ctx-title">{t('histAgent')} · {clock(e.turn)}</div> : null}
+      <button
+        data-act="hist-row"
+        data-jump={jump}
+        role="menuitem"
+        className={jump < 0 ? 'hist-redo' : ''}
+        onClick={() => { useEditor.getState().jumpHistory(jump); setAt(null) }}
+      >
+        <span className="ctx-check">{e.turn ? <Icon name="bot" size={13} /> : null}</span>
+        {t(e.label as TKey)}
+      </button>
+    </div>
+  ))
+  return (
+    <>
+      <button
+        className={`icon-only hist-btn${at ? ' active' : ''}`}
+        data-act="history"
+        title={t('histMenu')}
+        aria-label={t('histMenu')}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        <Icon name="chevronDown" size={13} />
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="history-menu">
+          <div className="ctx-title">{t('histMenu')}</div>
+          {!past.length && !future.length && <div className="ctx-empty dim">{t('histEmpty')}</div>}
+          {list(future.map((e, i) => ({ e, jump: -(i + 1) })).reverse())}
+          {(past.length > 0 || future.length > 0) && <div className="hist-now">{t('histNow')}</div>}
+          {list(past.map((e, i) => ({ e, jump: past.length - i })).reverse())}
+        </CtxMenu>
+      )}
+    </>
+  )
+}
+
+/** «Вид превью»: quality (the canvas backing store only) and what is drawn over the frame */
+function PreviewMenu() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const quality = useSettings((s) => s.effective('playback.previewQuality').value)
+  const on = (k: SettingKey) => useSettings.getState().effective(k).value === true
+  // re-render when an overlay flips
+  useSettings((s) => s.snap)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  const set = useSettings.getState().set
+  const toggle = (k: SettingKey, act: string, label: string) => (
+    <button data-act={act} role="menuitemcheckbox" aria-checked={on(k)} onClick={() => set(k, !on(k))}>
+      <span className="ctx-check">{on(k) && <Icon name="check" size={13} />}</span>
+      {label}
+    </button>
+  )
+  return (
+    <>
+      <button
+        className={`icon-only${at ? ' active' : ''}`}
+        data-act="preview-menu"
+        title={t('pvMenu')}
+        aria-label={t('pvMenu')}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        <Icon name="eye" />
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="preview-menu">
+          <div className="ctx-title">{t('pvQuality')}</div>
+          {(['full', 'half', 'quarter'] as const).map((q) => (
+            <button key={q} data-act={`pv-${q}`} role="menuitemradio" aria-checked={quality === q}
+                    onClick={() => { set('playback.previewQuality', q); setAt(null) }}>
+              <span className="ctx-check">{quality === q && <Icon name="check" size={13} />}</span>
+              {t(q === 'full' ? 'pvFull' : q === 'half' ? 'pvHalf' : 'pvQuarter')}
+            </button>
+          ))}
+          <div className="ctx-title">{t('pvOverlays')}</div>
+          {toggle('playback.safeGuides', 'pv-safe', t('pvSafe'))}
+          {toggle('playback.thirds', 'pv-thirds', t('pvThirds'))}
+          {toggle('playback.frameStats', 'pv-stats', t('pvStats'))}
+        </CtxMenu>
+      )}
+    </>
   )
 }

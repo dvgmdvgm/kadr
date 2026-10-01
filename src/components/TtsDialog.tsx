@@ -131,7 +131,7 @@ export function TtsSettingsDialog() {
             {voices.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
           </select>
         ) : (
-          <input value={settings.voiceId} placeholder="voice id"
+          <input value={settings.voiceId} placeholder={t('ttsVoiceIdPh')} aria-label={t('ttsVoice')}
                  onChange={(e) => update({ voiceId: e.target.value })} style={{ flex: 1 }} />
         )}
         <button disabled={busy} onClick={refreshVoices}>{t('ttsVoiceRefresh')}</button>
@@ -184,12 +184,6 @@ export function TtsSettingsDialog() {
                onChange={(e) => update({ regenerateOnConfirm: e.target.checked })} />
       </label>
 
-      <label className="insp-field">
-        <span>{t('ttsPython')}</span>
-        <input value={settings.ttsqcPython} placeholder="python3.11"
-               onChange={(e) => update({ ttsqcPython: e.target.value })} style={{ flex: 1 }} />
-      </label>
-      <div className="dim hint-inline">{t('ttsPythonHint')}</div>
       <label className="insp-field">
         <span>{t('ttsProxy')}</span>
         <input value={settings.proxy} placeholder="http://127.0.0.1:1080"
@@ -315,7 +309,7 @@ export function SpeakDialog() {
       )}
       {source === 'input' && (
         <>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8}
+          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} aria-label={t('ttsTextLabel')}
                     placeholder={t('ttsTextPlaceholder')}
                     style={{ width: '100%', resize: 'vertical' }} />
           <div className="dim hint-inline">{text.length} {t('ttsChars')}</div>

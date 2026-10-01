@@ -41,6 +41,22 @@ if str(PKG_HOME) not in sys.path:
     sys.path.insert(0, str(PKG_HOME))
 
 
+# What reaches the UI is said in ITS language (shared/said.ts): a key and args,
+# never words. ASCII-only JSON, so no pipe code page can garble it.
+SAID_MARK = "\u2063said:"
+
+
+def said(key: str, **args) -> str:
+    return SAID_MARK + json.dumps({"key": key, "args": args} if args else {"key": key})
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse's own complaint, as a Said on stderr (exit 2, as argparse does)."""
+    def error(self, message):                                # noqa: D102
+        sys.stderr.write(said("eDrvArgs", err=message) + "\n")
+        sys.exit(2)
+
+
 def emit(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
@@ -49,7 +65,7 @@ def emit(obj: dict) -> None:
 def _binary(name: str) -> dict:
     path = shutil.which(name)
     if not path:
-        return {"ok": False, "error": f"{name} не найден в PATH"}
+        return {"ok": False, "error": said("eDrvNoBinary", name=name)}
     try:
         out = subprocess.run([path, "-version"], capture_output=True, text=True,
                              timeout=10).stdout.splitlines()
@@ -70,7 +86,7 @@ def selftest() -> int:
     problems: list[str] = []
 
     if sys.version_info < (3, 11):
-        problems.append(f"нужен python >= 3.11 (tomllib), запущен {report['python']}")
+        problems.append(said("eDrvPython", need="3.11", have=report["python"]))
 
     try:
         from ttsqc import paths                              # noqa: PLC0415
@@ -88,9 +104,9 @@ def selftest() -> int:
                 report["scorerMtime"] = int(p.stat().st_mtime * 1000)
             # scorer необязателен: без него ttsqc честно остаётся на правилах
             if not p.exists() and key != "SCORER":
-                problems.append(f"нет файла {label}: {p}")
+                problems.append(said("eDrvNoFile", name=label, path=str(p)))
     except Exception as e:                                   # noqa: BLE001
-        problems.append(f"пакет ttsqc не импортируется: {e}")
+        problems.append(said("eDrvNoPkg", err=str(e)))
 
     for mod in ("numpy", "torch", "transformers", "faster_whisper",
                 "onnxruntime", "sklearn"):
@@ -99,7 +115,7 @@ def selftest() -> int:
             report.setdefault("modules", {})[mod] = getattr(m, "__version__", "?")
         except Exception as e:                               # noqa: BLE001
             report.setdefault("modules", {})[mod] = None
-            problems.append(f"нет модуля {mod}: {type(e).__name__}")
+            problems.append(said("eDrvNoModule", name=mod, err=type(e).__name__))
 
     try:
         import torch                                         # noqa: PLC0415
@@ -334,17 +350,14 @@ def _pick_index(run_dir: Path, want: float) -> dict:
         if p.exists():
             found.append(json.loads(p.read_text(encoding='utf-8')))
     if not found:
-        raise SystemExit('в прогоне нет разбора — переразберите озвучку')
+        raise SystemExit(said('eVoNoIndex'))
     if want <= 0:
         return found[0]
     for idx in found:
         if abs(float(idx['duration']) - want) <= 0.05:
             return idx
     have = ', '.join(f"{float(i['duration']):.3f}" for i in found)
-    raise SystemExit(
-        f"разбор относится к другой версии озвучки ({have} с против {want:.3f} с "
-        "на таймлайне) — перезапустите поиск дефектов, тогда отметки снова "
-        "встанут точно")
+    raise SystemExit(said('eDrvOtherVersion', have=have, want=f'{want:.3f}'))
 
 
 def cmd_phrase_at(args) -> int:
@@ -413,7 +426,7 @@ def decode_mono(path: str, sr: int):
            '-i', str(path), '-f', 'f32le', '-ac', '1', '-ar', str(sr), '-']
     out = subprocess.run(cmd, capture_output=True)
     if out.returncode != 0:
-        raise RuntimeError(f'ffmpeg не смог декодировать {path}')
+        raise SystemExit(said('eDrvDecode', path=str(path)))
     return np.frombuffer(out.stdout, dtype=np.float32).copy()
 
 
@@ -501,8 +514,8 @@ def cmd_learn(args) -> int:
               'runs': len(list(runs_dir.glob('*/defects.json')))}
     if n < args.min or len({int(x) for x in g}) < 2:
         report['ok'] = False
-        report['problem'] = (f'нужно не меньше {args.min} примеров по >=2 файлам; '
-                             f'есть {n} по {len({int(x) for x in g})}')
+        report['problem'] = said('eDrvLearnFew', min=args.min, n=int(n),
+                                 files=len({int(x) for x in g}))
         emit(report)
         return 0 if args.dry else 3
 
@@ -535,12 +548,12 @@ def cmd_learn(args) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="мост Kadr ↔ ttsqc")
+    ap = Parser(description="Kadr <-> ttsqc bridge")
     ap.add_argument("--selftest", action="store_true",
-                    help="проверить окружение и выйти")
+                    help="check the environment and exit")
     sub = ap.add_subparsers(dest="cmd")
 
-    c = sub.add_parser("check", help="разобрать озвучку и посчитать фразы")
+    c = sub.add_parser("check", help="analyse a voice-over and work out the phrases")
     c.add_argument("--audio", required=True)
     c.add_argument("--script", required=True)
     c.add_argument("--run-dir", required=True)
@@ -549,18 +562,18 @@ def main() -> int:
     c.add_argument("--max-flags", type=int, default=40)
     c.add_argument("--min-confidence", type=float, default=0.0)
     c.add_argument("--edge-words", type=int, default=1,
-                   help="сколько слов от края предложения считать границей")
+                   help="how many words from a sentence edge count as the edge")
     c.set_defaults(func=cmd_check)
 
-    lr = sub.add_parser("learn", help="переобучить оценку на накопленных вердиктах")
+    lr = sub.add_parser("learn", help="retrain the scorer on the collected verdicts")
     lr.add_argument("--runs", required=True)
-    lr.add_argument("--out", required=True, help="куда писать scorer.pkl")
+    lr.add_argument("--out", required=True, help="where to write scorer.pkl")
     lr.add_argument("--min", type=int, default=30,
-                    help="минимум примеров (у ttsqc порог тот же)")
-    lr.add_argument("--dry", action="store_true", help="только посчитать, не сохранять")
+                    help="minimum examples (ttsqc has the same floor)")
+    lr.add_argument("--dry", action="store_true", help="count only, save nothing")
     lr.set_defaults(func=cmd_learn)
 
-    q = sub.add_parser("phrase-at", help="фраза вокруг интервала, без моделей")
+    q = sub.add_parser("phrase-at", help="the phrase around an interval, no models")
     q.add_argument("--run-dir", required=True)
     q.add_argument("--start", type=float, required=True)
     q.add_argument("--end", type=float, required=True)
@@ -572,7 +585,8 @@ def main() -> int:
     if args.selftest:
         return selftest()
     if not getattr(args, "func", None):
-        ap.error("укажите команду: --selftest, check или phrase-at")
+        sys.stderr.write(said("eDrvNoCommand") + "\n")
+        return 2
     return args.func(args)
 
 
@@ -582,5 +596,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:                                   # noqa: BLE001
-        sys.stderr.write(f"ttsqc_run failed: {type(e).__name__}: {e}\n")
+        sys.stderr.write(said("eDrvFailed", err=f"{type(e).__name__}: {e}") + "\n")
         sys.exit(1)

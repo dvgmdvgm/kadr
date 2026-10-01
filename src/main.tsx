@@ -1,8 +1,9 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App, { openProjectAt } from './App'
-import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints } from './state/store'
-import { PRESETS } from './presets'
+import { runAction, useKeymap, setActionKeys, usePaletteUi } from './engine/actions'
+import { useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults, snapPoints, setting } from './state/store'
+import { PRESETS, allPresets } from './presets'
 import { startExport } from './engine/exporter'
 import { evalAnim } from './engine/anim'
 import { wireProxies } from './engine/proxy'
@@ -17,17 +18,27 @@ import './styles.css'
 import { wireAutosave, autosaveNow, activity } from './engine/autosave'
 import { autoCaptions, captionsTsx } from './engine/captions'
 import { reverseClip } from './engine/reverse'
-import { importFiles, wireDropDiagnostics } from './engine/mediaImport'
+import { importFiles, wireDropDiagnostics, useImportUi, useImportSummary } from './engine/mediaImport'
 import { snapshotFrame, contactSheet } from './engine/snapshot'
 import { runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi } from './engine/checks'
 import { importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, wireModels, prepareForFragment } from './engine/models'
 import { useFragmentParams, setParam, resetParams, flushParamSaves } from './engine/fragmentParams'
 import { useOnion, setOnion, toggleOnion, wireOnion } from './engine/onion'
-import { audioStats, silencePreview } from './engine/audio'
+import { useColourUi } from './engine/colourUi'
+import { audioStats, silencePreview, wirePreviewLimiter, loudness, resetLoudness } from './engine/audio'
+import { scrubStats } from './engine/scrubAudio'
+import limiterUrl from './engine/limiter.worklet.ts?worker&url'
 import { previewPoolStats } from './engine/player'
 import { usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow } from './engine/popout'
+import { useSource, openSource, closeSource, sourceEdit, sourcePlan } from './engine/source'
 import { wireExportChime } from './engine/chime'
+import { wireOffline, useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink } from './engine/offline'
 import { normalizeClip } from './engine/normalize'
+import * as agentEdit from './engine/agentEdits'
+import { useSilences } from './engine/silences'
+import { cutWords, useWordCuts } from './engine/transcript'
+import { sliceState } from './engine/agentState'
+import { wireFonts } from './engine/fonts'
 import { neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS } from './engine/neonWave'
 import { speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS } from './engine/tts'
 import { useTtsUi } from './components/TtsDialog'
@@ -41,8 +52,21 @@ import { detectBeats, clearBeats, beatTimes, useBeatsUi } from './engine/beats'
 import { bakeAudio, bakeState, bakePlan, refreshStaleBakes } from './engine/audioReact'
 import { loadSoundLibrary, findSfx, addSound, setSoundMeta, sfxFamilies, SFX_FAMILIES, SFX_USES } from './engine/sounds'
 import { useSoundsUi } from './components/SoundsDialog'
+import { tr, speakMainErrors } from './i18n'
 
+speakMainErrors()   // main's errors in the UI language, before anything calls main
 wireLog()   // first: everything below may want to report a failure
+// «Масштаб интерфейса»: the page's zoom factor, now and on every change
+{
+  let scale = 0
+  const applyScale = () => {
+    const v = setting<number>('general.uiScale')
+    if (v !== scale) { scale = v; window.kadr.setZoom?.(v / 100) }
+  }
+  applyScale()
+  useSettings.subscribe(applyScale)
+}
+wirePreviewLimiter(limiterUrl)
 wireProxies()
 wireFragmentCapture()
 wireExportChime()
@@ -50,6 +74,8 @@ wireAutosave()
 wireDropDiagnostics()
 wireModels()
 wireOnion()
+wireOffline()
+wireFonts()
 
 // Tell main which GPU WebGL really runs on (electron/gpu.ts falls back to the
 // default one when the discrete GPU was asked for and this says otherwise).
@@ -63,22 +89,41 @@ wireOnion()
       gl.getExtension('WEBGL_lose_context')?.loseContext()
     }
   } catch { /* 'none' */ }
-  void window.kadr.gpuReport?.(name).then((mode) => logInfo('видеокарта', `${name} (${mode === 'discrete' ? 'дискретная' : 'по умолчанию'})`))
+  void window.kadr.gpuReport?.(name).then((mode) => logInfo(tr('lgGpu'), `${name} (${tr(mode === 'discrete' ? 'gpuModeDiscrete' : 'gpuModeDefault')})`))
 }
 
 // Scripting surface for automation and AI integration (Claude Code / MCP):
 // every editor operation is reachable from here.
 ;(window as any).kadrEditor = {
   useEditor, useSettings, usePosePresets, useFxPresets, projectDuration, uid, newClipDefaults,
-  PRESETS, startExport, evalAnim, openProject: openProjectAt,
+  PRESETS, exportPresets: allPresets, startExport, evalAnim, openProject: openProjectAt,
   transcribe: transcribeFlow, parseSrt, cuesToSrt, docTimeToProject, segmentsToCues,
   createFragment, ensureFragmentServer, deleteFragment, fragmentNeedsCapture, autoCaptions, captionsTsx, autosaveNow, activity,
-  reverseClip, importFiles, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
+  // an embedded-Claude turn begins: main calls this before the turn's first /eval
+  // (electron/claude.ts) — a checkpoint outside undo, and a backup on disk
+  agentTurn: () => { useEditor.getState().agentCheckpoint(); void autosaveNow() },
+  // main brackets every /eval with ±1: history pushed in between is the agent's (the list marks it)
+  agentEval: (d: 1 | -1) => useEditor.getState().agentEval(d),
+  // the agent's semantic edits (kadr_cut, kadr_move…): one store action, one undo step each
+  agentEdit,
+  // the proposals the timeline flags draw (I5/I8/I11), and the transcript panel's word cut (I10)
+  useSilences, cutWords, useWordCuts,
+  // kadr_state: a summary, or exact slices that are never cut (card I3)
+  sliceState,
+  // offline media: the runtime set, and relink by map or by folder (one undo)
+  useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink,
+  // the action registry: any action by id, the keymap diff, rebinding
+  runAction, useKeymap, setActionKeys, usePaletteUi,
+  // the settings (shared/settings.ts): `settings.effective(key)`, `settings.set(key, value | null)`
+  settings: useSettings.getState(), setting,
+  reverseClip, importFiles, useImportUi, useImportSummary, snapshotFrame, contactSheet, normalizeClip, syncProjectFragments,
   runChecks, readingTime, cameraJerks, CHECK_LIMITS, useChecksUi,
   importModels, refreshModels, insertModelFragment, modelFragmentTsx, useModelsUi, prepareForFragment,
-  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,
-  audioStats, silencePreview, previewPoolStats,
+  useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion, useColourUi,
+  audioStats, silencePreview, previewPoolStats, loudness, resetLoudness, scrubStats,
   usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow,
+  // L5: the source viewer (view state) and its three-point edit
+  useSource, openSource, closeSource, sourceEdit, sourcePlan,
   neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS,
   speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS,
   useTtsUi, useDefectsUi,

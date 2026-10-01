@@ -1,24 +1,272 @@
 // Shared WebAudio graph for the live preview: every media element is routed
-// element → per-clip gain (allows >100% volume) → master → analyser → output.
+// element → [its clip's effects, K9] → per-clip gain (allows >100% volume) →
+// pan (K4, shared/pan.ts) → its audio track's bus (K6, a unity gain) →
+// [the track's effects, K9] → the strip's tap → master (the project's fader) → limiter → analyser
+// → output, and the analyser also feeds the loudness meter (K3,
+// shared/loudness.ts: LUFS M/S/I and true peak of what reaches the speakers). The limiter is the export's own (shared/previewLimiter.ts, an
+// AudioWorklet), so a hot mix clips in neither; `useSettings.previewLimiter`
+// takes it out, and until its module has loaded the master goes straight on.
+import { useSettings, useEditor, setting } from '../state/store'
+import { logWarn } from './log'
+import { tr } from '../i18n'
+import type { Loudness } from '@shared/loudness'
+import { PANNER_OPTIONS, clampPan } from '@shared/pan'
+import { dspFx, fxSignature, type AudioFx } from '@shared/audioFx'
+
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
 let analyser: AnalyserNode | null = null
+let limiter: AudioWorkletNode | null = null
+let limiterState: 'loading' | 'ready' | 'failed' = 'loading'
+let meter: AudioWorkletNode | null = null
+const SILENT: Loudness = { momentary: -Infinity, shortTerm: -Infinity, integrated: -Infinity, truePeak: -Infinity }
+let reading: Loudness = SILENT
+/** the worklet's URL, handed in by main.tsx: a `?worker&url` import is vite's
+ *  alone, and the node checks bundle this file with esbuild */
+let limiterModule = ''
+export function wirePreviewLimiter(url: string) { limiterModule = url }
 const gains = new WeakMap<HTMLMediaElement, GainNode>()
+const pans = new WeakMap<HTMLMediaElement, StereoPannerNode>()
+/** the project's master fader, and whether silencePreview holds it at 0 */
+let masterLevel = 1
+let silenced = false
 const sources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
 /** elements routed into the graph right now (see audioStats) */
 let routed = 0
+
+// ---- K6: the mixer's taps. A track's gain stays in each element's gain (the
+// preview sounds as before); what the strip meters is the sum of its elements
+// after their gain and pan — one bus per AUDIO track, in front of the master.
+/** a stereo peak tap: a splitter into one analyser per channel */
+export type Tap = [AnalyserNode, AnalyserNode]
+let masterTap: Tap | null = null
+/** the worklet module (limiter, loudness, K8's capture) — resolves once loaded */
+let workletModule: Promise<void> | null = null
+export function workletReady(): Promise<void> {
+  ensureAudio()
+  return workletModule!
+}
+const buses = new Map<string, { bus: GainNode; post: GainNode; tap: Tap; fx: FxSlot | null }>()
+/** where each element's pan goes now: its track's bus, or the master (a node — a bus made again after a prune is a new one) */
+const routedTo = new WeakMap<HTMLMediaElement, AudioNode>()
+let limiterReduction = 0
+/** the playhead where playback last stopped; null = never played */
+let meterPausedAt: number | null = null
+const peakBuf = new Float32Array(2048)
+
+export function tap(c: AudioContext, from: AudioNode): Tap {
+  const split = c.createChannelSplitter(2)
+  const mk = () => { const a = c.createAnalyser(); a.fftSize = 2048; return a }
+  const t: Tap = [mk(), mk()]
+  from.connect(split)
+  split.connect(t[0], 0)
+  split.connect(t[1], 1)
+  return t
+}
+
+function busFor(trackId: string) {
+  let b = buses.get(trackId)
+  if (!b) {
+    const c = ensureAudio()
+    const bus = c.createGain()
+    // bus → [the track's effects] → post: the strip meters what the track sounds like
+    const post = c.createGain()
+    bus.connect(post)
+    post.connect(master!)
+    b = { bus, post, tap: tap(c, post), fx: null }
+    buses.set(trackId, b)
+  }
+  return b
+}
+
+// ---- K9: effects (shared/audioFx.ts), one `kadr-fx` worklet node per clip
+// element or track bus that has any, put in and taken out as the list changes
+interface FxSlot { node: AudioWorkletNode; sig: string }
+let fxReady = false
+const elementFx = new WeakMap<HTMLMediaElement, FxSlot>()
+const sigs = new WeakMap<AudioFx[], string>()
+const sigOf = (list: AudioFx[] | undefined) => {
+  if (!list) return '[]'
+  let s = sigs.get(list)
+  if (s === undefined) sigs.set(list, (s = fxSignature(list)))
+  return s
+}
+const fxNode = (c: AudioContext, list: AudioFx[]) => {
+  const node = new AudioWorkletNode(c, 'kadr-fx', { outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' })
+  node.port.postMessage({ fx: dspFx(list) })
+  return node
+}
+
+/**
+ * Re-wire `from → [fx] → to` for a list: a slot is made when effects appear,
+ * re-parameterised in place when they change (the worklet keeps its running
+ * state — no click), and taken out when none are left. Until the worklet
+ * module has loaded the sound passes dry; the caller asks again every frame.
+ */
+function wireFx(from: AudioNode, to: AudioNode, cur: FxSlot | null, list: AudioFx[] | undefined): FxSlot | null {
+  const sig = sigOf(list)
+  if ((cur?.sig ?? '[]') === sig || !fxReady) return cur
+  if (cur && sig !== '[]') {
+    cur.node.port.postMessage({ fx: dspFx(list) })
+    return { ...cur, sig }
+  }
+  try { from.disconnect() } catch { /* not yet */ }
+  if (cur) { try { cur.node.disconnect() } catch { /* already */ } }
+  if (sig === '[]') { from.connect(to); return null }
+  const node = fxNode(ctx!, list!)
+  from.connect(node).connect(to)
+  return { node, sig }
+}
+
+/** K9: a clip's effects, between its element and its gain */
+export function setElementFx(el: HTMLMediaElement, list: AudioFx[] | undefined) {
+  const src = sources.get(el), g = gains.get(el)
+  if (!src || !g) return
+  const cur = elementFx.get(el) ?? null
+  const next = wireFx(src, g, cur, list)
+  if (next === cur) return
+  if (next) elementFx.set(el, next); else elementFx.delete(el)
+}
+
+/** K9: a track's effects, on its bus (the sum of its clips after their gain and pan) */
+export function setTrackFx(trackId: string, list: AudioFx[] | undefined) {
+  if (!ctx || (!buses.has(trackId) && sigOf(list) === '[]')) return
+  const b = busFor(trackId)
+  b.fx = wireFx(b.bus, b.post, b.fx, list)
+}
+
+/** K6: send an element into its audio track's bus ('' or a video track: straight to the master) */
+export function setElementTrack(el: HTMLMediaElement, trackId: string) {
+  const p = pans.get(el)
+  if (!p) return
+  const to = trackId ? busFor(trackId).bus : master!
+  if (routedTo.get(el) === to) return
+  try { p.disconnect() } catch { /* not yet */ }
+  p.connect(to)
+  routedTo.set(el, to)
+}
+
+/** K12: the bus of a track that is gone (removed, undone, another project) leaves the graph */
+export function pruneBuses(tracks: readonly { id: string; kind: string }[]) {
+  for (const [id, b] of buses) {
+    if (tracks.some((t) => t.id === id && t.kind === 'audio')) continue
+    for (const n of [b.bus, b.post, b.fx?.node]) { try { n?.disconnect() } catch { /* already */ } }
+    buses.delete(id)
+  }
+}
+
+export function peaks(t: Tap | null | undefined): [number, number] {
+  if (!t) return [0, 0]
+  const out: [number, number] = [0, 0]
+  for (let ch = 0; ch < 2; ch++) {
+    t[ch].getFloatTimeDomainData(peakBuf)
+    let m = 0
+    for (let i = 0; i < peakBuf.length; i++) { const x = Math.abs(peakBuf[i]); if (x > m) m = x }
+    out[ch] = m
+  }
+  return out
+}
+
+/** sample peaks (linear) of the last ~43 ms, L and R: a track's bus after its fader and pan */
+export const trackPeaks = (trackId: string): [number, number] => peaks(buses.get(trackId)?.tap)
+/** …and of the output, after the limiter (the compact meter, the master strip) */
+export const masterPeaks = (): [number, number] => peaks(masterTap)
+
+/** the limiter as the master strip shows it; `reductionDb` ≤ 0 over the last ~100 ms */
+export function limiterInfo(): { state: 'on' | 'off' | 'loading' | 'failed'; reductionDb: number } {
+  const state = limiterOn() ? 'on' : limiterState === 'ready' ? 'off' : limiterState
+  return { state, reductionDb: state === 'on' ? limiterReduction : 0 }
+}
 
 export function ensureAudio(): AudioContext {
   if (!ctx) {
     ctx = new AudioContext()
     master = ctx.createGain()
+    master.gain.value = masterLevel
     analyser = ctx.createAnalyser()
     analyser.fftSize = 512
     analyser.smoothingTimeConstant = 0.75
-    master.connect(analyser)
     analyser.connect(ctx.destination)
+    masterTap = tap(ctx, analyser)
+    const c = ctx
+    workletModule = c.audioWorklet.addModule(limiterModule)
+    workletModule.then(() => {
+      limiter = new AudioWorkletNode(c, 'kadr-limiter', {
+        outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit'
+      })
+      limiter.connect(analyser!)
+      limiterState = 'ready'
+      fxReady = true
+      // a worklet is only pulled while it reaches the destination: it outputs silence there
+      meter = new AudioWorkletNode(c, 'kadr-loudness', {
+        numberOfOutputs: 1, outputChannelCount: [1], channelCount: 2, channelCountMode: 'explicit'
+      })
+      meter.port.onmessage = (e) => { reading = e.data as Loudness }
+      if (!useEditor.getState().playing && meterPausedAt !== null) meter.port.postMessage('pause')
+      analyser!.connect(meter)
+      meter.connect(c.destination)
+      limiter.port.onmessage = (e) => { limiterReduction = e.data as number }
+      route()
+    }).catch((e) => {
+      limiterState = 'failed'
+      logWarn(tr('lgSound'), tr('lmLimiterFail'), String(e))
+    })
+    useSettings.subscribe((s, prev) => {
+      if (s.previewLimiter !== prev.previewLimiter) route()
+      if (s.snap !== prev.snap) applySink()
+    })
+    // K6 (canvas K, RULES 17): the measurement freezes while paused and starts
+    // over when playback starts from a place the playhead was MOVED to — not
+    // when it resumes where it stopped, so a stop-and-listen keeps it
+    useEditor.subscribe((s, prev) => {
+      if (s.playing === prev.playing) return
+      if (s.playing) {
+        if (meterPausedAt !== null && Math.abs(s.playhead - meterPausedAt) > 1e-6) resetLoudness()
+        meter?.port.postMessage('run')
+      } else {
+        meterPausedAt = s.playhead
+        meter?.port.postMessage('pause')
+      }
+    })
+    route()
+    applySink()
   }
   return ctx
+}
+
+function limiterOn(): boolean {
+  return !!limiter && useSettings.getState().previewLimiter
+}
+
+/** master → limiter when it is loaded and wanted, else master → analyser */
+function route() {
+  master!.disconnect()
+  master!.connect(limiterOn() ? limiter! : analyser!)
+}
+
+/** the device last asked for; a failed switch leaves the context where it was */
+let sinkWanted: string | null = null
+
+/** K12: the device the preview REALLY plays on ('' = the system default) — the setting is only the wish */
+export function outputDevice(): string {
+  if (!ctx) return String(setting('playback.audioOutput') ?? '') // nothing plays yet: the wish is where it will
+  const id = (ctx as AudioContext & { sinkId?: unknown }).sinkId
+  return typeof id === 'string' ? id : ''
+}
+
+/**
+ * K7: the output device (`playback.audioOutput`, '' = the system default).
+ * One context carries everything the preview plays — elements, the scrub, the
+ * popped-out window's canvas included — so one setSinkId moves all of it.
+ * Only a CHANGE of the setting is applied: a measurement that parked the
+ * output on {type:'none'} keeps it until the user picks a device.
+ */
+function applySink() {
+  const id = String(setting('playback.audioOutput') ?? '')
+  const c = ctx as (AudioContext & { setSinkId?: (id: string) => Promise<void> }) | null
+  if (!c?.setSinkId || id === sinkWanted) return
+  sinkWanted = id
+  c.setSinkId(id).catch((e) => logWarn(tr('lgSound'), tr('lmSinkFail'), `${id}: ${String(e)}`))
 }
 
 export function resumeAudio() {
@@ -33,10 +281,12 @@ export function attachAudio(el: HTMLMediaElement) {
   try {
     const src = c.createMediaElementSource(el)
     const gain = c.createGain()
-    src.connect(gain)
-    gain.connect(master!)
+    const pan = new StereoPannerNode(c, PANNER_OPTIONS)
+    src.connect(gain).connect(pan).connect(master!)
     gains.set(el, gain)
+    pans.set(el, pan)
     sources.set(el, src)
+    routedTo.set(el, master!)
     routed++
   } catch { /* already attached to another context */ }
 }
@@ -54,7 +304,12 @@ export function detachAudio(el: HTMLMediaElement) {
   if (!g) return
   try { sources.get(el)?.disconnect() } catch { /* already */ }
   try { g.disconnect() } catch { /* already */ }
+  try { pans.get(el)?.disconnect() } catch { /* already */ }
+  try { elementFx.get(el)?.node.disconnect() } catch { /* already */ }
+  elementFx.delete(el)
   gains.delete(el)
+  pans.delete(el)
+  routedTo.delete(el)
   sources.delete(el)
   routed--
 }
@@ -65,6 +320,20 @@ export function setElementGain(el: HTMLMediaElement, v: number) {
   // a non-finite value throws inside WebAudio and kills the caller's rAF
   // loop — no gain glitch is worth losing playback for the whole session
   if (g) g.gain.value = Number.isFinite(v) ? Math.max(0, v) : 0
+}
+
+/** K4: the element's pan, −1…1 (shared/pan.ts) */
+export function setElementPan(el: HTMLMediaElement, p: number) {
+  const n = pans.get(el)
+  if (n && n.pan.value !== clampPan(p)) n.pan.value = clampPan(p)
+}
+
+/** K4: the project's master fader (linear), in front of the limiter as in the export */
+export function setMasterGain(v: number) {
+  const g = Number.isFinite(v) ? Math.max(0, v) : 1
+  if (g === masterLevel || !master) { masterLevel = g; return }
+  masterLevel = g
+  if (!silenced) master.gain.value = g
 }
 
 export function isRouted(el: HTMLMediaElement): boolean {
@@ -85,9 +354,20 @@ export function getAnalyser(): AnalyserNode {
 export function audioStats() {
   const c = ctx
   const ps = c && (c as unknown as { playbackStats?: Record<string, number> }).playbackStats
+  // the output's peak right now (the analyser's window, ~11 ms), dBFS
+  let peak = 0
+  if (analyser) {
+    const buf = new Float32Array(analyser.fftSize)
+    analyser.getFloatTimeDomainData(buf)
+    for (const x of buf) peak = Math.max(peak, Math.abs(x))
+  }
   return {
     routed,
+    buses: buses.size,
     state: c?.state ?? 'none',
+    limiter: limiterOn() ? 'on' : limiterState === 'ready' ? 'off' : limiterState,
+    peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,
+    loudness: reading,
     playback: ps ? {
       underrunEvents: ps.underrunEvents, underrunDuration: ps.underrunDuration,
       totalDuration: ps.totalDuration, averageLatency: ps.averageLatency, maximumLatency: ps.maximumLatency
@@ -95,8 +375,20 @@ export function audioStats() {
   }
 }
 
+/** The preview output's loudness (LUFS; −Infinity = nothing measured yet). */
+export function loudness(): Loudness {
+  return reading
+}
+
+/** Start the integrated value and the true-peak hold over. */
+export function resetLoudness() {
+  reading = SILENT
+  meter?.port.postMessage('reset')
+}
+
 /** Measurements and tests: the graph runs as usual, nothing reaches the speakers. */
 export function silencePreview(on: boolean) {
   ensureAudio()
-  master!.gain.value = on ? 0 : 1
+  silenced = on
+  master!.gain.value = on ? 0 : masterLevel
 }

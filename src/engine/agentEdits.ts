@@ -1,0 +1,228 @@
+// The page side of the agent's semantic edit tools (card I1): kadr_cut, kadr_move,
+// kadr_trim, kadr_ripple_delete, kadr_keyframe, kadr_text_add, kadr_volume,
+// kadr_marker and kadr_undo in electron/mcp-edit-tools.cjs call these, and only these.
+//
+// Each edit is ONE undo step through one store action, whatever the agent
+// remembers about pushHistory: `once` checks that exactly one history entry
+// appeared, and an edit that changed nothing leaves no entry behind and throws,
+// so the agent hears "nothing happened" instead of reading a silent no-op as done.
+// Times are project seconds; the store lands them on frames (card E1).
+// Test: node scripts/check-mcp-tools.mjs
+import type { Anim, Clip, Easing, Project, TextStyle, TimelineMarker } from '@shared/types'
+import { useEditor, findClip, withLinked, defaultTextStyle } from '@/state/store'
+import { toFrame } from './timelineMath'
+import { upsertKf } from '@/components/animUtils'
+import { applySilences, findSilences, proposeRanges, type FindSilencesArgs } from './silences'
+import { findScenes, type FindScenesArgs } from './scenes'
+import { autoDuck, type AutoDuckArgs } from './duck'
+import { GRADE_KEYS, clampGrade, type ClipGrade, type GradeKey } from '@shared/colour'
+import type { BlendMode } from '@shared/blend'
+import { WHEEL_KEYS, sanitizeCurves, sanitizeWheels, wheelIsNeutral, type ClipCurves, type Wheel, type WheelKey } from '@shared/curves'
+import { isVisualClip } from './colourUi'
+
+const st = () => useEditor.getState()
+
+/** what these edits can change: tracks and markers (never the assets and their blobs) */
+const edited = (p: Project) => JSON.stringify([p.tracks, p.markers])
+
+function once<T>(what: string, edit: () => T): T {
+  const before = st()
+  const was = edited(before.project)
+  const out = edit()
+  const after = st()
+  const pushed = after.past.filter((e) => !before.past.includes(e)).length
+  if (after.project === before.project || edited(after.project) === was) {
+    // an action that pushed and then found nothing to do: its entry would undo nothing
+    useEditor.setState({ project: before.project, past: after.past.slice(0, after.past.length - pushed), future: before.future })
+    throw new Error(`${what}: nothing changed`)
+  }
+  if (pushed !== 1) throw new Error(`${what}: ${pushed} undo steps instead of one`)
+  return out
+}
+
+function clipOr(id: string): Clip {
+  const f = findClip(st().project, id)
+  if (!f) throw new Error(`no clip ${id}`)
+  if (f.track.locked) throw new Error(`clip ${id} is on a locked track`)
+  return f.clip
+}
+
+const at = (t: number) => toFrame(t, st().project.fps)
+
+export function cut(a: { t: number; trackIds?: string[] }) {
+  const ids = once('cut', () => st().splitAt(a.t, a.trackIds))
+  return { t: at(a.t), rightHalves: ids }
+}
+
+export function move(a: { clipId: string; start: number; trackId?: string }) {
+  const clip = clipOr(a.clipId)
+  const dt = a.start - clip.start
+  // the twins keep their own tracks and move by the same amount
+  const entries = withLinked(st().project, [a.clipId]).map((id) => ({
+    id, start: findClip(st().project, id)!.clip.start + dt,
+    ...(id === a.clipId && a.trackId ? { trackId: a.trackId } : {})
+  }))
+  once('move', () => { st().pushHistory('hMove'); st().setClipStarts(entries) })
+  const c = findClip(st().project, a.clipId)!
+  if (a.trackId && c.track.id !== a.trackId) throw new Error('moved, but the target track refused the clip (another kind or locked)')
+  return { clipId: a.clipId, start: c.clip.start, trackId: c.track.id }
+}
+
+export function trim(a: { clipId: string; edge: 'in' | 'out'; t: number; ripple?: boolean }) {
+  clipOr(a.clipId)
+  once('trim', () => {
+    st().pushHistory(a.ripple ? 'hRippleTrim' : 'hTrim')
+    if (a.ripple) st().rippleTrim(a.clipId, a.edge, a.t)
+    else st().trimClip(a.clipId, a.edge, a.t)
+  })
+  const c = findClip(st().project, a.clipId)!.clip
+  return { clipId: c.id, start: c.start, duration: c.duration, inPoint: c.inPoint }
+}
+
+export function rippleDelete(a: { clipIds?: string[]; start?: number; end?: number }) {
+  if (a.clipIds) {
+    const gone = withLinked(st().project, a.clipIds)
+    once('ripple delete', () => st().rippleDelete(a.clipIds))
+    return { removed: gone }
+  }
+  once('ripple delete', () => st().extractRange({ start: at(a.start!), end: at(a.end!) }))
+  return { removedRange: [at(a.start!), at(a.end!)] }
+}
+
+const KEY_PARAMS = ['x', 'y', 'scale', 'rotation', 'opacity', 'rotX', 'rotY', 'z', 'gain'] as const
+type KeyParam = typeof KEY_PARAMS[number]
+
+export function keyframe(a: { clipId: string; param: KeyParam; t: number; value: number; easing?: Easing }) {
+  const clip = clipOr(a.clipId)
+  const rel = at(a.t) - clip.start // keyframe times are clip-local
+  if (rel < -1e-9 || rel > clip.duration + 1e-9) throw new Error(`t=${a.t} is outside the clip [${clip.start}, ${clip.start + clip.duration}]`)
+  const cur: Anim = (a.param === 'gain' ? clip.gain : clip.transform[a.param]) ?? { value: 0 }
+  const next = upsertKf(cur, rel, a.value, a.easing)
+  if (a.easing) next.keyframes = next.keyframes!.map((k) => Math.abs(k.time - rel) < 1e-9 ? { ...k, easing: a.easing! } : k)
+  const patch: Partial<Clip> = a.param === 'gain' ? { gain: next } : { transform: { ...clip.transform, [a.param]: next } }
+  once('keyframe', () => { st().pushHistory('hKeyframe'); st().updateClip(a.clipId, patch) })
+  return { clipId: a.clipId, param: a.param, keyTime: rel, keys: next.keyframes!.length }
+}
+
+export function textAdd(a: { at: number; text: string; style?: Partial<TextStyle>; duration?: number }) {
+  once('text', () => {
+    st().insertTextClip(a.at) // pushes its own step and selects the new clip
+    const id = st().selection[0]
+    if (!id || findClip(st().project, id)?.clip.kind !== 'text') return
+    st().updateClip(id, { text: a.text, textStyle: { ...defaultTextStyle(), ...a.style } })
+  })
+  const id = st().selection[0]
+  const c = findClip(st().project, id)?.clip
+  if (!c || c.kind !== 'text') throw new Error('no unlocked video track to put the text on')
+  return { clipId: c.id, start: c.start, duration: c.duration }
+}
+
+export function volume(a: { clipId: string; value?: number; keys?: { t: number; value: number; easing?: Easing }[] }) {
+  clipOr(a.clipId)
+  const ids = withLinked(st().project, [a.clipId]).filter((id) => !findClip(st().project, id)!.track.locked)
+  once('volume', () => {
+    st().pushHistory('hEdit')
+    for (const id of ids) {
+      const c = findClip(st().project, id)!.clip
+      const gain: Anim = a.keys
+        ? { value: a.keys[0].value, keyframes: a.keys.map((k) => ({ time: at(k.t) - c.start, value: k.value, easing: k.easing ?? 'linear' })).sort((x, y) => x.time - y.time) }
+        : { value: a.value! }
+      st().updateClip(id, { gain })
+    }
+  })
+  return { clipIds: ids }
+}
+
+type KeyArgs = { mode: 'chroma' | 'luma' | 'off'; colour?: string; tolerance?: number; softness?: number; spill?: number }
+/** kadr_grade (J6): the colour section in one call — static values (a parameter
+    it sets loses its keys), null / 'off' / 'normal' removes. One undo step. */
+export function grade(a: {
+  clipId: string; grade?: Partial<Record<GradeKey, number>>; lut?: { path: string; intensity?: number } | null
+  blend?: BlendMode; key?: KeyArgs
+  wheels?: Partial<Record<WheelKey, Partial<Wheel>>> | null; curves?: ClipCurves | null
+}) {
+  const c = clipOr(a.clipId)
+  if (!isVisualClip(st().project, c)) throw new Error(`clip ${a.clipId} has no picture to grade`)
+  const patch: Partial<Clip> = {}
+  if (a.grade) {
+    const g = { ...(c.grade ?? Object.fromEntries(GRADE_KEYS.map((k) => [k, { value: 0 }]))) } as ClipGrade
+    for (const [k, v] of Object.entries(a.grade) as [GradeKey, number][]) g[k] = { value: clampGrade(k, v) }
+    patch.grade = g
+  }
+  if (a.lut !== undefined) patch.lut = a.lut ? { path: a.lut.path, intensity: a.lut.intensity !== undefined ? { value: a.lut.intensity } : c.lut?.intensity ?? { value: 1 } } : undefined
+  if (a.blend !== undefined) patch.blend = a.blend === 'normal' ? undefined : a.blend
+  if (a.key) {
+    const k = a.key
+    patch.key = k.mode === 'off' ? undefined : {
+      mode: k.mode,
+      colour: (k.colour ?? c.key?.colour ?? (k.mode === 'chroma' ? '#00ff00' : '#000000')).toLowerCase(),
+      tolerance: k.tolerance !== undefined ? { value: k.tolerance } : c.key?.tolerance ?? { value: 0.1 },
+      softness: k.softness !== undefined ? { value: k.softness } : c.key?.softness ?? { value: 0.1 },
+      spill: k.spill !== undefined ? { value: k.spill } : c.key?.spill ?? { value: 0 }
+    }
+  }
+  // J7: named wheels / channels are replaced, the rest kept; all neutral or empty = absent
+  if (a.wheels !== undefined) {
+    const w = a.wheels && sanitizeWheels(Object.fromEntries(WHEEL_KEYS.map((k) => [k, { ...c.wheels?.[k], ...a.wheels![k] }])))
+    patch.wheels = w && !WHEEL_KEYS.every((k) => wheelIsNeutral(w[k])) ? w : undefined
+  }
+  if (a.curves !== undefined) patch.curves = a.curves ? sanitizeCurves({ ...c.curves, ...a.curves }) : undefined
+  once('grade', () => { st().pushHistory('hColour'); st().updateClip(a.clipId, patch) })
+  const after = findClip(st().project, a.clipId)!.clip
+  return { clipId: a.clipId, grade: after.grade ?? null, lut: after.lut ?? null, blend: after.blend ?? 'normal', key: after.key ?? null,
+    wheels: after.wheels ?? null, curves: after.curves ?? null }
+}
+
+export function marker(a: { t: number; label?: string; kind?: TimelineMarker['kind']; end?: number }) {
+  const id = once('marker', () => st().addMarker(a.t, { label: a.label, kind: a.kind, end: a.end }))
+  const m = st().project.markers!.find((x) => x.id === id)!
+  return { id, time: m.time, label: m.label }
+}
+
+export function undo(a: { steps: number }) {
+  const labels: string[] = []
+  for (let i = 0; i < a.steps; i++) {
+    const s = st()
+    if (!s.past.length) break
+    labels.push(s.past[s.past.length - 1].label)
+    s.undo()
+  }
+  return { undone: labels.length, labels, left: st().past.length }
+}
+
+/** kadr_silences: find pauses (shown on the timeline as proposals), or cut
+    proposals out of every unlocked track — one undo step. */
+export async function silences(a: FindSilencesArgs & { apply?: 'confirmed' | 'all' | string[] }) {
+  if (a.apply) {
+    const gone = once('silences', () => applySilences(a.apply!, 'silence'))
+    return { removed: gone.map(({ id, start, end }) => ({ id, start, end })), seconds: +gone.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+  }
+  const found = await findSilences(a)
+  return { proposals: found.map(({ id, start, end }) => ({ id, start, end })), seconds: +found.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+}
+
+/** kadr_propose: show ranges (retakes, …) as confirm flags; apply cuts only what
+    the USER confirmed — one undo step. Proposing is no edit. */
+export function propose(a: { kind?: string; ranges?: { start: number; end: number; reason: string }[]; apply?: 'confirmed' }) {
+  if (a.apply) {
+    const gone = once('propose', () => applySilences('confirmed', a.kind))
+    return { removed: gone.map(({ id, kind, start, end }) => ({ id, kind, start, end })), seconds: +gone.reduce((n, x) => n + x.end - x.start, 0).toFixed(3) }
+  }
+  const shown = proposeRanges(a.kind!, a.ranges!)
+  return { proposals: shown.map(({ id, start, end }) => ({ id, start, end })) }
+}
+
+/** kadr_duck: gain keys on the music that dip under speech — one undo step. */
+export async function duck(a: AutoDuckArgs) {
+  const before = st().past.length
+  const r = await autoDuck(a)
+  if (st().past.length !== before + 1) throw new Error('duck: not exactly one undo step')
+  return { ...r, keys: r.clipIds.map((id) => findClip(st().project, id)!.clip.gain.keyframes?.length ?? 0) }
+}
+
+/** kadr_scenes: hard cuts of the video as 'scene' markers (replacing the old
+    ones over the stretch) — one undo step, none when they did not change. */
+export async function scenes(a: FindScenesArgs) {
+  const found = await findScenes(a)
+  return { scenes: found, count: found.length }
+}

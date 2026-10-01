@@ -2,21 +2,30 @@
 // the editor's terminal panel, wired to the live project through a local
 // HTTP bridge (main ⇄ renderer eval) that the MCP stdio server
 // (mcp-bridge.cjs, spawned by claude itself) talks to.
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { createServer, type Server } from 'http'
 import { randomBytes, randomUUID } from 'crypto'
 import { execFile } from 'child_process'
 import { promises as fs } from 'fs'
 import { join, isAbsolute } from 'path'
-import { tmpdir } from 'os'
 import type { IPty } from 'node-pty'
 import { ensureInStore, listChats } from './chats'
+import { claudeArgs, removeManagedSkills, splitArgs } from './claudeArgs'
+import type { SettingsStore } from './settings'
+import type { ClaudeStatus } from '../shared/types'
+import { WIN_PROCESS_QUERY, parseWinProcs, pickWinOrphans } from './orphanSweep'
+import { workspace } from './fragments'
+import { cacheDir, tempDir } from './appSettings'
+import { turnTracker } from '../shared/agentTurn'
 
 // The session inherits this process's environment MINUS the markers of any
 // Claude session that launched the editor (see SESSION_MARKERS). Anything extra the
-// user's claude needs (proxies, custom PATH…) plus command/args overrides
-// live in userData/claude-env.json: { "command": "...", "args": [...],
-// "env": { "HTTPS_PROXY": "...", ... } }. If you proxy claude, exclude
+// user's claude needs (proxies, custom PATH…) lives in userData/claude-env.json:
+// { "env": { "HTTPS_PROXY": "...", ... } }. The command, model, permission mode,
+// strict MCP and extra args are settings (`claude.*`, shared/settings.ts); a
+// legacy "command"/"args" in that file still works — `args` REPLACES Kadr's
+// flags there (a wrapper that may not be claude), and `claude:status` reports
+// it so the settings row can warn. If you proxy claude, exclude
 // localhost (NO_PROXY) so the kadr MCP bridge is reached directly.
 // Extra MCP servers for the embedded session only (media search, etc.) go in
 // userData/claude-mcp.json: { "mcpServers": { name: { command, args, env } } } —
@@ -31,14 +40,14 @@ const SYSTEM_HINT =
   'captions, motion graphics) that live as clips on the timeline — after creating one, edit ' +
   'its TSX entry file directly: the user sees your changes live in the preview, no rendering. ' +
   'Treat user requests as being about this project unless told otherwise. ' +
-  'Imported media file paths are in kadr_state assets — you may read those files ' +
+  'Imported media file paths are in kadr_state({fields: ["assets"]}) — you may read those files ' +
   'directly; the system ffmpeg/ffprobe are available for media work. ' +
   'If other MCP tools can fetch or download media (stock search etc.), files they save ' +
   'can go straight into this project: import via kadr_eval (probeMedia → addAsset → ' +
   'insertClipFromAsset) or copy them into a fragment folder for use inside Remotion ' +
   'compositions. ' +
-  'Kadr\'s skills compose: load kadr-editor, plus kadr-music when there is music, kadr-motion ' +
-  'for titles/captions/fragments and kadr-3d for 3D — whichever this project needs. Before a ' +
+  'Kadr\'s skills compose: load kadr:editor, plus kadr:music when there is music, kadr:motion ' +
+  'for titles/captions/fragments and kadr:3d for 3D — whichever this project needs. Before a ' +
   'bigger build, ask about style, rhythm, amount of text and sound, and show a plan; never ' +
   'export unless asked.'
 
@@ -46,6 +55,8 @@ interface Session {
   pty: IPty
   server: Server
   port: number
+  /** where the agent's turns begin (shared/agentTurn.ts): keystrokes in, evals out */
+  turns: ReturnType<typeof turnTracker>
 }
 
 let session: Session | null = null
@@ -64,19 +75,23 @@ let sessionChain: Promise<unknown> = Promise.resolve()
  * launch. Outside-editor processes never reference these paths.
  * (Running two editor instances at once is not supported: the second
  * sweeps the first's helpers.)
+ * Windows has no /proc and no process groups: one PowerShell listing, and a
+ * helper counts only when its parent is gone too (`electron/orphanSweep.ts`)
+ * — which also spares a second instance's live helpers there.
  */
 export async function sweepStaleSessions(): Promise<number> {
   const marks = [
     join(app.getPath('userData'), 'kadr-mcp.json'),
     join(app.getAppPath(), 'electron', 'mcp-bridge.cjs'),
-    join(tmpdir(), 'kadr-export'), // raw encoder + muxer temp files
-    join(app.getPath('userData'), 'proxies'),
+    join(tempDir(), 'kadr-export'), // raw encoder + muxer temp files
+    cacheDir('proxies'),
     join(app.getPath('userData'), 'reversed'),
-    join(app.getPath('userData'), 'decoded'),
-    join(app.getPath('userData'), 'fragment-renders'),
+    cacheDir('decoded'),
+    cacheDir('fragment-renders'),
     join(app.getAppPath(), 'scripts', 'transcribe.py'),
     join(app.getAppPath(), 'scripts', 'ttsqc_run.py')
   ]
+  if (process.platform === 'win32') return sweepWin32([...marks, app.getPath('userData'), workspace()])
   let entries: string[]
   try { entries = await fs.readdir('/proc') } catch { return 0 } // non-Linux
   const statOf = async (pid: number) => {
@@ -123,14 +138,41 @@ export async function sweepStaleSessions(): Promise<number> {
   return killed
 }
 
+async function sweepWin32(marks: string[]): Promise<number> {
+  const out = await new Promise<string>((resolve) => execFile('powershell',
+    ['-NoProfile', '-NonInteractive', '-Command', WIN_PROCESS_QUERY],
+    { encoding: 'utf8', maxBuffer: 64 << 20, windowsHide: true },
+    (err, stdout) => resolve(err ? '' : stdout)))
+  let procs
+  try { procs = parseWinProcs(out) } catch { return 0 }
+  const pick = new Set(pickWinOrphans(procs, marks, process.pid))
+  const orphans = procs.filter((p) => pick.has(p.pid))
+  let killed = 0
+  for (const p of orphans) {
+    // /T takes the orphan's own children along (remotion's Chrome, vite under its watchdog)
+    const ok = await new Promise<boolean>((done) =>
+      execFile('taskkill', ['/pid', String(p.pid), '/t', '/f'], { windowsHide: true }, (err) => done(!err)))
+    if (ok) killed++
+    console.log(`[claude] swept orphan ${p.pid}${ok ? '' : ' (already gone)'}: ${(p.cmd ?? '').slice(0, 160)}`)
+  }
+  return killed
+}
+
 /** JS evaluated in the page (async function body) → JSON result. */
-async function evalInPage(win: BrowserWindow, code: string): Promise<string> {
+async function evalInPage(win: BrowserWindow, code: string, newTurn = false): Promise<string> {
+  // a new agent turn: checkpoint the project (and write a backup) BEFORE its first code runs
   const wrapped = `(async () => {
+    ${newTurn ? 'try { window.kadrEditor && window.kadrEditor.agentTurn && window.kadrEditor.agentTurn() } catch {}' : ''}
+    // undo entries pushed while this runs are the agent's: the history list marks them (L2)
+    const ke = window.kadrEditor
+    try { ke && ke.agentEval && ke.agentEval(1) } catch {}
     try {
       const r = await (async () => { ${code}\n })()
       return JSON.stringify({ ok: r === undefined ? null : r })
     } catch (e) {
       return JSON.stringify({ error: String((e && (e.stack || e.message)) || e) })
+    } finally {
+      try { ke && ke.agentEval && ke.agentEval(-1) } catch {}
     }
   })()`
   return win.webContents.executeJavaScript(wrapped, true)
@@ -154,7 +196,8 @@ async function evalInPage(win: BrowserWindow, code: string): Promise<string> {
  * The health check (GET /) stays open: mcp-bridge only needs *a* reply.
  */
 function startBridge(
-  win: BrowserWindow
+  win: BrowserWindow,
+  turns: ReturnType<typeof turnTracker>
 ): Promise<{ server: Server; port: number; token: string }> {
   const token = randomBytes(24).toString('hex')
   return new Promise((resolve, reject) => {
@@ -172,7 +215,8 @@ function startBridge(
       req.on('end', async () => {
         try {
           const { code } = JSON.parse(body)
-          const out = await evalInPage(win, String(code))
+          let out: string
+          try { out = await evalInPage(win, String(code), turns.evalStart()) } finally { turns.evalEnd() }
           res.writeHead(200, { 'Content-Type': 'application/json' }).end(out)
         } catch (err) {
           res
@@ -272,6 +316,43 @@ async function userConfig(): Promise<ClaudeConfig> {
   }
 }
 
+/** main's settings store, handed over by registerClaudeIpc */
+let settings: SettingsStore | null = null
+
+/** The CLI to run: the `claude.command` setting (or KADR_CLAUDE_CMD), else the legacy JSON, else claude. */
+async function claudeBin(cfg: ClaudeConfig): Promise<string> {
+  const set = settings?.effective('claude.command')
+  const name = (set && set.source !== 'default' && String(set.value)) || cfg.command || 'claude'
+  return (await which(name)) ?? name
+}
+
+/** For the settings row: auth status (no tokens spent) and the legacy replace. */
+async function claudeStatus(): Promise<ClaudeStatus> {
+  const cfg = await userConfig()
+  const legacyArgs = Array.isArray(cfg.args) ? cfg.args : null
+  const bin = await claudeBin(cfg)
+  return new Promise((resolve) => {
+    // a .cmd shim needs a shell on Windows (node refuses to run it directly); the args are fixed
+    const shell = WIN && /\.(cmd|bat)$/i.test(bin)
+    const p = execFile(shell ? `"${bin}"` : bin, ['auth', 'status', '--json'],
+      { shell, env: sessionEnv(cfg.env), windowsHide: true },
+      (err, stdout) => {
+        clearTimeout(t)
+        try {
+          const j = JSON.parse(stdout)
+          resolve({ loggedIn: !!j.loggedIn, authMethod: j.authMethod, legacyArgs })
+        } catch {
+          resolve({ loggedIn: null, error: String(err?.message ?? stdout).slice(0, 300), legacyArgs })
+        }
+      })
+    // execFile's own timeout kills only the shell, and the .cmd's node lived on: take the tree
+    const t = setTimeout(() => {
+      if (WIN && p.pid) execFile('taskkill', ['/pid', String(p.pid), '/t', '/f'], { windowsHide: true }, () => {})
+      else p.kill('SIGKILL')
+    }, 15000)
+  })
+}
+
 async function spawnSession(
   win: BrowserWindow,
   cols: number,
@@ -281,12 +362,12 @@ async function spawnSession(
 ): Promise<{ ok: boolean; port?: number; chatId?: string; error?: string }> {
   await killSession() // a reopen without a close in between
   const cfg = await userConfig()
-  const cmdName = process.env.KADR_CLAUDE_CMD || cfg.command || 'claude'
-  const bin = (await which(cmdName)) ?? cmdName
+  const bin = await claudeBin(cfg)
 
+  const turns = turnTracker()
   let bridge: { server: Server; port: number; token: string }
   try {
-    bridge = await startBridge(win)
+    bridge = await startBridge(win, turns)
   } catch (err) {
     return { ok: false, error: `bridge: ${String(err)}` }
   }
@@ -318,14 +399,22 @@ async function spawnSession(
 
   let dir = cwd || app.getPath('home')
   try { await fs.access(dir) } catch { dir = app.getPath('home') }
-  // chats: electron/chats.ts; an args override may not run claude, so no chat flags
+  // chats: electron/chats.ts; a legacy args replace may not run claude, so no chat flags
   const chat = cfg.args ? undefined : chatId ?? randomUUID()
   if (chat && chatId) await ensureInStore(chatId, dir)
-  const args = cfg.args ?? [
-    '--mcp-config', mcpCfgPath,
-    '--append-system-prompt', SYSTEM_HINT,
-    ...(chatId ? ['--resume', chatId] : ['--session-id', chat as string])
-  ]
+  if (cfg.args) console.warn('[claude] claude-env.json "args" replaces Kadr\'s flags: no --plugin-dir, no --mcp-config (use the claude.extraArgs setting to append)')
+  const opt = (k: 'claude.model' | 'claude.permissionMode' | 'claude.strictMcp' | 'claude.extraArgs') => settings?.effective(k).value
+  const args = claudeArgs({
+    mcpConfig: mcpCfgPath,
+    pluginDir: join(app.getAppPath(), 'electron', 'claude-plugin'),
+    systemHint: SYSTEM_HINT,
+    chat: chat ? { resume: !!chatId, id: chat } : undefined,
+    model: String(opt('claude.model') ?? ''),
+    permissionMode: String(opt('claude.permissionMode') ?? 'default'),
+    strictMcp: opt('claude.strictMcp') !== false,
+    extraArgs: splitArgs(String(opt('claude.extraArgs') ?? '')),
+    replace: cfg.args
+  })
 
   try {
     // lazy import: node-pty is native — a load failure must not break the app
@@ -350,7 +439,7 @@ async function spawnSession(
     })
     // publish BEFORE wiring the handlers: data emitted between spawn and the
     // assignment would otherwise be dropped by the identity guard below
-    const mine: Session = { pty: p, server: bridge.server, port: bridge.port }
+    const mine: Session = { pty: p, server: bridge.server, port: bridge.port, turns }
     session = mine
     // both handlers are keyed to THIS session: a pty that outlived its panel
     // (a kill that lost a race, say) must never paint into the live terminal
@@ -435,68 +524,25 @@ function closeSession(): Promise<void> {
   return job
 }
 
-/** the line every skill Kadr writes carries — only such folders are ever removed */
-const SKILL_MARK = '<!-- managed by Kadr'
-
-/**
- * Keep Kadr's agent skills fresh in the user's skills directory — the
- * embedded claude discovers them from ~/.claude/skills. They are COMPOSABLE:
- * kadr-editor is the base (LOOK/ACT/VERIFY, the interface, fragments, voice),
- * kadr-music, kadr-motion and kadr-3d carry the rules of particular kinds of
- * work, and a project loads the ones it needs — a plain cut none of them, a
- * product film to a song all three. (One file used to hold everything, and
- * the rules of one project — 3D, bars — read as law in every other.) Scoped
- * by their descriptions to sessions where the kadr_* tools exist, so they stay
- * dormant in unrelated claude sessions and never collide with a separately
- * installed remotion skill.
- *
- * Written only when the content changed. A kadr-* folder whose SKILL.md
- * carries Kadr's mark but is no longer shipped is removed; a folder without
- * the mark is the user's own and is never touched.
- */
-async function syncSkill(): Promise<void> {
-  try {
-    const srcDir = join(app.getAppPath(), 'electron', 'skills')
-    const root = join(app.getPath('home'), '.claude', 'skills')
-    const shipped = new Set<string>()
-    for (const file of (await fs.readdir(srcDir)).filter((f) => f.endsWith('.md')).sort()) {
-      const src = await fs.readFile(join(srcDir, file), 'utf8')
-      const name = src.match(/^---\n[\s\S]*?^name:\s*([a-z0-9-]+)\s*$/m)?.[1]
-      if (!name || !src.includes(SKILL_MARK)) {
-        console.warn(`[claude] skill ${file}: no name in its front matter or no managed mark — skipped`)
-        continue
-      }
-      shipped.add(name)
-      const dir = join(root, name)
-      const dst = join(dir, 'SKILL.md')
-      const cur = await fs.readFile(dst, 'utf8').catch(() => null)
-      if (cur === src) continue
-      await fs.mkdir(dir, { recursive: true })
-      const tmp = `${dst}.part-${process.pid}`
-      await fs.writeFile(tmp, src)
-      await fs.rename(tmp, dst)
-    }
-    if (!shipped.size) return // nothing read: never take this as "remove everything"
-    for (const d of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
-      if (!d.isDirectory() || !d.name.startsWith('kadr-') || shipped.has(d.name)) continue
-      const md = await fs.readFile(join(root, d.name, 'SKILL.md'), 'utf8').catch(() => '')
-      if (md.includes(SKILL_MARK)) await fs.rm(join(root, d.name), { recursive: true, force: true })
-    }
-  } catch (err) {
-    console.warn('[claude] skill sync failed:', err)
-  }
-}
-
-export function registerClaudeIpc(getWin: () => BrowserWindow | null) {
-  void sweepStaleSessions() // leftovers from a hard-killed previous run
-  void syncSkill()
+export function registerClaudeIpc(getWin: () => BrowserWindow | null, store: SettingsStore) {
+  settings = store
+  ipcMain.handle('claude:status', () => claudeStatus())
+  // the settings row's «Показать файл» next to a legacy `args` warning
+  ipcMain.on('claude:reveal-env', () => shell.showItemInFolder(join(app.getPath('userData'), 'claude-env.json')))
+  // skills load per session through --plugin-dir; drop copies older versions put in ~/.claude/skills
+  void removeManagedSkills(join(app.getPath('home'), '.claude', 'skills'))
+    .then((r) => { if (r.length) console.log(`[claude] removed global skill copies: ${r.join(', ')}`) })
+    .catch((err) => console.warn('[claude] skill cleanup failed:', err))
   ipcMain.handle('claude:open', (_e, cols: number, rows: number, cwd: string | null, chatId?: string | null) => {
     const win = getWin()
     if (!win) return { ok: false, error: 'no window' }
     return openSession(win, cols, rows, cwd, chatId ?? null)
   })
   ipcMain.handle('claude:chats', (_e, ids: string[]) => listChats(ids))
-  ipcMain.on('claude:input', (_e, data: string) => session?.pty.write(data))
+  ipcMain.on('claude:input', (_e, data: string) => {
+    session?.turns.input(data)
+    session?.pty.write(data)
+  })
   ipcMain.on('claude:resize', (_e, cols: number, rows: number) => {
     try { session?.pty.resize(Math.max(20, cols), Math.max(5, rows)) } catch { /* dying */ }
   })

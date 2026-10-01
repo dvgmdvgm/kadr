@@ -3,6 +3,7 @@
 // into it, and a ready fragment built on Kadr's 3D kit around one of them.
 import { create } from 'zustand'
 import type { ModelInfo } from '@shared/types'
+import { tr, trf } from '@/i18n'
 import { dirOf } from '@shared/paths'
 import { useEditor } from '@/state/store'
 import { createFragment } from './fragments'
@@ -44,7 +45,7 @@ export function wireModels() {
  */
 export async function importModels(paths: string[], opts: { budget?: number; name?: string } = {}): Promise<ModelInfo[]> {
   const dir = projectDir()
-  if (!dir) throw new Error('3D-модели хранятся в папке проекта (kadr-lib/models) — сначала сохраните проект')
+  if (!dir) throw new Error(tr('eMdSaveFirst'))
   const out: ModelInfo[] = []
   useModelsUi.setState((s) => ({ busy: s.busy + paths.length }))
   try {
@@ -52,9 +53,9 @@ export async function importModels(paths: string[], opts: { budget?: number; nam
       try {
         const info = await window.kadr.modelImport(p, dir, { budget: opts.budget, name: paths.length === 1 ? opts.name : undefined })
         out.push(info)
-        logInfo('3D', `${info.name}: ${info.sizeMm.map((x) => Math.round(x)).join(' × ')} мм, ${info.parts.length} дет., ${info.trianglesIn} → ${info.trianglesOut} треуг.`)
+        logInfo(tr('lg3d'), trf('lmModel', { name: info.name, size: info.sizeMm.map((x) => Math.round(x)).join(' × '), parts: info.parts.length, tin: info.trianglesIn, tout: info.trianglesOut }))
       } catch (e) {
-        logError('3D', `${p}: ${String((e as Error)?.message ?? e)}`)
+        logError(tr('lg3d'), `${p}: ${String((e as Error)?.message ?? e)}`)
         if (paths.length === 1) throw e
       } finally {
         useModelsUi.setState((s) => ({ busy: s.busy - 1 }))
@@ -110,7 +111,7 @@ const camera = (h: number, r: number) => cameraPath([
   { t: DUR, target: [0, h * 0.5, 0], az: 35, el: 10, r: r * 0.92, fov: 30 }
 ])
 
-export const fragment = { component: Film, meta, inspect: defineInspect({ events: [{ t: REVEAL, kind: 'big', label: 'модель готова' }] }) }
+export const fragment = { component: Film, meta, inspect: defineInspect({ events: [{ t: REVEAL, kind: 'big', label: '${tr('eMdReadyLabel')}' }] }) }
 `
 }
 
@@ -131,20 +132,20 @@ export async function insertModelFragment(name: string, opts: { start?: number; 
 export async function prepareForFragment(assetId: string, opts: { maxSide?: number } = {}) {
   const st = useEditor.getState()
   const a = st.project.assets.find((x) => x.id === assetId)
-  if (!a) throw new Error('нет такого файла в корзине')
+  if (!a) throw new Error(tr('eMdNoAsset'))
   const dir = projectDir()
   if (!dir) {
-    logError('для фрагмента', 'видео для фрагментов хранится в папке проекта (kadr-lib/media) — сначала сохраните проект')
+    logError(tr('lgForFragment'), tr('lmFragMediaNoProject'))
     return null
   }
   try {
     const r = await window.kadr.fragmentMedia(a.path, dir, { maxSide: opts.maxSide ?? Math.max(st.project.width, st.project.height) })
     const line = `import clip from '${r.import}'`
     try { await navigator.clipboard.writeText(line) } catch { /* no clipboard: the log has it */ }
-    logInfo('для фрагмента', `${a.name} → ${r.import}${r.hdr ? ` (HDR ${r.hdr.toUpperCase()} → SDR)` : ''}${r.cached ? ', уже было' : ''} — строка импорта скопирована: ${line}`)
+    logInfo(tr('lgForFragment'), trf('lmFragMedia', { name: a.name, import: r.import, hdr: r.hdr ? ` (HDR ${r.hdr.toUpperCase()} → SDR)` : '', cached: r.cached ? tr('lmFragMediaCached') : '', line }))
     return r
   } catch (e) {
-    logError('для фрагмента', `${a.name}: ${String((e as Error)?.message ?? e)}`)
+    logError(tr('lgForFragment'), `${a.name}: ${String((e as Error)?.message ?? e)}`)
     throw e
   }
 }

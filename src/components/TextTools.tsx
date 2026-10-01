@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import type { SubCue, TextDoc } from '@shared/types'
-import { useEditor } from '@/state/store'
+import { useEditor, setting } from '@/state/store'
 import {
   transcribeFlow, type TranscribeFlowOpts,
   parseSrt, cuesToSrt, srtTime, parseSrtTime, docTimeToProject
@@ -14,6 +14,8 @@ import { Modal } from './Modal'
 interface TextUiState {
   transcribeTarget: TranscribeFlowOpts['target'] | null
   openDocId: string | null
+  /** a transcription in flight: the dialog's progress, also shown by the transcript panel */
+  run: { progress: number; live: string } | null
   openTranscribe(target: TranscribeFlowOpts['target']): void
   closeTranscribe(): void
   openDoc(id: string | null): void
@@ -22,6 +24,7 @@ interface TextUiState {
 export const useTextUi = create<TextUiState>((set) => ({
   transcribeTarget: null,
   openDocId: null,
+  run: null,
   openTranscribe: (target) => set({ transcribeTarget: target }),
   closeTranscribe: () => set({ transcribeTarget: null }),
   openDoc: (id) => set({ openDocId: id })
@@ -36,10 +39,21 @@ export function TranscribeDialog() {
   const [language, setLanguage] = useState('auto')
   const [timecodes, setTimecodes] = useState<'absolute' | 'relative'>('absolute')
   const [maxWords, setMaxWords] = useState(3)
-  const [running, setRunning] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [liveText, setLiveText] = useState('')
+  const run_ = useTextUi((s) => s.run)
+  const running = !!run_
+  const progress = run_?.progress ?? 0
+  const liveText = run_?.live ?? ''
+  const setRunning = (on: boolean) => useTextUi.setState({ run: on ? { progress: 0, live: '' } : null })
+  const setProgress = (progress: number) => useTextUi.setState((u) => ({ run: u.run && { ...u.run, progress } }))
+  const setLiveText = (live: string) => useTextUi.setState((u) => ({ run: u.run && { ...u.run, live } }))
   const [error, setError] = useState('')
+  // «Распознавание речи» settings: each opening starts from them
+  useEffect(() => {
+    if (!target) return
+    setModel(setting<string>('speech.model'))
+    setLanguage(setting<string>('speech.language'))
+    setMaxWords(setting<number>('speech.wordsPerCue'))
+  }, [target])
 
   useEffect(() => {
     if (!running) return
@@ -256,6 +270,7 @@ export function SubtitlePanel() {
         {doc.format === 'txt' ? (
           <textarea
             className="sub-txt"
+            aria-label={t('subText')}
             value={txt}
             onChange={(e) => {
               setTxt(e.target.value)
@@ -271,11 +286,13 @@ export function SubtitlePanel() {
                     <Icon name="chevronRight" size={11} /> {i + 1}
                   </button>
                   <input
+                    aria-label={t('cueStart')}
                     value={srtTime(c.start)}
                     onChange={(e) => setCue(i, { start: parseSrtTime(e.target.value) })}
                   />
                   <span className="dim"><Icon name="arrowRight" size={13} /></span>
                   <input
+                    aria-label={t('cueEnd')}
                     value={srtTime(c.end)}
                     onChange={(e) => setCue(i, { end: parseSrtTime(e.target.value) })}
                   />
@@ -290,6 +307,7 @@ export function SubtitlePanel() {
                   ><Icon name="close" size={13} /></button>
                 </div>
                 <textarea
+                  aria-label={t('cueText')}
                   rows={Math.max(1, c.text.split('\n').length)}
                   value={c.text}
                   onChange={(e) => setCue(i, { text: e.target.value })}

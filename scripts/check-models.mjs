@@ -66,6 +66,11 @@ try {
       check(`STL ${f}: welded (8 vertices, 12 triangles) and Y-up (10 × 30 × 20)`,
         r.parts[0].positions.length === 24 && r.parts[0].indices.length === 36 && near(s.s, [10, 30, 20]), JSON.stringify(s.s))
     }
+    // a binary header with no triangles is a broken file, not an empty model (it imported
+    // as a 0-triangle GLB with a null size)
+    writeFileSync(join(dir, 'empty.stl'), Buffer.alloc(84))
+    const e = await M.readModel(join(dir, 'empty.stl')).then(() => null, (x) => x.message)
+    check('STL with no triangles is refused (eMdStl)', /eMdStl/.test(e ?? ''), String(e))
   }
   // ---- 3MF: build item × component in another file × unit -----------------------
   {

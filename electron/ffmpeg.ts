@@ -1,19 +1,69 @@
 // ffmpeg/ffprobe helpers running in the main process.
-import { masterLimiterChain } from '@shared/audioMaster'
-import { execFile, spawn, ChildProcess } from 'child_process'
+import { masterLimiterChain, MASTER_LIMIT, TP_AIM, TP_CEILING } from '@shared/audioMaster'
+import { panFilter, panEvalFilter } from '@shared/pan'
+import { execFile, spawn, spawnSync, ChildProcess } from 'child_process'
 import { promisify } from 'util'
 import { promises as fsp } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import type { ProbeResult, ExportJob, ExportProgress, WaveformData, AudioSegment } from '@shared/types'
-import { rawEncodeArgs } from '@shared/rawEncode'
+import { rawEncodeArgs, parseEncoders, probeEncodeArgs, ALPHA_MODE_HELP, knowsAlphaMode, type RawEncodeOpts } from '@shared/rawEncode'
+import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
+import { gainExpr } from '@shared/gainKeys'
+import { AFADE_CURVE } from '@shared/fadeCurves'
+import { createFxChain, type AudioFx, type FxChain } from '@shared/audioFx'
+import { proxyColourArgs, PACK_GAP, type FfColour } from '@shared/streamColour'
+import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
 const execFileP = promisify(execFile)
 
-export const FFMPEG = process.env.KADR_FFMPEG || 'ffmpeg'
-export const FFPROBE = process.env.KADR_FFPROBE || 'ffprobe'
+export let FFMPEG = process.env.KADR_FFMPEG || 'ffmpeg'
+export let FFPROBE = process.env.KADR_FFPROBE || 'ffprobe'
+/** where the export's own temp files go (premix, filter script) */
+let TMP_DIR = ''
+/** main hands over the settings (electron/appSettings.ts); node checks keep the env defaults */
+export function configureFfmpeg(o: { ffmpeg: string; ffprobe: string; tmp: string }) {
+  FFMPEG = o.ffmpeg
+  FFPROBE = o.ffprobe
+  TMP_DIR = o.tmp
+}
 
-const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i
+/** the hardware encoders that WORK here — listed by `-encoders` AND opening on a
+    one-frame test encode (a listed encoder with no driver fails only at encode
+    time). Once per launch, probes in parallel (~1 s each); never rejects. */
+let hwEncoders: Promise<string[]> | null = null
+export function detectEncoders(): Promise<string[]> {
+  return (hwEncoders ??= (async () => {
+    const listed = await execFileP(FFMPEG, ['-hide_banner', '-encoders'], { maxBuffer: 4 * 1024 * 1024 })
+      .then((r) => parseEncoders(r.stdout), () => [])
+    const ok = await Promise.all(listed.map((n) =>
+      execFileP(FFMPEG, probeEncodeArgs(n), { timeout: 15000 }).then(() => true, () => false)))
+    return listed.filter((_, i) => ok[i])
+  })())
+}
+
+/** K11: how THIS ffmpeg reads a filter graph from a file. 7.1 deprecated
+    `-filter_complex_script` and 8 removed it; `-/filter_complex <file>` is the
+    new spelling, which 4.3 does not know. Settled by running a one-line graph
+    once per binary path (a spawn costs ~1 s on Windows), never per export. */
+const graphFileOpt = new Map<string, Promise<string>>()
+export function filterGraphFileOption(bin = FFMPEG): Promise<string> {
+  let p = graphFileOpt.get(bin)
+  if (!p) {
+    p = (async () => {
+      const f = join(TMP_DIR || tmpdir(), `kadr-graph-probe-${process.pid}-${Date.now()}.txt`)
+      await fsp.writeFile(f, 'anullsrc=d=0.01[a]')
+      const ok = await execFileP(bin, ['-v', 'error', '-/filter_complex', f, '-map', '[a]', '-f', 'null', '-'], { timeout: 15000 })
+        .then(() => true, () => false)
+      await fsp.unlink(f).catch(() => { /* already gone */ })
+      return ok ? '-/filter_complex' : '-filter_complex_script'
+    })()
+    graphFileOpt.set(bin, p)
+  }
+  return p
+}
+
+const IMAGE_EXT =/\.(png|jpe?g|webp|bmp|gif|tiff?)$/i
 
 export async function probeMedia(path: string): Promise<ProbeResult> {
   const { stdout } = await execFileP(FFPROBE, [
@@ -46,9 +96,14 @@ export async function probeMedia(path: string): Promise<ProbeResult> {
     width: video?.width || 0,
     height: video?.height || 0,
     fps: fps || 30,
-    hasAudio: !!audio
+    hasAudio: !!audio,
+    ...(audio?.channels ? { channels: audio.channels } : {})
   }
+  // the relink search («Искать в папке») finds a renamed file by size + duration
+  const size = Number(info.format?.size)
+  if (size > 0) asset.size = size
   if (kind === 'video' && video?.codec_name) asset.codec = video.codec_name
+  if (kind === 'video' && video?.pix_fmt) asset.pixFmt = String(video.pix_fmt)
   if (kind === 'video') {
     const b = videoBasics(video)
     if (b.rotation) asset.rotation = b.rotation
@@ -104,6 +159,17 @@ function videoBasics(video: any): { rotation?: number; hdr?: 'hlg' | 'pq' } {
 }
 
 /** codec, alpha, rotation, HDR — ffprobe only (the exporter asks this of old assets) */
+/** container duration in seconds, or null when ffprobe cannot read the file (relink candidates) */
+export async function probeDuration(path: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path])
+    const d = parseFloat(stdout)
+    return Number.isFinite(d) ? d : 0
+  } catch {
+    return null
+  }
+}
+
 export async function probeBasic(path: string): Promise<{ codec?: string; hasAlpha?: boolean; rotation?: number; hdr?: 'hlg' | 'pq' }> {
   const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-print_format', 'json', '-show_streams', path], { maxBuffer: 16 * 1024 * 1024 })
   const video = (JSON.parse(stdout).streams ?? []).find((s: any) => s.codec_type === 'video' && !s.disposition?.attached_pic)
@@ -186,10 +252,12 @@ export function makeProxy(
   out: string,
   duration: number,
   onProgress?: (p: number) => void,
-  opts?: { alpha?: boolean; codec?: string; vfPre?: string }
+  opts?: { alpha?: boolean; codec?: string; vfPre?: string; colour?: FfColour | null }
 ): Promise<void> {
   // vfPre: a conversion before the scale (an HDR source's tone mapping — electron/hdr.ts)
   const pre = opts?.vfPre ? `${opts.vfPre},` : ''
+  // the source's space written in full, or the element guesses BT.601 for ≤540 lines (J11)
+  const tag = proxyColourArgs(opts?.colour ?? null)
   const args = opts?.alpha ? [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     ...alphaInputArgs(opts.codec),
@@ -202,8 +270,8 @@ export function makeProxy(
   ] : [
     '-y', '-v', 'error', '-progress', 'pipe:1',
     '-i', src,
-    '-vf', `${pre}scale=-2:'min(540,ih)'`,
-    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+    '-vf', `${pre}scale=-2:'min(540,ih)',${tag.vf}`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', ...tag.out,
     '-c:a', 'aac', '-b:a', '96k',
     '-movflags', '+faststart',
     out
@@ -271,6 +339,71 @@ export function measureLoudness(
   })
 }
 
+/**
+ * G9: integrated loudness (LUFS) and true peak (dBTP) of `input` through
+ * `chain`, from the ebur128 filter's summary — 4.7× faster than a loudnorm pass
+ * over the same 19-minute mix (4.6 s vs 21.5 s: loudnorm resamples to 192 kHz
+ * for everything, ebur128 only for the peak), and the meter the platforms'
+ * numbers are read with. Only the summary is kept: the per-frame log above it
+ * grows with the length. Silence reads −Infinity.
+ */
+function loudnessOf(input: string[], chain: string[] = []): Promise<{ i: number; tp: number }> {
+  const args = ['-nostats', ...input, '-vn', '-af', [...chain, 'ebur128=peak=true'].join(','), '-f', 'null', '-']
+  return new Promise((resolve, reject) => {
+    const child = spawn(FFMPEG, args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    let tail = ''
+    child.stderr!.on('data', (c) => { tail = (tail + c).slice(-4096) })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      const sum = tail.slice(tail.lastIndexOf('Summary:'))
+      const num = (re: RegExp) => {
+        const v = re.exec(sum)?.[1]
+        return v === undefined ? NaN : /inf/i.test(v) ? -Infinity : parseFloat(v)
+      }
+      const i = num(/I:\s*(-?[\d.]+|-inf)\s*LUFS/)
+      const tp = num(/True peak:\s*Peak:\s*(-?[\d.]+|-inf)/)
+      if (code !== 0 || Number.isNaN(i) || Number.isNaN(tp)) {
+        reject(new Error(`ebur128 produced no measurement (exit ${code}): ${tail.slice(-300)}`))
+      } else resolve({ i: i <= -70 ? -Infinity : i, tp })
+    })
+  })
+}
+
+/**
+ * G9: the gain (dB) and limiter ceiling that put `file` (the premixed float
+ * WAV) at `target` LUFS with its true peak under TP_AIM. A plain gain is not
+ * enough: where the limiter has to take the peaks the loudness drops with them,
+ * and the limiter holds SAMPLE peaks, while the ceiling is a TRUE peak. So the
+ * result is measured through the real chain and both are corrected, a few
+ * passes at most — each one is a read of one WAV, not a re-mix.
+ * A silent mix has no loudness to move: gain 0.
+ */
+async function fitLoudness(file: string, target: number): Promise<{ gainDb: number; limit: number; i: number; tp: number }> {
+  const input = ['-i', file]
+  const m0 = await loudnessOf(input)
+  if (!(m0.i > -70)) return { gainDb: 0, limit: MASTER_LIMIT, i: m0.i, tp: m0.tp }
+  let gainDb = target - m0.i
+  let limitDb = 20 * Math.log10(MASTER_LIMIT)
+  let last: { gainDb: number; limitDb: number; i: number } | null = null
+  let { i, tp } = m0
+  for (let pass = 0; pass < 5; pass++) {
+    const m = await loudnessOf(input, masterLimiterChain(10 ** (limitDb / 20), gainDb))
+    ;({ i, tp } = m)
+    const off = target - m.i
+    const over = m.tp - TP_AIM
+    if (Math.abs(off) <= 0.2 && over <= 0) break
+    // more gain that the limiter eats whole (sparse full-scale hits over
+    // silence) only squashes harder: the mix cannot get there — stop, and the
+    // done message says how loud it came out
+    if (last && last.limitDb === limitDb && off > 0 && m.i - last.i < 0.3 * (gainDb - last.gainDb)) break
+    last = { gainDb, limitDb, i: m.i }
+    gainDb += off
+    if (over > 0) limitDb -= over + 0.1
+  }
+  // i, tp: what the chain last measured — i near the target means the chain reached it
+  return { gainDb, limit: 10 ** (limitDb / 20), i, tp }
+}
+
 export interface PackedAlphaPlan {
   /** false = keep the slower element-decode path for this source */
   canPack: boolean
@@ -284,10 +417,10 @@ export interface PackedAlphaPlan {
  * Everything requestDecoded needs to decide on packing a source as
  * colour-over-matte, from ONE ffprobe.
  *
- * Every source but a full-range one can be packed: the packer converts the
- * picture to BT.709 limited, the one space Chromium hands to WebGL untouched.
- * (Full-range YUV is rare in alpha footage and would need its own dance, so
- * it keeps the slower element-decode path — correct, just slow.)
+ * Every source but a full-range one can be packed: the picture is copied
+ * verbatim and tagged in full by `matrix` (packTags). (Full-range YUV is rare
+ * in alpha footage and would need its own dance, so it keeps the slower
+ * element-decode path — correct, just slow.)
  */
 export async function packedAlphaPlan(src: string): Promise<PackedAlphaPlan> {
   const t = await probeColorTags(src)
@@ -312,14 +445,14 @@ export async function packedAlphaPlan(src: string): Promise<PackedAlphaPlan> {
   }
 }
 
-async function probeColorTags(
+export async function probeColorTags(
   src: string
-): Promise<{ matrix: string; range: string; width: number; height: number; fps: number }> {
+): Promise<{ matrix: string; primaries: string; transfer: string; codec: string; range: string; width: number; height: number; fps: number }> {
   let s: Record<string, string> = {}
   try {
     const { stdout } = await execFileP(FFPROBE, [
       '-v', 'error', '-select_streams', 'v:0', '-print_format', 'json',
-      '-show_entries', 'stream=width,height,r_frame_rate,color_space,color_range', src
+      '-show_entries', 'stream=codec_name,width,height,r_frame_rate,color_space,color_primaries,color_transfer,color_range', src
     ], { maxBuffer: 1024 * 1024 })
     s = (JSON.parse(stdout).streams || [])[0] || {}
   } catch { /* fall through to the heuristic */ }
@@ -328,11 +461,21 @@ async function probeColorTags(
   const fps = Number(num) / (Number(den) || 1)
   return {
     matrix: known(s.color_space),
+    primaries: known(s.color_primaries),
+    transfer: known(s.color_transfer),
+    codec: s.codec_name || '',
     range: known(s.color_range) === 'pc' ? 'pc' : 'tv',
     width: Number(s.width) || 0,
     height: Number(s.height) || 0,
     fps: Number.isFinite(fps) && fps > 0 ? fps : 0
   }
+}
+
+// ponytail: only BT.601 and BT.709 are told apart; a BT.2020/240M alpha source
+// is tagged BT.709 — tag it by its own matrix if one turns up
+const packTags = (m?: string) => {
+  const c = !m || /^(bt601|smpte170m|bt470bg)$/.test(m) ? 'smpte170m' : 'bt709'
+  return `colorspace=${c}:color_primaries=${c}:color_trc=${c}`
 }
 
 /**
@@ -366,26 +509,25 @@ export async function makeDecoded(
     '-i', src,
     '-filter_complex',
     '[0:v]format=yuva420p,split=2[c][a];' +
-    // the picture's samples are copied verbatim — no colour conversion is
-    // applied here or tagged on the file, so the decoder treats it exactly
-    // like the original (guaranteed by the BT.709/HD gate in requestDecoded)
-    // The picture is converted to BT.709 limited — a pure matrix change
-    // (swscale, no gamma or gamut transform), a no-op when the source is
-    // BT.709 already. It has to be BT.709: Chromium runs its own colour
-    // transform on any other space while uploading the frame, and that
-    // transform would also sweep over the bottom half and lift the alpha
-    // matte (128 → 143). A matte is not colour and must arrive verbatim.
-    `[c]format=yuv420p,scale=in_color_matrix=${opts.matrix || 'bt601'}:out_color_matrix=bt709[col];` +
+    // the picture's samples are copied VERBATIM — swscale never converts a
+    // matrix yuv→yuv, so the «converted to BT.709» once promised here did not
+    // happen; the layout (gaps) is PACK_GAP's in shared/streamColour.ts
+    `[c]format=yuv420p,pad=iw:ih+${PACK_GAP}:0:0,fillborders=bottom=${PACK_GAP}:mode=smear[col];` +
     // the matte rides in the luma plane, mapped into the same limited range
-    // the decoder will expand back — verified to round-trip bit-exactly
-    '[a]alphaextract,format=yuv420p,scale=in_range=pc:out_range=tv[m];' +
-    '[col][m]vstack=inputs=2[v]',
+    // the decoder will expand back. The range change happens ONCE, on the gray
+    // plane, before format=yuv420p: the other way round ffmpeg 7 compressed
+    // the gray on the conversion and the scale compressed it again — opaque
+    // came out 217, and every packed clip exported ≈0.92× dark (card J12).
+    `[a]alphaextract,scale=in_range=pc:out_range=tv,format=yuv420p,pad=iw:ih+${2 * PACK_GAP}:0:${PACK_GAP},fillborders=top=${PACK_GAP}:bottom=${PACK_GAP}:mode=smear[m];` +
+    // FULLY described in the space the element shows the source in (BT.601
+    // or BT.709, primaries and transfer included): WebCodecs obeys a fully
+    // described SPS, so the frames arrive exactly as the preview's — an
+    // untagged pack was decoded BT.709 whatever the source, and a BT.601
+    // source exported shifted. Neutral grey (the matte) keeps its level
+    // through either space: measured, card J12.
+    `[col][m]vstack=inputs=2,setparams=${packTags(opts.matrix)}[v]`,
     '-map', '[v]', '-an',
     '-c:v', 'libx264', '-preset', 'veryfast', '-qp', '0', '-pix_fmt', 'yuv420p',
-    // deliberately UNTAGGED: a tagged frame reaches WebGL through Chromium's
-    // colour-managed upload, which rewrites mid-tones (it lifted the alpha
-    // matte 128 → 143). Untagged frames are re-wrapped on the CPU by
-    // Mp4FrameSource and upload verbatim — the picture is already BT.709.
     '-movflags', '+faststart',
     out
   ] : opts?.alpha ? [
@@ -408,6 +550,11 @@ export async function makeDecoded(
     '-movflags', '+faststart',
     out
   ]
+  return runProgress(args, duration, onProgress, 'decode')
+}
+
+/** ffmpeg with `-progress pipe:1`, its out_time reported as a share of `duration` */
+function runProgress(args: string[], duration: number, onProgress: ((p: number) => void) | undefined, what: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let err = ''
@@ -427,9 +574,50 @@ export async function makeDecoded(
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(`decode ffmpeg exited ${code}: ${err.slice(0, 500)}`))
+      else reject(new Error(`${what} ffmpeg exited ${code}: ${err.slice(0, 500)}`))
     })
   })
+}
+
+/** does the first frame of a run carry alpha (RGBA PNG, EXR with A, …)? */
+export async function sequenceHasAlpha(firstFrame: string): Promise<boolean> {
+  const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-select_streams', 'v:0',
+    '-show_entries', 'stream=pix_fmt', '-of', 'csv=p=0', firstFrame])
+  return /^(yuva|rgba|argb|abgr|bgra|gbrap|ya8|ya16)/.test(stdout.trim())
+}
+
+/**
+ * A numbered run of stills (card H6) as ONE clip at `fps`, through ffmpeg's
+ * image2 demuxer: a full-resolution H.264 mp4 the fast decode path reads
+ * (BT.709, padded to even), or near-lossless VP9+alpha WebM when the frames
+ * carry alpha (the exporter packs it like any alpha source). EXR is linear
+ * light — shown through the sRGB curve.
+ */
+export async function makeSequence(
+  run: { pattern: string; first: number; count: number },
+  fps: number,
+  out: string,
+  opts: { alpha: boolean },
+  onProgress?: (p: number) => void
+): Promise<void> {
+  const ntsc = Math.round(fps * 1001)
+  const rate = ntsc % 1000 === 0 && Math.abs(ntsc / 1001 - fps) < 1e-9 ? `${ntsc}/1001` : String(fps)
+  const args = [
+    '-y', '-v', 'error', '-progress', 'pipe:1',
+    '-f', 'image2', '-framerate', rate, '-start_number', String(run.first),
+    ...(/\.exr$/i.test(run.pattern) ? ['-apply_trc', 'iec61966_2_1'] : []),
+    '-i', run.pattern, '-frames:v', String(run.count), '-an',
+    ...(opts.alpha ? [
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-crf', '12', '-b:v', '0', '-cpu-used', '4', '-row-mt', '1'
+    ] : [
+      '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p',
+      '-c:v', 'libx264', '-preset', 'fast', '-crf', '14',
+      '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
+      '-movflags', '+faststart'
+    ]),
+    out
+  ]
+  return runProgress(args, run.count / fps, onProgress, 'sequence')
 }
 
 /**
@@ -518,7 +706,8 @@ export function audioCodecArgs(outPath: string): string[] {
 
 export function atempoChain(speed: number): string[] {
   const out: string[] = []
-  let s = Math.min(8, Math.max(0.25, speed))
+  // the clip-speed audio rule (shared/audioSpeed.ts) never asks for more
+  let s = Math.min(AUDIO_SPEED_MAX, Math.max(AUDIO_SPEED_MIN, speed))
   while (s > 2) {
     out.push('atempo=2')
     s /= 2
@@ -583,6 +772,24 @@ export async function meanVolume(src: string, start: number, duration: number):
   return { mean: num(/mean_volume:\s*(-?[\d.]+)/), max: num(/max_volume:\s*(-?[\d.]+)/) }
 }
 
+/**
+ * I6: hard cuts in [start, start+duration) of a video file, in SOURCE seconds —
+ * ffmpeg's scdet (score 0..100; `threshold` default 10 as ffmpeg's own), only
+ * the frames it flags printed. Input -ss resets the timestamps, so a flagged
+ * pts_time is relative to `start`. The first frame is never a cut (nothing
+ * before it to differ from).
+ * ponytail: decodes at full resolution; downscale before scdet if 4K scans crawl.
+ */
+export async function detectScenes(src: string, start: number, duration: number, threshold = 10): Promise<number[]> {
+  let out = ''
+  await runStream(FFMPEG, ['-hide_banner', '-nostats', '-v', 'error',
+    ...(start > 0 ? ['-ss', start.toFixed(3)] : []), '-t', duration.toFixed(3), '-i', src,
+    '-map', '0:v:0', '-an', '-sn', '-dn',
+    '-vf', `scdet=threshold=${threshold},metadata=mode=select:key=lavfi.scd.time,metadata=mode=print:file=-`,
+    '-f', 'null', '-'], (c) => { out += c })
+  return [...out.matchAll(/pts_time:(-?[\d.]+)/g)].map((m) => +(start + parseFloat(m[1])).toFixed(6))
+}
+
 export function runStream(bin: string, args: string[], onData: (chunk: Buffer) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -607,22 +814,20 @@ export function runStream(bin: string, args: string[], onData: (chunk: Buffer) =
  * bitrate (OpenH264 saturates at ~0.7 Mbit/s on real 1080p footage — soft,
  * "мыльный" output); x264 at the preset bitrate matches desktop NLEs.
  */
+/** K11: the fallback encoder asks like the preload's does, once per binary */
+const alphaModeOf = new Map<string, boolean>()
+const alphaMode = (bin: string) => {
+  if (!alphaModeOf.has(bin)) alphaModeOf.set(bin, knowsAlphaMode(spawnSync(bin, ALPHA_MODE_HELP, { encoding: 'utf8' }).stdout ?? ''))
+  return alphaModeOf.get(bin)!
+}
+
 export class RawVideoEncoder {
   private child: ChildProcess | null = null
   private closed: Promise<void> | null = null
   private err = ''
 
-  start(opts: {
-    width: number
-    height: number
-    outWidth?: number
-    outHeight?: number
-    fps: number
-    codec: string // 'libx264' or an ffmpegVideo codec like 'libvpx-vp9'
-    bitrate: number
-    out: string
-  }) {
-    const child = spawn(FFMPEG, rawEncodeArgs(opts), { stdio: ['pipe', 'ignore', 'pipe'] })
+  start(opts: RawEncodeOpts) {
+    const child = spawn(FFMPEG, rawEncodeArgs({ ...opts, alphaMode: !!opts.alpha && alphaMode(FFMPEG) }), { stdio: ['pipe', 'ignore', 'pipe'] })
     this.child = child
     child.stderr!.on('data', (c) => { this.err += c })
     this.closed = new Promise((resolve, reject) => {
@@ -658,18 +863,89 @@ export class RawVideoEncoder {
   }
 }
 
+/** atempo keeps its last window when the input ends — a 1/16× chain came out
+    0.3 s short. A retimed segment reads this much more source, and the chain
+    cuts the result to the exact timeline length by sample count. */
+const ATEMPO_TAIL = 0.25
+const retimed = (s: AudioSegment) => Math.abs((s.speed || 1) - 1) > 1e-4
+
+/** the input args of one segment (its source window, plus the atempo tail) */
+function segmentInput(s: AudioSegment): string[] {
+  return ['-ss', String(s.inPoint), '-t', String(s.duration + (retimed(s) ? ATEMPO_TAIL : 0)), '-i', s.path]
+}
+
+/** afade's curve, from the same table the preview uses (shared/fadeCurves.ts); linear = the default, no argument */
+const curveArg = (c?: AudioSegment['fadeInCurve']) => (c && c !== 'lin' && AFADE_CURVE[c] ? `:curve=${AFADE_CURVE[c]}` : '')
+
+/** K10: first audio stream's channel count per path + mtime (0 = unreadable) */
+const channelCache = new Map<string, number>()
+async function audioChannels(path: string): Promise<number> {
+  let key: string
+  try { key = `${path}|${(await fsp.stat(path)).mtimeMs}` } catch { return 0 }
+  let n = channelCache.get(key)
+  if (n === undefined) {
+    try {
+      const { stdout } = await execFileP(FFPROBE, ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=channels', '-of', 'csv=p=0', path])
+      n = parseInt(stdout, 10) || 0
+    } catch { n = 0 }
+    channelCache.set(key, n)
+  }
+  return n
+}
+
+/** K10: fill in the channel count of segments whose asset predates it (one ffprobe per path — ~1 s a spawn on Windows) */
+async function withChannels(segs: AudioSegment[]): Promise<AudioSegment[]> {
+  const paths = [...new Set(segs.filter((s) => !s.channels).map((s) => s.path))]
+  const found = new Map<string, number>()
+  for (let i = 0; i < paths.length; i += 8) {
+    const n = await Promise.all(paths.slice(i, i + 8).map(audioChannels))
+    n.forEach((c, j) => found.set(paths[i + j], c))
+  }
+  return paths.length ? segs.map((s) => (s.channels ? s : { ...s, channels: found.get(s.path) || undefined })) : segs
+}
+
+const n6 = (x: number) => String(+x.toFixed(6))
+
+/**
+ * The segment's fades. A window may begin before the segment (`fadeInFrom`, or
+ * a fade-out longer than what is left) — a range or a source loop entering it
+ * part-way; afade takes no negative start, so the segment is padded with that
+ * much silence in front, faded over its whole window, and the padding cut off
+ * again (K2: the fade used to restart from zero at the segment's first sample).
+ */
+function fadeChain(s: AudioSegment, outDur: number): string[] {
+  const fin = s.fadeIn > 0.001, fout = s.fadeOut > 0.001
+  if (!fin && !fout) return []
+  const inFrom = fin ? s.fadeInFrom ?? 0 : 0
+  const outAt = outDur + (s.fadeOutPast ?? 0) - s.fadeOut // segment-local start of the fade-out window
+  const preS = Math.round(Math.max(inFrom, fout ? -outAt : 0, 0) * 48000)
+  const pre = preS / 48000
+  return [
+    ...(preS ? [`adelay=delays=${preS}S:all=1`] : []),
+    ...(fin ? [`afade=t=in:st=${n6(pre - inFrom)}:d=${n6(s.fadeIn)}${curveArg(s.fadeInCurve)}`] : []),
+    ...(fout ? [`afade=t=out:st=${n6(pre + outAt)}:d=${n6(s.fadeOut)}${curveArg(s.fadeOutCurve)}`] : []),
+    ...(preS ? [`atrim=start_sample=${preS}`, 'asetpts=N/SR/TB'] : [])
+  ]
+}
+
 /** per-segment filter chain shared by the single-graph mix and the premix */
 function segmentChain(s: AudioSegment): string[] {
   const speed = s.speed || 1
   const outDur = s.duration / speed // timeline-domain length after atempo
   return [
+    // K10: aformat alone upmixes mono at −3 dB a side (swresample's M_SQRT1_2); WebAudio copies it at unity
+    ...(s.channels === 1 ? ['pan=stereo|c0=c0|c1=c0'] : []),
     'aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo',
     `volume=${s.gain.toFixed(4)}`,
-    ...(Math.abs(speed - 1) > 1e-4 ? atempoChain(speed) : []),
-    ...(s.fadeIn > 0.001 ? [`afade=t=in:st=0:d=${Math.min(s.fadeIn, outDur).toFixed(3)}`] : []),
-    ...(s.fadeOut > 0.001
-      ? [`afade=t=out:st=${Math.max(0, outDur - s.fadeOut).toFixed(3)}:d=${Math.min(s.fadeOut, outDur).toFixed(3)}`]
-      : [])
+    ...(retimed(s) ? [...atempoChain(speed), `atrim=end_sample=${Math.round(outDur * 48000)}`] : []),
+    // keyframed gain, on the timeline clock (after atempo): t counts from the
+    // segment's first sample, and the curve is applied in 10 ms steps
+    ...(s.gainKeys?.length
+      ? ['asetpts=N/SR/TB', 'asetnsamples=n=480:p=0', `volume='${gainExpr(s.gainKeys)}':eval=frame`]
+      : []),
+    ...fadeChain(s, outDur),
+    // K4: pan after the upmix (aformat above), as the preview's panner does (shared/pan.ts)
+    ...(s.panKeys?.length ? ['asetpts=N/SR/TB', panEvalFilter(s.panKeys)] : s.pan ? [panFilter(s.pan)] : [])
   ]
 }
 
@@ -696,6 +972,16 @@ export async function premixSegments(
   onProgress?: (done: number, total: number) => void,
   isCancelled?: () => boolean
 ): Promise<void> {
+  await writeWavF32(outPath, await mixInto(segs, duration, onProgress, isCancelled))
+}
+
+/** the premix's sum, in memory: interleaved stereo f32 at MIX_RATE over [0, duration) */
+async function mixInto(
+  segs: AudioSegment[],
+  duration: number,
+  onProgress?: (done: number, total: number) => void,
+  isCancelled?: () => boolean
+): Promise<Float32Array> {
   const totalFrames = Math.ceil(duration * MIX_RATE)
   const mix = new Float32Array(totalFrames * MIX_CH)
   const PAR = 4
@@ -709,49 +995,201 @@ export async function premixSegments(
       const room = mix.length - offset
       if (room <= 0) { done++; continue }
       const args = [
-        '-v', 'error', '-nostdin', '-ss', String(s.inPoint), '-t', String(s.duration), '-i', s.path,
+        '-v', 'error', '-nostdin', ...segmentInput(s),
         '-af', segmentChain(s).join(','), '-f', 'f32le', '-ac', String(MIX_CH), '-ar', String(MIX_RATE), 'pipe:1'
       ]
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-        let err = ''
-        let pos = offset
-        let carry: Buffer | null = null // f32le sample split across chunks
-        child.stdout!.on('data', (c: Buffer) => {
-          if (carry) { c = Buffer.concat([carry, c]); carry = null }
-          const usable = c.length - (c.length % 4)
-          if (usable < c.length) carry = c.subarray(usable)
-          const n = Math.min(usable / 4, mix.length - pos)
-          for (let i = 0; i < n; i++) mix[pos + i] += c.readFloatLE(i * 4)
-          pos += n
-        })
-        child.stderr!.on('data', (c) => { err += c })
-        child.on('error', reject)
-        child.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`premix ${basename(s.path)} @${s.start.toFixed(2)}s: ffmpeg exited ${code}: ${err.slice(0, 300)}`))
-        })
+      let pos = offset
+      await pcmStream(args, `premix ${basename(s.path)} @${s.start.toFixed(2)}s`, (f) => {
+        const n = Math.min(f.length, mix.length - pos)
+        for (let i = 0; i < n; i++) mix[pos + i] += f[i]
+        pos += n
       })
       onProgress?.(++done, segs.length)
     }
   }
   await Promise.all(Array.from({ length: Math.min(PAR, segs.length) }, worker))
+  return mix
+}
 
-  // WAVE_FORMAT_IEEE_FLOAT (3) — ffmpeg reads it back as pcm_f32le
-  const dataBytes = mix.length * 4
+/** run ffmpeg with `args` (writing f32le to pipe:1) and hand its samples over as they come */
+function pcmStream(args: string[], what: string, onSamples: (f: Float32Array) => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    let err = ''
+    let carry: Buffer | null = null // a sample (or, for the fx pass, a stereo frame) split across chunks
+    child.stdout!.on('data', (c: Buffer) => {
+      if (carry) { c = Buffer.concat([carry, c]); carry = null }
+      const usable = c.length - (c.length % (4 * MIX_CH))
+      if (usable < c.length) carry = c.subarray(usable)
+      const f = new Float32Array(usable / 4)
+      for (let i = 0; i < f.length; i++) f[i] = c.readFloatLE(i * 4)
+      onSamples(f)
+    })
+    child.stderr!.on('data', (c) => { err += c })
+    child.on('error', reject)
+    child.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`${what}: ffmpeg exited ${code}: ${err.slice(0, 300)}`))
+    })
+  })
+}
+
+/** WAVE_FORMAT_IEEE_FLOAT (3) header — ffmpeg reads it back as pcm_f32le */
+function wavHeader(dataBytes: number): Buffer {
   const header = Buffer.alloc(44)
   header.write('RIFF', 0); header.writeUInt32LE(36 + dataBytes, 4); header.write('WAVE', 8)
   header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(3, 20)
   header.writeUInt16LE(MIX_CH, 22); header.writeUInt32LE(MIX_RATE, 24)
   header.writeUInt32LE(MIX_RATE * MIX_CH * 4, 28); header.writeUInt16LE(MIX_CH * 4, 32); header.writeUInt16LE(32, 34)
   header.write('data', 36); header.writeUInt32LE(dataBytes, 40)
+  return header
+}
+
+async function writeWavF32(outPath: string, mix: Float32Array): Promise<void> {
+  const dataBytes = mix.length * 4
   const fh = await fsp.open(outPath, 'w')
   try {
-    await fh.write(header)
+    await fh.write(wavHeader(dataBytes))
     await fh.write(Buffer.from(mix.buffer, mix.byteOffset, dataBytes))
   } finally {
     await fh.close()
   }
+}
+
+// ---------------------------------------------------------------- K9: effects
+
+/**
+ * Run an effect chain (shared/audioFx.ts — the preview's worklet runs the same
+ * code) over interleaved stereo f32 at `sr`, in place, from frame `from` on: the
+ * chain starts there at rest, as the worklet does when the clip starts sounding.
+ */
+export function fxInterleaved(buf: Float32Array, list: AudioFx[], sr: number, from = 0): void {
+  const chain = createFxChain(list, sr, MIX_CH)
+  if (chain) fxRun(chain, buf, Math.round(from))
+}
+const BLOCK = 4096
+function fxRun(chain: NonNullable<ReturnType<typeof createFxChain>>, buf: Float32Array, from = 0): void {
+  const l = new Float64Array(BLOCK), r = new Float64Array(BLOCK)
+  const frames = buf.length / MIX_CH
+  for (let f = from; f < frames; f += BLOCK) {
+    const n = Math.min(BLOCK, frames - f)
+    for (let i = 0; i < n; i++) { l[i] = buf[(f + i) * 2]; r[i] = buf[(f + i) * 2 + 1] }
+    chain.process([l, r], n)
+    for (let i = 0; i < n; i++) { buf[(f + i) * 2] = l[i]; buf[(f + i) * 2 + 1] = r[i] }
+  }
+}
+
+/** main installs the denoise cache (electron/main.ts ensureDenoised); without it a segment's denoise is ignored */
+type Denoiser = (path: string, nr: number) => Promise<string>
+let denoiser: Denoiser | null = null
+export function configureDenoiser(fn: Denoiser | null) { denoiser = fn }
+
+/** K9: the denoised copy of a source — afftdn over the whole file, at its own rate and channels, 24-bit FLAC */
+export async function makeDenoised(src: string, out: string, nr: number): Promise<void> {
+  // told 6 dB above the measured floor: on hiss at −35 and −51 dBFS that took 20 and 20 dB
+  // off between the words where the floor itself took 14 and 13 (a tone in the same file untouched)
+  const nf = Math.min(-20, Math.max(-80, Math.round(await noiseFloorDb(src)) + 6))
+  await execFileP(FFMPEG, ['-v', 'error', '-nostdin', '-y', '-i', src, '-vn', '-map', '0:a:0',
+    '-af', `afftdn=nr=${n6(nr)}:nf=${nf}`, '-c:a', 'flac', '-sample_fmt', 's32', out], { maxBuffer: 1 << 20 })
+}
+
+/**
+ * The source's noise floor for afftdn's `nf`: the 10th percentile of its 50 ms
+ * RMS frames, mono, at 48 kHz (a lower rate cuts a hiss's bandwidth and reads it
+ * 8 dB low). afftdn reduces only what
+ * lies near the floor it is told: at its default −50 dB a −35 dB hiss went
+ * through untouched, and its own tracking (`tn=1`) measured worse than a told
+ * floor on both a loud and a quiet one.
+ */
+async function noiseFloorDb(src: string): Promise<number> {
+  const SR = 48000, N = SR / 20
+  const frames: number[] = []
+  let acc = 0, k = 0
+  await pcmStream(['-v', 'error', '-nostdin', '-i', src, '-vn', '-map', '0:a:0', '-f', 'f32le', '-ac', '2', '-ar', String(SR), 'pipe:1'],
+    `noise floor ${basename(src)}`, (f) => {
+      for (let i = 0; i < f.length; i += 2) {
+        const m = (f[i] + f[i + 1]) / 2
+        acc += m * m
+        if (++k === N) { frames.push(acc / N); acc = 0; k = 0 }
+      }
+    })
+  const loud = frames.filter((e) => e > 1e-12).sort((a, b) => a - b) // digital silence is not the floor
+  if (!loud.length) return -50
+  return 10 * Math.log10(loud[Math.floor(loud.length * 0.1)])
+}
+
+/**
+ * K9: a mix's effects, applied before it is mixed, so the graph and the premix
+ * both see plain segments. A clip's denoise swaps its source for the cached
+ * file; its DSP effects run on its sound after the element's speed and before
+ * its gain (the preview: element → fx → gain → pan), so the segment is decoded
+ * up to its atempo, processed, and comes back as a temp WAV at speed 1. A
+ * track's effects run on the track's SUM (bus → fx): its segments are premixed
+ * whole (≈23 MB per minute of timeline, in memory) and come back as one.
+ */
+async function applyAudioFx(segs: AudioSegment[], duration: number, temps: string[], isCancelled: () => boolean): Promise<AudioSegment[]> {
+  if (!segs.some((s) => s.fx?.length || s.denoise || s.bus)) return segs
+  const tmp = () => {
+    const f = join(TMP_DIR || tmpdir(), `kadr-fx-${process.pid}-${Date.now()}-${temps.length}.wav`)
+    temps.push(f)
+    return f
+  }
+  const out: AudioSegment[] = []
+  // L3: a ramp (or a source loop) reaches here as consecutive pieces of one clip;
+  // the preview's node runs through them, so the chain's state carries over
+  let last: { path: string; fx: string; end: number; chain: FxChain } | null = null
+  for (let s of segs) {
+    if (isCancelled()) throw new Error('cancelled')
+    if (s.denoise && denoiser) s = { ...s, path: await denoiser(s.path, s.denoise) }
+    if (s.fx?.length) {
+      const speed = s.speed || 1, outDur = s.duration / speed
+      const head = [
+        ...(s.channels === 1 ? ['pan=stereo|c0=c0|c1=c0'] : []),
+        'aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo',
+        ...(retimed(s) ? [...atempoChain(speed), `atrim=end_sample=${Math.round(outDur * 48000)}`] : [])
+      ]
+      const key = JSON.stringify(s.fx)
+      const goesOn: boolean = !!last && last.path === s.path && last.fx === key && Math.abs(last.end - s.start) < 1e-6
+      const chain: FxChain = goesOn ? last!.chain : createFxChain(s.fx, MIX_RATE, MIX_CH)!
+      last = { path: s.path, fx: key, end: s.start + outDur, chain }
+      const file = tmp()
+      const fh = await fsp.open(file, 'w')
+      let bytes = 0
+      try {
+        await fh.write(wavHeader(0))
+        let queue: Promise<unknown> = Promise.resolve()
+        await pcmStream(['-v', 'error', '-nostdin', ...segmentInput(s), '-af', head.join(','),
+          '-f', 'f32le', '-ac', String(MIX_CH), '-ar', String(MIX_RATE), 'pipe:1'], `fx ${basename(s.path)}`, (f) => {
+          fxRun(chain, f)
+          bytes += f.byteLength
+          queue = queue.then(() => fh.write(Buffer.from(f.buffer, f.byteOffset, f.byteLength)))
+        })
+        await queue
+        await fh.write(wavHeader(bytes), 0, 44, 0)
+      } finally {
+        await fh.close()
+      }
+      s = { ...s, path: file, inPoint: 0, duration: outDur, speed: 1, channels: 2 }
+    }
+    const { fx: _fx, denoise: _dn, ...plain } = s
+    out.push(plain)
+  }
+  // track buses: summed, processed, one segment per track
+  const byBus = new Map<string, AudioSegment[]>()
+  const rest: AudioSegment[] = []
+  for (const s of out) {
+    if (s.bus?.fx.length) byBus.set(s.bus.id, [...(byBus.get(s.bus.id) ?? []), s])
+    else rest.push(s)
+  }
+  for (const group of byBus.values()) {
+    if (isCancelled()) throw new Error('cancelled')
+    const sum = await mixInto(group.map(({ bus: _b, ...x }) => x), duration, undefined, isCancelled)
+    fxInterleaved(sum, group[0].bus!.fx, MIX_RATE)
+    const file = tmp()
+    await writeWavF32(file, sum)
+    rest.push({ path: file, inPoint: 0, duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0, channels: 2 })
+  }
+  return rest
 }
 
 export class ExportMuxer {
@@ -766,19 +1204,36 @@ export class ExportMuxer {
   /**
    * @param videoTemp path to the renderer-produced video-only mp4 ('' for audio-only)
    */
-  async run(job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void): Promise<void> {
+  async run(
+    job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void
+  ): Promise<{ i: number; tp: number } | null> {
+    const temps: string[] = []
+    try {
+      return await this.mux(job, videoTemp, onProgress, temps)
+    } finally {
+      for (const f of temps) fsp.unlink(f).catch(() => { /* already gone */ })
+    }
+  }
+
+  private async mux(
+    job: ExportJob, videoTemp: string, onProgress: (p: ExportProgress) => void, temps: string[]
+  ): Promise<{ i: number; tp: number } | null> {
     const args: string[] = ['-y', '-v', 'error', '-progress', 'pipe:1']
     // Linux caps a single argv string at 128 KB (MAX_ARG_STRLEN): a timeline
     // with ~1000 SFX clips builds a filter graph past that and spawn() fails
     // with E2BIG. The graph goes through a script file instead of argv.
     let filterScript: string | null = null
-    let segs = job.audioSegments
+    // K9: effects first — every path below then mixes plain segments
+    let segs = await applyAudioFx(await withChannels(job.audioSegments), job.duration, temps, () => this.cancelled)
     const hasVideo = !job.preset.audioOnly
 
+    // G9: a loudness target measures the mix before it is written — on ONE
+    // premixed file, so every measuring pass reads a WAV instead of re-mixing
+    const target = job.master !== false && job.preset.loudness != null && segs.length > 0 ? job.preset.loudness : null
     // big timelines: sum the clips ourselves, then mux that one stream
     let premix: string | null = null
-    if (segs.length > PREMIX_THRESHOLD) {
-      premix = join(tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
+    if (segs.length > PREMIX_THRESHOLD || target !== null) {
+      premix = join(TMP_DIR || tmpdir(), `kadr-premix-${process.pid}-${Date.now()}.wav`)
       try {
         await premixSegments(segs, job.duration, premix,
           (done, total) => onProgress({ phase: 'mux', progress: 0.5 * (done / total) }),
@@ -789,18 +1244,52 @@ export class ExportMuxer {
       }
       segs = [{ path: premix, inPoint: 0, duration: job.duration, start: 0, gain: 1, speed: 1, fadeIn: 0, fadeOut: 0 }]
     }
+    let fit = { gainDb: 0, limit: MASTER_LIMIT, i: -Infinity, tp: -Infinity }
+    if (target !== null && premix) {
+      try {
+        fit = await fitLoudness(premix, target)
+      } catch (err) {
+        await fsp.unlink(premix).catch(() => { /* already gone */ })
+        throw err
+      }
+      if (this.cancelled) {
+        await fsp.unlink(premix).catch(() => { /* already gone */ })
+        throw new Error('cancelled')
+      }
+    }
     const muxBase = premix ? 0.5 : 0 // mux progress after a premix continues from its half
+    let metaFile: string | null = null
+    let subsFile: string | null = null
     const cleanupTemps = () => {
-      if (filterScript) fsp.unlink(filterScript).catch(() => { /* already gone */ })
+      for (const f of [filterScript, metaFile, subsFile]) if (f) fsp.unlink(f).catch(() => { /* already gone */ })
       if (premix) fsp.unlink(premix).catch(() => { /* already gone */ })
     }
 
     if (hasVideo) args.push('-i', videoTemp)
     for (const s of segs) {
-      args.push('-ss', String(s.inPoint), '-t', String(s.duration), '-i', s.path)
+      args.push(...segmentInput(s))
+    }
+    // G7: title and chapters come in as an ffmetadata input, embedded subtitles as an srt one
+    const x = job.extras
+    let next = (hasVideo ? 1 : 0) + segs.length
+    let metaIdx = -1
+    let subsIdx = -1
+    const tmp = (ext: string) => join(TMP_DIR || tmpdir(), `kadr-${ext}-${process.pid}-${Date.now()}.${ext}`)
+    if (x?.title || x?.chapters?.length) {
+      metaFile = tmp('txt')
+      await fsp.writeFile(metaFile, ffmetadata(x))
+      args.push('-f', 'ffmetadata', '-i', metaFile)
+      metaIdx = next++
+    }
+    if (x?.embedSubs && x.cues?.length && hasVideo && embedsSubs(job.preset.container)) {
+      subsFile = tmp('srt')
+      await fsp.writeFile(subsFile, cuesToSrt(x.cues))
+      args.push('-f', 'srt', '-i', subsFile)
+      subsIdx = next++
     }
 
     const filters: string[] = []
+    let reMaster: ((limit: number, gainDb: number) => Promise<void>) | null = null
     if (segs.length > 0) {
       const labels: string[] = []
       segs.forEach((s, i) => {
@@ -823,7 +1312,9 @@ export class ExportMuxer {
       // exports (shared/audioMaster.ts) — a plain sum of a loud master and a
       // few hits used to reach the encoder at +10 dBFS and be hard-clipped.
       // Analysis mixdowns (job.master === false) stay untouched.
-      const master = job.master === false ? [] : masterLimiterChain()
+      // K4: the master fader sits in front of the limiter; a loudness target sets the level itself
+      const faderDb = target === null ? 20 * Math.log10(Math.max(1e-5, job.masterGain ?? 1)) : 0
+      const master = job.master === false ? [] : masterLimiterChain(fit.limit, fit.gainDb + faderDb)
       const tail = master.length ? ',' + master.join(',') : ''
       if (segs.length === 1) {
         filters.push(`${labels[0]}anull${tail}[aout]`)
@@ -834,9 +1325,13 @@ export class ExportMuxer {
           `${labels.join('')}amix=inputs=${segs.length}:dropout_transition=0,volume=${segs.length}${tail}[aout]`
         )
       }
-      filterScript = join(tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
+      filterScript = join(TMP_DIR || tmpdir(), `kadr-filter-${process.pid}-${Date.now()}.txt`)
       await fsp.writeFile(filterScript, filters.join(';\n'))
-      args.push('-filter_complex_script', filterScript)
+      args.push(await filterGraphFileOption(), filterScript)
+      // a target's retry rewrites only the master's ceiling (see below)
+      const script = filterScript
+      reMaster = (limit, gainDb) => fsp.writeFile(script, filters.join(';\n')
+        .replace(tail, ',' + masterLimiterChain(limit, gainDb).join(',')))
     }
 
     if (hasVideo) {
@@ -853,9 +1348,14 @@ export class ExportMuxer {
     } else if (hasVideo) {
       args.push('-an')
     }
+    if (metaIdx >= 0) args.push('-map_metadata', String(metaIdx), '-map_chapters', String(metaIdx))
+    if (subsIdx >= 0) args.push('-map', `${subsIdx}:s`, '-c:s', 'mov_text')
+    // moov before mdat, so a web player starts before the whole file is in.
+    // Keyed on the file, not preset.container: mixdownWav says 'mp4' and writes .wav
+    if (/\.(mp4|mov|m4v|m4a)$/i.test(job.outputPath)) args.push('-movflags', '+faststart')
     args.push('-t', String(job.duration), job.outputPath)
 
-    return new Promise((resolve, reject) => {
+    const encode = () => new Promise<void>((resolve, reject) => {
       const child = spawn(FFMPEG, args, { stdio: ['ignore', 'pipe', 'pipe'] })
       this.child = child
       let err = ''
@@ -873,18 +1373,50 @@ export class ExportMuxer {
         }
       })
       child.stderr!.on('data', (c) => { err += c })
-      child.on('error', (e) => {
-        cleanupTemps()
-        reject(e)
-      })
+      child.on('error', reject)
       child.on('close', (code) => {
         this.child = null
-        cleanupTemps()
         if (this.cancelled) reject(new Error('cancelled'))
         else if (code === 0) resolve()
         else reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 800)}`))
       })
     })
+    try {
+      await encode()
+      // what the FILE measures (after the codec), for the done message
+      let heard = target === null ? null : await loudnessOf(['-i', job.outputPath])
+      if (heard && !isFinite(heard.i)) heard = null // a silent mix: nothing to report
+      // the codec moves what the chain measured: a lossy decode overshoots the
+      // true peak (square bursts through AAC 48k: −0.9 dBTP), and cutting the top
+      // octave takes loudness away (white noise through AAC 128k: 1.6 LU short).
+      // Once more, the ceiling lowered by the overshoot and the gain moved by the
+      // drift — the drift only when the chain itself had reached the target
+      // the ceiling starts under where the chain's peaks really were: a limiter
+      // that never touched them would not move them by being lowered
+      let limitDb = Math.min(20 * Math.log10(fit.limit), fit.tp)
+      let gainDb = fit.gainDb
+      const reached = Math.abs(fit.i - target!) <= 0.5
+      // at most 2 re-encodes; a codec that still overshoots after that (AAC at
+      // 48 kbit/s on square bursts — not a rate the dialog offers) is reported as measured
+      for (let again = 0; again < 2 && heard && reMaster && !this.cancelled; again++) {
+        const over = heard.tp - TP_CEILING
+        const drift = reached ? target! - heard.i : 0
+        if (over <= 0 && Math.abs(drift) <= 0.5) break
+        if (over > 0) limitDb -= over + 0.3
+        if (Math.abs(drift) > 0.5) gainDb += drift
+        await reMaster(10 ** (Math.min(limitDb, 20 * Math.log10(fit.limit)) / 20), gainDb)
+        await encode()
+        heard = await loudnessOf(['-i', job.outputPath])
+      }
+      // the sidecar goes beside the finished file only: `<name>.srt` / `<name>.vtt`
+      if (x?.sidecar && x.cues) {
+        const side = job.outputPath.replace(/\.[^./\\]+$/, '') + '.' + x.sidecar
+        await fsp.writeFile(side, x.sidecar === 'vtt' ? cuesToVtt(x.cues) : cuesToSrt(x.cues))
+      }
+      return heard
+    } finally {
+      cleanupTemps()
+    }
   }
 }
 
