@@ -47,8 +47,9 @@ import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
 import { scrub } from '@/engine/scrubAudio'
-import { toggleTrack, useMixerUi } from '@/engine/mixer'
+import { keyRun, toggleTrack, useMixerUi } from '@/engine/mixer'
 import { ArmButton, MixerDock } from './Mixer'
+import { useMixerPopout, mixerHost, dockMixerWindow } from '@/engine/popout'
 import { dbText, gainToDb } from '@shared/fader'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
@@ -563,6 +564,7 @@ export function Timeline({ height }: { height: number }) {
   }
 
   const mixerOpen = useMixerUi((s) => s.open)
+  const mixerWin = useMixerPopout((s) => s.win)
   return (
     <div className="timeline" style={{ height }}>
       <div className="tl-toolbar">
@@ -663,7 +665,9 @@ export function Timeline({ height }: { height: number }) {
           </div>
         </div>
       </div>
-      {mixerOpen && <MixerDock />}
+      {mixerOpen && !mixerWin && <MixerDock />}
+      {/* K12: popped out, the same component renders into the mixer's own window */}
+      {mixerOpen && mixerWin && createPortal(<MixerDock win={mixerWin as Window & typeof globalThis} />, mixerHost)}
       </div>
       {menu && <TrackMenu menu={menu} onClose={() => setMenu(null)} />}
       <TimelineAsks />
@@ -677,7 +681,7 @@ function MixerToggle() {
   const open = useMixerUi((s) => s.open)
   return (
     <button className={open ? 'toggled' : ''} data-act="mixer" aria-pressed={open} title={t('mxToggleTitle')}
-            onClick={() => useMixerUi.getState().setOpen(!open)}>
+            onClick={() => { if (open) dockMixerWindow(); useMixerUi.getState().setOpen(!open) }}>
       <Icon name="sliders" size={13} /> {t('mxToggle')}
     </button>
   )
@@ -1557,6 +1561,7 @@ function TrackRow({
   const t = useT()
   const reorder = useRef<{ pushed: boolean } | null>(null)
   const gainRef = useRef<HTMLInputElement>(null)
+  const keys = useRef(keyRun()).current
   const [naming, setNaming] = useState(false)
   // Only what is near the visible stretch goes into the DOM (half a screen on
   // either side, so a scroll finds it drawn), plus the selection — a clip being
@@ -1770,8 +1775,12 @@ function TrackRow({
               aria-label={track.kind === 'audio' ? t('volume') : t('opacity')}
               onPointerDown={(e) => {
                 e.stopPropagation()
+                keys.end()
                 useEditor.getState().pushHistory('hEdit')
               }}
+              // K12: arrow keys change it too — one undo step per run, as on the strip
+              onKeyDown={(e) => { if (/^(Arrow|Page|Home$|End$)/.test(e.key)) keys.key() }}
+              onBlur={keys.end}
               onChange={(e) =>
                 useEditor.getState().updateTrack(track.id, { gain: Number(e.target.value) })
               }

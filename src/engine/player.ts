@@ -13,9 +13,8 @@ import { evalAnim } from './anim'
 import { fadeGain, type FadeCurve } from '@shared/fadeCurves'
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX, audioFollowsSpeed } from '@shared/audioSpeed'
 import { getTextLayer } from './text'
-import { attachAudio, detachAudio, setElementGain, setElementPan, setElementTrack, setMasterGain, isRouted, resumeAudio, setElementFx, setTrackFx } from './audio'
-import { denoiseOf } from '@shared/audioFx'
-import { denoisedPath } from './denoise'
+import { attachAudio, detachAudio, setElementGain, setElementPan, setElementTrack, setMasterGain, isRouted, resumeAudio, setElementFx, setTrackFx, pruneBuses } from './audio'
+import { denoisedFor } from './denoise'
 import { clampPan } from '@shared/pan'
 import { logError } from './log'
 import { advanceClock, clipSourceTime, type ClockAnchor } from './timelineMath'
@@ -942,8 +941,7 @@ export class Player {
 
   /** K9: a denoised clip on an audio track plays its source's denoised copy once it exists (the export mixes the same file) */
   private denoiseSource(clip: Clip, track: Track, asset: MediaAsset) {
-    const nr = track.kind === 'audio' ? denoiseOf(clip.audioFx) : null
-    this.pool.setSourceOverride(clip.id, nr !== null ? denoisedPath(asset.path, nr) : null)
+    this.pool.setSourceOverride(clip.id, denoisedFor(clip, track, asset))
   }
 
   private syncMedia(project: Project, t: number, playing: boolean, rate: number) {
@@ -961,6 +959,7 @@ export class Player {
     const audible = audibleClipsAt(project, t)
     // K9: track effects on the buses (a bus that never had any is not made for them)
     for (const tr of project.tracks) if (tr.kind === 'audio') setTrackFx(tr.id, tr.audioFx)
+    pruneBuses(project.tracks)
 
     for (const { clip, track, asset } of [...visual, ...audible]) {
       if (seen.has(clip.id)) continue

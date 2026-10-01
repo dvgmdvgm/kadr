@@ -18,6 +18,15 @@ export function beginMixGesture(): void {
   useEditor.getState().pushHistory('hEdit')
 }
 
+/** a run of arrow keys on one control is ONE undo step; a pointer or a blur ends the run (`end`) */
+export function keyRun(): { key(): void; end(): void } {
+  let on = false
+  return {
+    key() { if (!on) { beginMixGesture(); on = true } },
+    end() { on = false }
+  }
+}
+
 export function setTrackGain(trackId: string, gain: number): void {
   useEditor.getState().updateTrack(trackId, { gain: clampGain(gain) })
 }

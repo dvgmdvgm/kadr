@@ -47,8 +47,8 @@ export function workletReady(): Promise<void> {
   return workletModule!
 }
 const buses = new Map<string, { bus: GainNode; post: GainNode; tap: Tap; fx: FxSlot | null }>()
-/** where each element's pan goes now: a track id, or '' = straight to the master */
-const routedTo = new WeakMap<HTMLMediaElement, string>()
+/** where each element's pan goes now: its track's bus, or the master (a node — a bus made again after a prune is a new one) */
+const routedTo = new WeakMap<HTMLMediaElement, AudioNode>()
 let limiterReduction = 0
 /** the playhead where playback last stopped; null = never played */
 let meterPausedAt: number | null = null
@@ -73,7 +73,6 @@ function busFor(trackId: string) {
     const post = c.createGain()
     bus.connect(post)
     post.connect(master!)
-    // ponytail: a deleted track's bus stays (two GainNodes and two analysers, silent); prune if projects churn tracks
     b = { bus, post, tap: tap(c, post), fx: null }
     buses.set(trackId, b)
   }
@@ -139,10 +138,21 @@ export function setTrackFx(trackId: string, list: AudioFx[] | undefined) {
 /** K6: send an element into its audio track's bus ('' or a video track: straight to the master) */
 export function setElementTrack(el: HTMLMediaElement, trackId: string) {
   const p = pans.get(el)
-  if (!p || routedTo.get(el) === trackId) return
+  if (!p) return
+  const to = trackId ? busFor(trackId).bus : master!
+  if (routedTo.get(el) === to) return
   try { p.disconnect() } catch { /* not yet */ }
-  p.connect(trackId ? busFor(trackId).bus : master!)
-  routedTo.set(el, trackId)
+  p.connect(to)
+  routedTo.set(el, to)
+}
+
+/** K12: the bus of a track that is gone (removed, undone, another project) leaves the graph */
+export function pruneBuses(tracks: readonly { id: string; kind: string }[]) {
+  for (const [id, b] of buses) {
+    if (tracks.some((t) => t.id === id && t.kind === 'audio')) continue
+    for (const n of [b.bus, b.post, b.fx?.node]) { try { n?.disconnect() } catch { /* already */ } }
+    buses.delete(id)
+  }
 }
 
 export function peaks(t: Tap | null | undefined): [number, number] {
@@ -237,6 +247,13 @@ function route() {
 /** the device last asked for; a failed switch leaves the context where it was */
 let sinkWanted: string | null = null
 
+/** K12: the device the preview REALLY plays on ('' = the system default) — the setting is only the wish */
+export function outputDevice(): string {
+  if (!ctx) return String(setting('playback.audioOutput') ?? '') // nothing plays yet: the wish is where it will
+  const id = (ctx as AudioContext & { sinkId?: unknown }).sinkId
+  return typeof id === 'string' ? id : ''
+}
+
 /**
  * K7: the output device (`playback.audioOutput`, '' = the system default).
  * One context carries everything the preview plays — elements, the scrub, the
@@ -269,7 +286,7 @@ export function attachAudio(el: HTMLMediaElement) {
     gains.set(el, gain)
     pans.set(el, pan)
     sources.set(el, src)
-    routedTo.set(el, '')
+    routedTo.set(el, master!)
     routed++
   } catch { /* already attached to another context */ }
 }
@@ -346,6 +363,7 @@ export function audioStats() {
   }
   return {
     routed,
+    buses: buses.size,
     state: c?.state ?? 'none',
     limiter: limiterOn() ? 'on' : limiterState === 'ready' ? 'off' : limiterState,
     peakDb: peak > 0 ? 20 * Math.log10(peak) : -Infinity,

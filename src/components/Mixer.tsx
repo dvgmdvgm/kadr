@@ -3,20 +3,21 @@
 // the master (its fader, the K3 loudness readouts, the limiter, the output
 // device). Every control writes through src/engine/mixer.ts, the same path as
 // the track header, so the two can never disagree.
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import type { Track } from '@shared/types'
-import { useEditor, useSettings, setting } from '@/state/store'
+import { useEditor, useSettings } from '@/state/store'
 import { useT, trf, type TKey } from '@/i18n'
 import { Icon } from './icons'
 import { faderPos, posDb, dbToGain, gainToDb, dbText, lufsText, panText } from '@shared/fader'
 import {
-  beginMixGesture, setTrackGain, setMaster, toggleTrack, setTrackPan, trackPanAt, useMixerUi
+  beginMixGesture, keyRun, setTrackGain, setMaster, toggleTrack, setTrackPan, trackPanAt, useMixerUi
 } from '@/engine/mixer'
-import { trackPeaks, masterPeaks, loudness, resetLoudness, limiterInfo } from '@/engine/audio'
+import { trackPeaks, masterPeaks, loudness, resetLoudness, limiterInfo, outputDevice } from '@/engine/audio'
 import { trackHeard } from '@/engine/player'
 import { useRecord, toggleArm, setInput, inputPeaks, isArmed, useAudioInputs } from '@/engine/record'
 import { FX_NAME, FxBlock, FxAddMenu, addFx, removeFx, toggleFx } from './AudioFxPanel'
-import { CtxMenu } from './CtxMenu'
+import { CtxMenu, HostWindow } from './CtxMenu'
+import { openMixerWindow, dockMixerWindow } from '@/engine/popout'
 import type { AudioFxType } from '@shared/audioFx'
 
 // ---- the peak meter: −60…0 dBFS linear in dB, a hold line for 2 s, then it falls
@@ -79,7 +80,7 @@ function Fader({ gain, label, onSet }: { gain: number; label: string; onSet: (g:
   useT() // re-render on a language switch: the titles go through trf
   const ref = useRef<HTMLDivElement>(null)
   const drag = useRef<{ y: number; pos: number } | null>(null)
-  const keyRun = useRef(false)
+  const run = useRef(keyRun()).current
   const db = gainToDb(gain)
   const p = faderPos(db)
   const posOf = (y: number, shift: boolean) => {
@@ -98,20 +99,20 @@ function Fader({ gain, label, onSet }: { gain: number; label: string; onSet: (g:
       onPointerDown={(e) => {
         if (e.button !== 0) return
         e.currentTarget.setPointerCapture(e.pointerId)
-        keyRun.current = false
+        run.end()
         beginMixGesture()
         drag.current = { y: e.clientY, pos: p }
       }}
       onPointerMove={(e) => { if (drag.current) onSet(dbToGain(posDb(posOf(e.clientY, e.shiftKey)))) }}
       onPointerUp={() => { drag.current = null }}
       onDoubleClick={() => { beginMixGesture(); onSet(1) }}
-      onBlur={() => { keyRun.current = false }}
+      onBlur={run.end}
       onKeyDown={(e) => {
         const dir = e.key === 'ArrowUp' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowDown' || e.key === 'ArrowLeft' ? -1 : 0
         if (!dir) return
         e.preventDefault()
         e.stopPropagation()
-        if (!keyRun.current) { beginMixGesture(); keyRun.current = true }
+        run.key()
         onSet(dbToGain(Math.max(-60, db) + dir * (e.shiftKey ? FINE_DB : STEP_DB)))
       }}
     >
@@ -244,12 +245,13 @@ function Slots({ track, narrow }: { track: Track; narrow: boolean }) {
   const [pop, setPop] = useState<{ x: number; y: number } | null>(null)
   const [add, setAdd] = useState<{ x: number; y: number } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  const doc = useContext(HostWindow).document
   useEffect(() => {
     if (!pop && !menu) return
     const close = () => { setPop(null); setMenu(null) }
-    document.addEventListener('pointerdown', close)
-    return () => document.removeEventListener('pointerdown', close)
-  }, [pop, menu])
+    doc.addEventListener('pointerdown', close)
+    return () => doc.removeEventListener('pointerdown', close)
+  }, [pop, menu, doc])
   const owner = { track }
   const at = (e: React.MouseEvent) => { const r = e.currentTarget.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 } }
   const open = (e: React.MouseEvent) => setPop(at(e))
@@ -381,10 +383,11 @@ function Master({ reg }: { reg: Reg }) {
   const t = useT()
   const gain = useEditor((s) => s.project.masterGain ?? 1)
   const [, tick] = useState(0)
+  const view = useContext(HostWindow)
   useEffect(() => {
-    const id = window.setInterval(() => tick((n) => n + 1), 100) // the readouts update 10 times a second
-    return () => clearInterval(id)
-  }, [])
+    const id = view.setInterval(() => tick((n) => n + 1), 100) // the readouts update 10 times a second
+    return () => view.clearInterval(id)
+  }, [view])
   const l = loudness()
   const lim = limiterInfo()
   const acting = lim.state === 'on' && lim.reductionDb < -0.05
@@ -392,7 +395,9 @@ function Master({ reg }: { reg: Reg }) {
   const red = dbText(lim.reductionDb)
   const outputs = useAudioOutputs()
   useSettings((s) => s.snap)
-  const out = String(setting('playback.audioOutput') ?? '')
+  // K12 (BREAKS 15): the device the context REALLY plays on — a switch that failed
+  // leaves it where it was; the select writes the wish (the setting)
+  const out = outputDevice()
   const known = !out || outputs.some(([id]) => id === out)
   const read = (k: TKey, title: TKey, v: number, cls = '') => (
     <div className="mx-read" title={t(title)}><span className="mx-read-k">{t(k)}</span><span className={`mx-read-v${cls}`}>{lufsText(v)}</span></div>
@@ -446,13 +451,15 @@ const MASTER_W = 176
 /** past this many tracks the strips go narrow (the canvas's 12-track board) */
 const NARROW_FROM = 7
 
-export function MixerDock() {
+/** the dock under the timeline's toolbar, or (`win`) the whole of the mixer's own window (canvas K, board Window) */
+export function MixerDock({ win }: { win?: Window & typeof globalThis }) {
   const t = useT()
+  const view = win ?? window
   const tracks = useEditor((s) => s.project.tracks)
   const project = useEditor((s) => s.project)
   const audio = tracks.filter((x) => x.kind === 'audio')
   const anySolo = tracks.some((x) => x.solo)
-  const narrow = audio.length >= NARROW_FROM
+  const narrow = !win && audio.length >= NARROW_FROM
   const els = useRef(new Map<string, MeterEls>())
   const regs = useRef(new Map<string, (e: MeterEls | null) => void>())
   const reg: Reg = (key) => {
@@ -466,26 +473,43 @@ export function MixerDock() {
   useEffect(() => {
     const states = new Map<string, MeterState>()
     let raf = 0
+    // the meters follow the window they are in: a hidden editor gets no frames
     const loop = (now: number) => {
-      raf = requestAnimationFrame(loop)
+      raf = view.requestAnimationFrame(loop)
       for (const [key, e] of els.current) {
         let m = states.get(key)
         if (!m) states.set(key, (m = newMeter()))
         stepMeter(m, key === 'master' ? masterPeaks() : isArmed(key) ? inputPeaks(key) : trackPeaks(key), now, e)
       }
     }
-    raf = requestAnimationFrame(loop)
-    return () => cancelAnimationFrame(raf)
-  }, [])
+    raf = view.requestAnimationFrame(loop)
+    return () => view.cancelAnimationFrame(raf)
+  }, [view])
   const w = audio.length ? audio.length * (narrow ? NARROW_W : STRIP_W) + MASTER_W + 1 : MASTER_W + 240
   return (
-    <div className="mx-dock" data-mixer="" style={{ width: w, maxWidth: '45vw', flexShrink: 0 }}>
+    <HostWindow.Provider value={view}>
+    <div className="mx-dock" data-mixer={win ? 'window' : ''}
+         style={win ? { flex: 1, borderLeft: 'none' } : { width: w, maxWidth: '45vw', flexShrink: 0 }}>
       <div className="panel-head">
-        <span>{t('mxToggle')}</span>
-        <button className="ghost icon-only" data-act="mx-hide" title={t('mxHide')} aria-label={t('mxHide')}
-                onClick={() => useMixerUi.getState().setOpen(false)}>
-          <Icon name="close" size={13} />
-        </button>
+        <span>{t(win ? 'mxWinTitle' : 'mxToggle')}</span>
+        <span className="flex1" />
+        {win ? (
+          <button className="ghost icon-only" data-act="mx-popin" title={t('mxPopin')} aria-label={t('mxPopin')}
+                  onClick={dockMixerWindow}>
+            <Icon name="popin" size={13} />
+          </button>
+        ) : (
+          <>
+            <button className="ghost icon-only" data-act="mx-popout" title={t('mxPopout')} aria-label={t('mxPopout')}
+                    onClick={openMixerWindow}>
+              <Icon name="popout" size={13} />
+            </button>
+            <button className="ghost icon-only" data-act="mx-hide" title={t('mxHide')} aria-label={t('mxHide')}
+                    onClick={() => useMixerUi.getState().setOpen(false)}>
+              <Icon name="close" size={13} />
+            </button>
+          </>
+        )}
       </div>
       <div className="mx-row">
         <div className="mx-scroll">
@@ -502,5 +526,6 @@ export function MixerDock() {
         <Master reg={reg} />
       </div>
     </div>
+    </HostWindow.Provider>
   )
 }

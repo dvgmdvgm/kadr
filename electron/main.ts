@@ -126,6 +126,8 @@ const mustAsk = () => !!win && !win.isDestroyed() && !closeAllowed && closeGuard
   !unresponsive && !win.webContents.isCrashed()
 /** window.open name of the detached preview — see src/engine/popout.ts */
 const PREVIEW_WIN = 'kadr-preview'
+/** the popups the page may open: the preview and (K12) the mixer, src/engine/popout.ts */
+const POPUPS = new Set([PREVIEW_WIN, 'kadr-mixer'])
 
 function createWindow() {
   win = new BrowserWindow({
@@ -180,7 +182,7 @@ function createWindow() {
   // run inside this webContents too, and nothing they contain has any business
   // opening an OS window.
   win.webContents.setWindowOpenHandler(({ frameName }) => {
-    if (frameName !== PREVIEW_WIN) return { action: 'deny' }
+    if (!POPUPS.has(frameName)) return { action: 'deny' }
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
@@ -194,7 +196,7 @@ function createWindow() {
     }
   })
   win.webContents.on('did-create-window', (child, { frameName }) => {
-    if (frameName !== PREVIEW_WIN) return
+    if (!POPUPS.has(frameName)) return
     child.setMenuBarVisibility(false)
     child.removeMenu()
     // closing the editor must not leave the preview window behind: while one

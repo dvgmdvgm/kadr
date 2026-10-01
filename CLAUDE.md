@@ -47,9 +47,13 @@ mixes audio and muxes/transcodes per preset.
   level on each channel, preview = export, premix too), hard left silent
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
   `check-scrub-grains.mjs` (K7: scrub grains at most every 60 ms, none after
-  the drag ends — not even a seek landing late — and each stops by itself);
+  the drag ends — not even a seek landing late — and each stops by itself;
+  K12: a voice is wired through the clip's effects into its track's bus and
+  plays the denoised copy, on a fake WebAudio graph, `scripts/fake-webaudio.mjs`);
   `check-mixer-binding.mjs` (K6: the fader and the header slider are one
-  value, the taper table, one undo step per gesture, keyed edits as keys);
+  value, the taper table, one undo step per gesture — arrow keys on the
+  header slider too — keyed edits as keys; K12: a removed track's bus leaves
+  the graph, the output label is the context's real device);
   `check-record-place.mjs` (K8: a microphone take started at t with a
   pre-roll lands at t, latency compensated, ends where recording stopped);
   `check-audio-fx.mjs` wants ffmpeg (K9: the real `kadr-fx` worklet in
@@ -612,9 +616,12 @@ mixes audio and muxes/transcodes per preset.
   AudioContext — the popped-out preview and the scrub included; only a CHANGE
   of the setting is applied, so a test's `{type:'none'}` holds. Dragging the
   playhead on the ruler while stopped plays ~80 ms grains of every audible clip
-  at most every 60 ms, from `<audio>` elements of their own routed through the
-  same gain → pan → master (`src/engine/scrub.ts` core, `scrubAudio.ts` glue):
-  the pool's elements belong to the resync. A grain is timed from its seek
+  at most every 60 ms, from `<audio>` elements of their own routed as the
+  pool's are — the clip's effects, gain, pan, its track's bus and effects,
+  master — and from the denoised copy once built (K12: `denoisedFor`, one rule
+  for playback and the scrub), so a de-essed voice scrubs as it plays
+  (`src/engine/scrub.ts` core, `scrubAudio.ts` glue): the pool's elements
+  belong to the resync. A grain is timed from its seek
   landing, a seek that lands after the drag is dropped, and every grain stops
   itself, so a lost pointerup cannot leave a sound running.
   `kadrEditor.scrubStats`. Test: `node scripts/check-scrub-grains.mjs`.
@@ -628,7 +635,17 @@ mixes audio and muxes/transcodes per preset.
   gain stays in each element's gain (the sound did not change); what a strip
   meters is a per-track BUS GainNode at unity between the elements' pan and
   the master, tapped by a splitter into two analysers (`trackPeaks`,
-  `masterPeaks` after the limiter). The limiter worklet posts its gain
+  `masterPeaks` after the limiter); a track that is gone takes its bus out of
+  the graph (`pruneBuses`, every sync of the player — undo gets a fresh one,
+  which is why an element's route is remembered as the NODE, not the track
+  id). The master's device label is the context's real `sinkId`
+  (`outputDevice`): a switch that failed leaves the sound where it was, and the
+  label with it — the setting is only the wish. «Микшер в отдельном окне»
+  (canvas K, RULES 3; `popout.ts`, `useMixerPopout`) renders the same
+  `MixerDock` through a portal into a window of its own at full width; the
+  subtree reads its window from the `HostWindow` context (`CtxMenu.tsx`) for
+  its meter loop, timers, menus and outside clicks, and the AudioContext stays
+  the editor's. The limiter worklet posts its gain
   reduction 10×/s (`limiterInfo`). The loudness worklet takes 'pause'/'run':
   while stopped nothing is fed (the filter's tail drifted the integrated value
   −18.60 → −18.67 in 3 s) and M/S read −∞; playback that starts where the
@@ -681,8 +698,7 @@ mixes audio and muxes/transcodes per preset.
   plays it through the pool's source override (audio-track clips only — a
   video clip's element is its picture), the export's `configureDenoiser` hook
   swaps the segment's path. Analysis mixdowns go through the same muxer, so
-  they hear the effects too. Not in the chain: the scrub's grains and
-  fragment audio. Live (sandbox, dialogue clip with EQ + compressor + denoise
+  they hear the effects too. Not in the chain: fragment audio. Live (sandbox, dialogue clip with EQ + compressor + denoise
   and a de-esser on its track, capture of the preview's master vs a WAV
   export): 44 windows of 0.2 s, worst 0.45 dB, mean 0.11 dB; a 5.1 source
   preview vs export 0.00 dB. Test: `node scripts/check-audio-fx.mjs`.
@@ -1438,7 +1454,8 @@ mixes audio and muxes/transcodes per preset.
   wrong file. Projects are keyed BY PATH, never by name. `storage:prune`
   FAILS CLOSED: without an explicit `confirm: true` it only counts, so a
   caller newer than the handler errs towards keeping the files.
-- `src/engine/popout.ts` — the preview in an OS window of its own. NOTHING
+- `src/engine/popout.ts` — the preview (and, K12, the mixer) in an OS
+  window of its own, one `popout()` each. NOTHING
   IS REBUILT ON THE WAY OVER: the preview always lives in ONE host div
   that a React portal renders into, and popping out only moves that div
   into the popup's document — re-creating it would mean a fresh GL context

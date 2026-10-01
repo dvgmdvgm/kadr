@@ -16,7 +16,8 @@ const js = buildSync({
     contents: `export * from './shared/fader'
       export * as M from './src/engine/mixer'
       export { useEditor } from './src/state/store'
-      export { evalAnim } from './src/engine/anim'`,
+      export { evalAnim } from './src/engine/anim'
+      export * as A from './src/engine/audio'`,
     resolveDir: root, loader: 'ts'
   },
   bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'error',
@@ -26,7 +27,7 @@ globalThis.window = globalThis.window ?? {}
 const mem = new Map()
 globalThis.localStorage = globalThis.localStorage ?? { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) }
 const F = await import('data:text/javascript;base64,' + Buffer.from(js).toString('base64'))
-const { M, useEditor, evalAnim } = F
+const { M, A, useEditor, evalAnim } = F
 
 let fails = 0
 const check = (name, ok, detail = '') => {
@@ -139,6 +140,47 @@ const past = () => useEditor.getState().past.length
   check('the diamond adds a key at the playhead', clip().pan.keyframes?.length === 1 && clip().pan.keyframes[0].time === 1)
   M.toggleKeyAt('c1', 'pan', 3)
   check('the diamond on a key removes it, and the last key leaves its value', !clip().pan.keyframes?.length && clip().pan.value === -1)
+}
+
+// ---- K12: arrow keys on the track header's slider are one undo step per run,
+// like the strip's (the run ends on a pointer or a blur)
+{
+  fresh()
+  const run = M.keyRun()
+  for (let i = 0; i < 3; i++) { run.key(); M.setTrackGain('a1', track('a1').gain - 0.01) }
+  check('3×↓ on the header slider is one undo step', past() === 1 && near(track('a1').gain, 0.97), past())
+  run.end()
+  run.key(); M.setTrackGain('a1', 0.5)
+  check('a new run after the pointer or a blur is a step of its own', past() === 2, past())
+  useEditor.getState().undo(); useEditor.getState().undo()
+  check('two undos take both runs back', track('a1').gain === 1)
+}
+
+// ---- K12: the preview graph (fake WebAudio): a removed track leaves no bus,
+// and the output label follows the context's real device, not the wish
+{
+  const { installFakeWebAudio } = await import('./fake-webaudio.mjs')
+  const fake = installFakeWebAudio()
+  await A.workletReady()
+  const els = Array.from({ length: 5 }, () => ({}))
+  els.forEach((el, i) => { A.attachAudio(el); A.setElementTrack(el, 'a' + i) })
+  check('five audio tracks, five buses', A.audioStats().buses === 5, A.audioStats().buses)
+  // element source → its gain → pan → the bus
+  const busOf = (el) => [...[...[...fake.sourceOf(el).out][0].out][0].out][0]
+  const busNodes = els.map(busOf)
+  A.pruneBuses([{ id: 'a0', kind: 'audio' }])
+  check('the tracks removed leave no buses — only the one still there', A.audioStats().buses === 1, A.audioStats().buses)
+  check('…and the dropped buses are disconnected from the master', busNodes.slice(1).every((n) => n.out.size === 0) && busNodes[0].out.size === 1, busNodes.map((n) => n.out.size))
+  A.pruneBuses([])
+  A.setElementTrack(els[1], 'a1') // undo brings a1 back: its element must reach the NEW bus
+  const reached = fake.reach(fake.sourceOf(els[1]))
+  check('a track brought back gets a fresh bus its element is wired into', A.audioStats().buses === 1 && [...reached].filter((n) => n.kind === 'gain').length >= 4)
+  const ctx = A.ensureAudio()
+  await ctx.setSinkId('dev-A')
+  check('the label reads the device the context plays on', A.outputDevice() === 'dev-A', A.outputDevice())
+  fake.Ctx.failSink = true
+  await ctx.setSinkId('dev-B').catch(() => {})
+  check('a switch that fails leaves the label on the device that plays', A.outputDevice() === 'dev-A', A.outputDevice())
 }
 
 console.log(fails ? `\n${fails} FAILED` : '\nall passed')

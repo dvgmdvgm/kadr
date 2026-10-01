@@ -16,31 +16,32 @@
 //
 // The popup is `about:blank`, i.e. same-origin with the editor and in the
 // same renderer process: without that the DOM could not be adopted at all.
+//
+// K12: the mixer pops out the same way (canvas K, RULES 3) — a window and a
+// host of its own; the AudioContext stays this window's, as for the preview.
 import { create } from 'zustand'
-import { tr } from '@/i18n'
+import { tr, type TKey } from '@/i18n'
 import { logWarn } from './log'
 
-const WIN_NAME = 'kadr-preview'
-const GEOM_KEY = 'kadr.previewWindow'
-const DEF_W = 960
-const DEF_H = 560
 const MIN_W = 320
 const MIN_H = 200
 
 /** null = the preview is docked in the editor. */
 export const usePopout = create<{ win: Window | null }>(() => ({ win: null }))
+/** null = the mixer is docked under the timeline's toolbar (or hidden). */
+export const useMixerPopout = create<{ win: Window | null }>(() => ({ win: null }))
 
-/** The one element the preview ever lives in; only its parent changes. */
-export const previewHost: HTMLDivElement = (() => {
+const host = () => {
   const el = document.createElement('div')
   el.className = 'preview-host'
   return el
-})()
+}
+/** The one element the preview ever lives in; only its parent changes. */
+export const previewHost: HTMLDivElement = host()
+/** The mixer's place in its own window: a portal renders the strips into it. */
+export const mixerHost: HTMLDivElement = host()
 
 let slot: HTMLElement | null = null
-let stopStyles: (() => void) | null = null
-let leave: (() => void) | null = null
-let watchdog = 0
 
 /** App.tsx hands over the place the preview sits in when docked. */
 export function setPreviewSlot(el: HTMLElement | null): void {
@@ -50,25 +51,25 @@ export function setPreviewSlot(el: HTMLElement | null): void {
 
 interface Geom { w: number; h: number; x?: number; y?: number }
 
-function readGeom(): Geom {
+function readGeom(key: string, w: number, h: number): Geom {
   try {
-    const raw = localStorage.getItem(GEOM_KEY)
+    const raw = localStorage.getItem(key)
     if (raw) {
       const g = JSON.parse(raw) as Geom
       if (Number.isFinite(g.w) && Number.isFinite(g.h) && g.w >= MIN_W && g.h >= MIN_H) return g
     }
   } catch { /* a corrupt entry must not cost the button */ }
-  return { w: DEF_W, h: DEF_H }
+  return { w, h }
 }
 
 /** Read while the window is ALIVE — a closed one reports zeros. */
-function saveGeom(w: Window): void {
+function saveGeom(key: string, w: Window): void {
   try {
     const g: Geom = {
       w: Math.round(w.outerWidth), h: Math.round(w.outerHeight),
       x: Math.round(w.screenX), y: Math.round(w.screenY)
     }
-    if (g.w >= MIN_W && g.h >= MIN_H) localStorage.setItem(GEOM_KEY, JSON.stringify(g))
+    if (g.w >= MIN_W && g.h >= MIN_H) localStorage.setItem(key, JSON.stringify(g))
   } catch { /* geometry is a convenience, never a failure */ }
 }
 
@@ -102,89 +103,120 @@ function mirrorStyles(doc: Document): () => void {
   return () => { obs.disconnect(); clearTimeout(timer) }
 }
 
-/** The editor going away (a reload, a quit) must not leave the popup behind. */
-function closeOnMainUnload(): void {
-  const w = usePopout.getState().win
-  if (w && !w.closed) {
-    saveGeom(w)
-    try { w.close() } catch { /* already gone */ }
+/** One OS window that one host div moves into, and back out of. */
+function popout(o: {
+  name: string; geomKey: string; w: number; h: number; title: TKey
+  store: typeof usePopout; host: HTMLElement
+  /** where the host goes back to (null: out of every document) */
+  home: () => HTMLElement | null
+}) {
+  let stopStyles: (() => void) | null = null
+  let leave: (() => void) | null = null
+  let watchdog = 0
+
+  /** The editor going away (a reload, a quit) must not leave the popup behind. */
+  const closeOnMainUnload = () => {
+    const w = o.store.getState().win
+    if (w && !w.closed) {
+      saveGeom(o.geomKey, w)
+      try { w.close() } catch { /* already gone */ }
+    }
+  }
+
+  function dock(closing: boolean): void {
+    const w = o.store.getState().win
+    if (watchdog) { clearInterval(watchdog); watchdog = 0 }
+    window.removeEventListener('beforeunload', closeOnMainUnload)
+    if (w && leave) {
+      w.removeEventListener('beforeunload', leave)
+      w.removeEventListener('pagehide', leave)
+    }
+    leave = null
+    stopStyles?.()
+    stopStyles = null
+    // the host has to leave the popup's document while that document is still
+    // alive: the canvas, its GL context and the fragment iframes go with it
+    const home = o.home()
+    if (home) home.appendChild(o.host)
+    else o.host.remove()
+    o.store.setState({ win: null })
+    if (w && !closing && !w.closed) {
+      saveGeom(o.geomKey, w)
+      try { w.close() } catch { /* already gone */ }
+    }
+  }
+
+  function open(): boolean {
+    if (o.store.getState().win) return true
+    const g = readGeom(o.geomKey, o.w, o.h)
+    const feat = `width=${g.w},height=${g.h},resizable=yes` +
+      (g.x !== undefined && g.y !== undefined ? `,left=${g.x},top=${g.y}` : '')
+    let w: Window | null = null
+    try {
+      w = window.open('', o.name, feat)
+    } catch (err) {
+      logWarn(tr('lgPreview'), tr('lmPopoutFail'), err)
+      return false
+    }
+    if (!w) {
+      logWarn(tr('lgPreview'), tr('lmPopoutFail'))
+      return false
+    }
+    const doc = w.document
+    // about:blank normally arrives with a body; write one when it does not
+    if (!doc.body) {
+      doc.write('<!doctype html><html><head></head><body></body></html>')
+      doc.close()
+    }
+    doc.documentElement.lang = document.documentElement.lang || 'ru'
+    doc.title = tr(o.title)
+    doc.body.className = 'kadr-popout'
+    stopStyles = mirrorStyles(doc)
+    doc.body.appendChild(o.host)
+
+    const win = w
+    leave = () => {
+      // still alive here, so the geometry is readable and the host can be
+      // carried out before this document (and the canvas in it) is destroyed
+      saveGeom(o.geomKey, win)
+      dock(true)
+    }
+    win.addEventListener('beforeunload', leave)
+    win.addEventListener('pagehide', leave)
+    window.addEventListener('beforeunload', closeOnMainUnload)
+    // backstop: a window destroyed without unloading (a hard kill) would
+    // otherwise leave the button stuck in the "detached" state forever
+    watchdog = window.setInterval(() => {
+      if (win.closed) dock(true)
+    }, 1000)
+    o.store.setState({ win })
+    try { win.focus() } catch { /* the WM decides */ }
+    return true
+  }
+
+  return {
+    open,
+    dock: () => dock(false),
+    toggle: (): boolean => {
+      if (!o.store.getState().win) return open()
+      dock(false)
+      return false
+    }
   }
 }
 
-export function openPreviewWindow(): boolean {
-  if (usePopout.getState().win) return true
-  const g = readGeom()
-  const feat = `width=${g.w},height=${g.h},resizable=yes` +
-    (g.x !== undefined && g.y !== undefined ? `,left=${g.x},top=${g.y}` : '')
-  let w: Window | null = null
-  try {
-    w = window.open('', WIN_NAME, feat)
-  } catch (err) {
-    logWarn(tr('lgPreview'), tr('lmPopoutFail'), err)
-    return false
-  }
-  if (!w) {
-    logWarn(tr('lgPreview'), tr('lmPopoutFail'))
-    return false
-  }
-  const doc = w.document
-  // about:blank normally arrives with a body; write one when it does not
-  if (!doc.body) {
-    doc.write('<!doctype html><html><head></head><body></body></html>')
-    doc.close()
-  }
-  doc.documentElement.lang = document.documentElement.lang || 'ru'
-  doc.title = tr('popoutTitle')
-  doc.body.className = 'kadr-popout'
-  stopStyles = mirrorStyles(doc)
-  doc.body.appendChild(previewHost)
+const preview = popout({
+  name: 'kadr-preview', geomKey: 'kadr.previewWindow', w: 960, h: 560, title: 'popoutTitle',
+  store: usePopout, host: previewHost, home: () => slot ?? document.body
+})
+export const openPreviewWindow = preview.open
+export const dockPreviewWindow = preview.dock
+export const togglePreviewWindow = preview.toggle
 
-  const win = w
-  leave = () => {
-    // still alive here, so the geometry is readable and the host can be
-    // carried out before this document (and the canvas in it) is destroyed
-    saveGeom(win)
-    dock(true)
-  }
-  win.addEventListener('beforeunload', leave)
-  win.addEventListener('pagehide', leave)
-  window.addEventListener('beforeunload', closeOnMainUnload)
-  // backstop: a window destroyed without unloading (a hard kill) would
-  // otherwise leave the button stuck in the "detached" state forever
-  watchdog = window.setInterval(() => {
-    if (win.closed) dock(true)
-  }, 1000)
-  usePopout.setState({ win })
-  try { win.focus() } catch { /* the WM decides */ }
-  return true
-}
-
-export function dockPreviewWindow(): void {
-  dock(false)
-}
-
-function dock(closing: boolean): void {
-  const w = usePopout.getState().win
-  if (watchdog) { clearInterval(watchdog); watchdog = 0 }
-  window.removeEventListener('beforeunload', closeOnMainUnload)
-  if (w && leave) {
-    w.removeEventListener('beforeunload', leave)
-    w.removeEventListener('pagehide', leave)
-  }
-  leave = null
-  stopStyles?.()
-  stopStyles = null
-  // the host has to leave the popup's document while that document is still
-  // alive: the canvas, its GL context and the fragment iframes go with it
-  ;(slot ?? document.body).appendChild(previewHost)
-  usePopout.setState({ win: null })
-  if (w && !closing && !w.closed) {
-    saveGeom(w)
-    try { w.close() } catch { /* already gone */ }
-  }
-}
-
-export function togglePreviewWindow(): boolean {
-  if (usePopout.getState().win) { dockPreviewWindow(); return false }
-  return openPreviewWindow()
-}
+// canvas K, board Window: all twelve strips at full width in 1320 px
+const mixer = popout({
+  name: 'kadr-mixer', geomKey: 'kadr.mixerWindow', w: 1320, h: 560, title: 'mxWinTitle',
+  store: useMixerPopout, host: mixerHost, home: () => null
+})
+export const openMixerWindow = mixer.open
+export const dockMixerWindow = mixer.dock

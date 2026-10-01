@@ -116,5 +116,51 @@ check('each voice keeps its own seek (one clip landing never cancels another)',
   log.filter((e) => e.what === 'play').length === 2, log.map((e) => e.key + e.what).join(' '))
 scrub.end()
 
+// ---- K12: a scrub voice sounds like playback — the clip's effects between the
+// element and its gain, its pan into the track's bus (the track's effects, the
+// strip's meter), the denoised copy once it exists. Fake WebAudio, real modules.
+{
+  const { installFakeWebAudio } = await import('./fake-webaudio.mjs')
+  const fake = installFakeWebAudio()
+  const mem = new Map()
+  globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)), removeItem: (k) => mem.delete(k) }
+  const asked = []
+  globalThis.window = { kadr: { fileUrl: (p) => 'kadr://' + p, audioDenoise: (p, nr) => { asked.push([p, nr]); return Promise.resolve(`/cache/dn-${nr}.flac`) } } }
+  globalThis.Audio = class { paused = true; play() { this.paused = false; return Promise.resolve() } pause() { this.paused = true } removeAttribute() { this.src = '' } load() {} }
+  const live = buildSync({
+    stdin: {
+      contents: `export { scrub } from './src/engine/scrubAudio'
+        export { workletReady } from './src/engine/audio'
+        export { useEditor } from './src/state/store'`,
+      resolveDir: root, loader: 'ts'
+    },
+    bundle: true, platform: 'node', format: 'esm', write: false, logLevel: 'error',
+    alias: { '@shared': join(root, 'shared'), '@': join(root, 'src') }
+  }).outputFiles[0].text
+  const L = await import('data:text/javascript;base64,' + Buffer.from(live).toString('base64'))
+  await L.workletReady()
+  const eq = { id: 'f1', type: 'eq', enabled: true, params: {} }
+  const p = structuredClone(L.useEditor.getState().project)
+  p.assets = [{ id: 'x', kind: 'audio', path: '/media/voice.wav', name: 'voice.wav', duration: 20, hasAudio: true }]
+  const clip = (id, fx) => ({ id, kind: 'media', assetId: 'x', start: 0, duration: 10, inPoint: 0, outPoint: 10, speed: 1, gain: { value: 1 }, muted: false, transform: {}, audioFx: fx })
+  p.tracks = [{ id: 'a1', kind: 'audio', name: 'A1', clips: [clip('c1', [eq, { id: 'f2', type: 'denoise', enabled: true, params: { nr: 12 } }])], muted: false, locked: false, gain: 1 }]
+  L.useEditor.setState({ project: p })
+  const drag = () => { L.scrub.begin(); L.scrub.move(2); L.scrub.end() }
+  drag()
+  await new Promise((r) => setTimeout(r, 0)) // the denoise build answers
+  drag() // the next grain plays the copy
+  const voices = fake.nodes.filter((n) => n.kind === 'source')
+  const v = voices.at(-1)
+  const first = [...v.out]
+  check('a scrub voice goes through the clip\'s effects first (element → kadr-fx → gain)',
+    first.length === 1 && first[0].kind === 'kadr-fx' && [...first[0].out][0]?.kind === 'gain',
+    first.map((n) => n.kind).join(','))
+  const bus = [...fake.reach(v)].filter((n) => n.kind === 'gain')
+  check('…and into its track\'s bus, not straight to the master (gain → pan → bus → post → master)',
+    bus.length >= 4, bus.length)
+  check('the denoised copy is asked for and played once it exists',
+    asked.length === 1 && asked[0][1] === 12 && v.el.src === 'kadr:///cache/dn-12.flac', `${JSON.stringify(asked)} ${v.el.src}`)
+}
+
 console.log(fails ? `\n${fails} FAIL` : '\nall PASS')
 process.exit(fails ? 1 : 0)

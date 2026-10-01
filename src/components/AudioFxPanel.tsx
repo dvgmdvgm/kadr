@@ -2,14 +2,14 @@
 // «Эффекты звука», a track's in the mixer strip's slots. One block per effect
 // (the visual effects' `fx-block` vocabulary): on/off, its sliders, remove.
 // Every add, remove and on/off is one undo step; a slider drag is one too.
-import { useEffect, useRef, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 import type { Clip, Track } from '@shared/types'
 import { FX_PARAMS, fxDefaults, fxParam, type AudioFx, type AudioFxType, type FxParam } from '@shared/audioFx'
 import { useEditor, uid } from '@/state/store'
 import { useT, trf, type TKey } from '@/i18n'
 import { useDenoise, denoisedPath, denoiseState } from '@/engine/denoise'
 import { Icon } from './icons'
-import { CtxMenu } from './CtxMenu'
+import { CtxMenu, HostWindow } from './CtxMenu'
 
 export const FX_NAME: Record<AudioFxType, TKey> = { eq: 'afxEq', comp: 'afxComp', deess: 'afxDeess', denoise: 'afxDenoise' }
 const PARAM_NAME: Record<string, TKey> = {
@@ -119,10 +119,11 @@ export function FxAddMenu({ x, y, types, onPick, onClose }: {
   x: number; y: number; types: AudioFxType[]; onPick: (t: AudioFxType) => void; onClose: () => void
 }) {
   const t = useT()
+  const doc = useContext(HostWindow).document
   useEffect(() => {
-    document.addEventListener('pointerdown', onClose)
-    return () => document.removeEventListener('pointerdown', onClose)
-  }, [onClose])
+    doc.addEventListener('pointerdown', onClose)
+    return () => doc.removeEventListener('pointerdown', onClose)
+  }, [onClose, doc])
   return (
     <CtxMenu x={x} y={y}>
       {types.map((ty) => (

@@ -6,6 +6,8 @@
 import { create } from 'zustand'
 import { logWarn } from './log'
 import { tr } from '../i18n'
+import type { Clip, Track, MediaAsset } from '@shared/types'
+import { denoiseOf } from '@shared/audioFx'
 
 interface DenoiseState {
   /** `path|nr` → the denoised file */
@@ -35,6 +37,12 @@ export function denoisedPath(path: string, nr: number): string | null {
     }
   )
   return null
+}
+
+/** the file a clip plays in the preview instead of its source — its denoised copy once built (audio tracks only: a video clip's element is its picture); playback and the scrub alike */
+export function denoisedFor(clip: Clip, track: Track, asset: MediaAsset): string | null {
+  const nr = track.kind === 'audio' ? denoiseOf(clip.audioFx) : null
+  return nr !== null ? denoisedPath(asset.path, nr) : null
 }
 
 /** what the Inspector shows: 'ready' | 'busy' | an error */
