@@ -27,6 +27,7 @@ const frameEnd = (fps: number, start: number, end: number, snap?: (x: number) =>
 import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
+import { nextMarkerTime } from '@shared/markers'
 import { mapPaths, projectPaths } from '@shared/projectPaths'
 import { said } from '@shared/said'
 import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
@@ -142,7 +143,13 @@ export function sanitizeProject(p: Project): Project {
   p.markers = (p.markers ?? []).filter(
     (m) => m && typeof m.id === 'string' && Number.isFinite(m.time)
   )
+  // L1: a note is a non-empty string, a colour a label index
+  const noteColour = (m: { note?: unknown; color?: unknown }) => {
+    if (m.note !== undefined && (typeof m.note !== 'string' || !m.note)) delete m.note
+    if (m.color !== undefined && !(Number.isInteger(m.color) && (m.color as number) >= 1 && (m.color as number) <= LABEL_COLORS)) delete m.color
+  }
   for (const m of p.markers) {
+    noteColour(m)
     // the analysis' markers are the ones that legitimately have no label
     const found = isMusicMarker(m) || m.kind === 'scene'
     if (m.kind !== undefined && !found) delete m.kind
@@ -217,6 +224,15 @@ export function sanitizeProject(p: Project): Project {
     if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
       label(c)
+      if (c.markers !== undefined) {
+        c.markers = Array.isArray(c.markers)
+          ? c.markers.filter((m) => m && typeof m.id === 'string' && Number.isFinite(m.source)) : []
+        for (const m of c.markers) {
+          noteColour(m)
+          if (typeof m.label !== 'string' || !m.label) m.label = '•'
+        }
+        if (!c.markers.length) delete c.markers
+      }
       if (c.disabled !== undefined) { if (c.disabled) c.disabled = true; else delete c.disabled }
       if (c.freezeAt !== undefined && !(Number.isFinite(c.freezeAt) && c.freezeAt >= 0)) delete c.freezeAt
       // F4: contain is the default and stays implicit; flips are booleans
@@ -1030,9 +1046,16 @@ interface EditorState {
       `opts.kind`/`end` make a music marker (the agent's kadr_marker). One undo step. */
   addMarker(time: number, opts?: { label?: string; kind?: TimelineMarker['kind']; end?: number }): string
   moveMarker(id: string, time: number): void
-  removeMarker(id: string): void
-  /** one undo step; an unchanged or blank label changes nothing */
-  renameMarker(id: string, label: string): void
+  /** a timeline marker, or with `clipId` that clip's marker; one undo step */
+  removeMarker(id: string, clipId?: string): void
+  /** L1: a marker on the clip at project second `time`, stored at its SOURCE second
+      (shared/markers.ts); auto-numbered unless `label`. One undo step; '' when the clip is not there. */
+  addClipMarker(clipId: string, time: number, opts?: { label?: string }): string
+  /** L1: name, note, colour of a timeline marker or (with `clipId`) a clip marker — one undo step;
+      a blank label is ignored, an empty note or an undefined colour takes it off, no change no step */
+  updateMarker(ref: { id: string; clipId?: string }, patch: { label?: string; note?: string; color?: number }): void
+  /** L1: the playhead to the next (1) / previous (−1) user or clip marker */
+  goToMarker(dir: 1 | -1): void
   /**
    * Replace the music markers (beats, sections, pauses) inside
    * [range.start, range.end] with `beats` and `extra` (project seconds) — one
@@ -1761,25 +1784,61 @@ export const useEditor = create<EditorState>((set, get) => ({
       return { project: p }
     }),
 
-  removeMarker: (id) => {
+  removeMarker: (id, clipId) => {
     get().pushHistory('hMarkerDelete')
     set((s) => {
       const p = cloneProject(s.project)
-      p.markers = (p.markers ?? []).filter((x) => x.id !== id)
+      if (clipId) {
+        const c = findClip(p, clipId)?.clip
+        if (c) c.markers = (c.markers ?? []).filter((x) => x.id !== id)
+      } else p.markers = (p.markers ?? []).filter((x) => x.id !== id)
       return { project: p }
     })
   },
 
-  renameMarker: (id, label) => {
-    const next = label.trim()
-    const m0 = get().project.markers?.find((x) => x.id === id)
-    if (!m0 || !next || m0.label === next) return
-    get().pushHistory('hMarkerRename')
+  addClipMarker: (clipId, time, opts) => {
+    const c0 = findClip(get().project, clipId)?.clip
+    if (!c0) return ''
+    get().pushHistory('hMarker')
+    const id = uid()
     set((s) => {
       const p = cloneProject(s.project)
-      p.markers!.find((x) => x.id === id)!.label = next
+      const c = findClip(p, clipId)!.clip
+      c.markers ??= []
+      const n = c.markers.reduce((m, x) => Math.max(m, parseInt(x.label, 10) || 0), 0) + 1
+      const rel = Math.min(c.duration, Math.max(0, toFrame(time, p.fps) - c.start))
+      c.markers.push({ id, source: c.inPoint + rel * (c.speed || 1), label: opts?.label?.trim() || String(n) })
       return { project: p }
     })
+    return id
+  },
+
+  updateMarker: (ref, patch) => {
+    const find = (p: Project) => ref.clipId
+      ? findClip(p, ref.clipId)?.clip.markers?.find((x) => x.id === ref.id)
+      : p.markers?.find((x) => x.id === ref.id)
+    const apply = (m: { label: string; note?: string; color?: number }) => {
+      if (patch.label !== undefined && patch.label.trim()) m.label = patch.label.trim()
+      if ('note' in patch) { const n = patch.note?.trim(); if (n) m.note = n; else delete m.note }
+      if ('color' in patch) { if (patch.color) m.color = patch.color; else delete m.color }
+    }
+    const m0 = find(get().project)
+    if (!m0) return
+    const probe = { ...m0 }
+    apply(probe)
+    if (JSON.stringify(probe) === JSON.stringify(m0)) return
+    get().pushHistory('hMarkerEdit')
+    set((s) => {
+      const p = cloneProject(s.project)
+      apply(find(p)!)
+      return { project: p }
+    })
+  },
+
+  goToMarker: (dir) => {
+    const s = get()
+    const t = nextMarkerTime(s.project, s.playhead, dir)
+    if (t !== null) s.setPlayhead(t)
   },
 
   setBeatMarkers: (beats, range, extra) => {

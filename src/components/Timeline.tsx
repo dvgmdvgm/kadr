@@ -47,6 +47,7 @@ import { Icon, Spinner, type IconName } from './icons'
 import { token } from '@/theme'
 import { logWarn } from '@/engine/log'
 import { scrub } from '@/engine/scrubAudio'
+import { clipMarkerTime } from '@shared/markers'
 
 /** Neon wave (audio-reactive fragment) from the selected range. */
 function NeonWaveButton() {
@@ -288,6 +289,8 @@ interface MenuState {
   edge?: 'in' | 'out'
   /** junction menus: [outgoing clip, incoming clip] */
   clipIds?: [string, string]
+  /** clip menus: the project second under the click (a clip marker goes there) */
+  at?: number
 }
 
 /** The mouse gestures, one per line behind a «?» — as a toolbar row they
@@ -664,13 +667,23 @@ export function Timeline({ height }: { height: number }) {
 }
 
 // Destructive timeline actions that no longer happen on one click: the marker
-// menu (right-click), its rename box, and the question before a track with
+// menu (right-click), its name-and-note box, and the question before a track with
 // clips is deleted. Each ends in one store action = one undo step.
+// A marker is a timeline marker, or with `clipId` that clip's marker (L1).
+type MarkerRef = { id: string; clipId?: string }
 const useTlAsk = create<{
   track: { id: string; n: number } | null
-  marker: { id: string; x: number; y: number } | null
-  rename: { id: string; label: string } | null
+  marker: (MarkerRef & { x: number; y: number }) | null
+  rename: (MarkerRef & { label: string; note: string }) | null
 }>(() => ({ track: null, marker: null, rename: null }))
+
+const markerOf = (r: MarkerRef) => {
+  const p = useEditor.getState().project
+  return r.clipId ? findClip(p, r.clipId)?.clip.markers?.find((m) => m.id === r.id) : p.markers?.find((m) => m.id === r.id)
+}
+
+/** the marker menu — from a flag on the timeline, a clip marker, or a row of the markers list */
+export const openMarkerMenu = (ref: MarkerRef, x: number, y: number) => useTlAsk.setState({ marker: { ...ref, x, y } })
 
 function TimelineAsks() {
   const t = useT()
@@ -683,22 +696,30 @@ function TimelineAsks() {
     return () => window.removeEventListener('pointerdown', off)
   }, [marker])
   if (marker) {
+    const ref = { id: marker.id, clipId: marker.clipId }
     return (
       <CtxMenu x={marker.x} y={marker.y}>
         <button
           data-act="marker-rename"
           onClick={() => {
-            const m = useEditor.getState().project.markers?.find((x) => x.id === marker.id)
-            useTlAsk.setState({ marker: null, rename: m ? { id: m.id, label: m.label } : null })
+            const m = markerOf(ref)
+            useTlAsk.setState({ marker: null, rename: m ? { ...ref, label: m.label, note: m.note ?? '' } : null })
           }}
         >
-          {t('markerRename')}
+          {t('markerEdit')}
         </button>
+        <Swatches
+          value={markerOf(ref)?.color}
+          onPick={(color) => {
+            useEditor.getState().updateMarker(ref, { color })
+            close()
+          }}
+        />
         <button
           className="danger"
           data-act="marker-delete"
           onClick={() => {
-            useEditor.getState().removeMarker(marker.id)
+            useEditor.getState().removeMarker(marker.id, marker.clipId)
             close()
           }}
         >
@@ -709,27 +730,39 @@ function TimelineAsks() {
   }
   if (rename) {
     const apply = () => {
-      useEditor.getState().renameMarker(rename.id, rename.label)
+      useEditor.getState().updateMarker({ id: rename.id, clipId: rename.clipId }, { label: rename.label, note: rename.note })
       close()
     }
     return (
       <Modal
-        title={t('markerName')}
+        title={t('markerEdit').replace('…', '')}
         onClose={close}
         actions={
           <>
             <button onClick={close}>{t('cancel')}</button>
-            <button className="primary" onClick={apply} data-act="marker-rename-ok">{t('markerRename')}</button>
+            <button className="primary" onClick={apply} data-act="marker-rename-ok">{t('save')}</button>
           </>
         }
       >
-        <input
-          autoFocus
-          aria-label={t('markerName')}
-          value={rename.label}
-          onChange={(e) => useTlAsk.setState({ rename: { ...rename, label: e.target.value } })}
-          onKeyDown={(e) => { if (e.key === 'Enter') apply() }}
-        />
+        <label className="marker-edit">
+          <span>{t('markerName')}</span>
+          <input
+            autoFocus
+            value={rename.label}
+            onChange={(e) => useTlAsk.setState({ rename: { ...rename, label: e.target.value } })}
+            onKeyDown={(e) => { if (e.key === 'Enter') apply() }}
+          />
+        </label>
+        <label className="marker-edit">
+          <span>{t('markerNote')}</span>
+          <textarea
+            data-act="marker-note"
+            rows={3}
+            value={rename.note}
+            onChange={(e) => useTlAsk.setState({ rename: { ...rename, note: e.target.value } })}
+            onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey) apply() }}
+          />
+        </label>
       </Modal>
     )
   }
@@ -988,6 +1021,17 @@ function TrackMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) 
           >
             {findClip(useEditor.getState().project, menu.clipId!)?.clip.disabled ? t('clipEnable') : t('clipDisable')}
           </button>
+          {menu.at !== undefined && (
+            <button
+              data-act="clip-marker-add"
+              onClick={() => {
+                useEditor.getState().addClipMarker(menu.clipId!, menu.at!)
+                onClose()
+              }}
+            >
+              {t('clipMarkerAdd')}
+            </button>
+          )}
           {(() => {
             // F4: «Заполнить кадр» — cover on the clicked clip (the selection, when it is in it); again → contain
             const p = useEditor.getState().project
@@ -1137,8 +1181,12 @@ function Playhead() {
   return <div className="playhead" style={{ left: HEADER_W + playhead * zoom }} />
 }
 
+/** a marker's colour label (L1) as the flag's and the line's colour; none = the marker green */
+const markerTint = (color?: number) =>
+  (color ? { '--mk': `var(--label-${color})`, '--mk-on': 'var(--c-text)' } : {}) as React.CSSProperties
+
 /** Track-independent user markers: M adds one at the playhead, the flag
-    drags along the timeline (snapping), right-click opens Rename / Delete. */
+    drags along the timeline (snapping), right-click opens name and note / colour / delete. */
 function Markers() {
   const all = useEditor((s) => s.project.markers)
   const zoom = useEditor((s) => s.zoom)
@@ -1152,7 +1200,8 @@ function Markers() {
         <div
           key={m.id}
           className="tl-marker"
-          style={{ left: HEADER_W + m.time * zoom }}
+          data-marker={m.id}
+          style={{ left: HEADER_W + m.time * zoom, ...markerTint(m.color) }}
           onPointerDown={(e) => {
             if (e.button !== 0) return
             e.stopPropagation()
@@ -1171,10 +1220,10 @@ function Markers() {
           onContextMenu={(e) => {
             e.preventDefault()
             e.stopPropagation()
-            useTlAsk.setState({ marker: { id: m.id, x: e.clientX, y: e.clientY } })
+            openMarkerMenu({ id: m.id }, e.clientX, e.clientY)
           }}
         >
-          <span className="tl-marker-flag" title={t('markerTip')}>{m.label}</span>
+          <span className="tl-marker-flag" title={m.note ? `${m.note}\n\n${t('markerTip')}` : t('markerTip')}>{m.label}</span>
         </div>
       ))}
     </>
@@ -2885,9 +2934,12 @@ const ClipView = memo(function ClipView({
     e.stopPropagation()
     const st = useEditor.getState()
     if (!st.selection.includes(clip.id)) st.select(withLinked(st.project, [clip.id]))
+    // px per second from the box itself, so a zoom gesture in flight reads right
+    const r = e.currentTarget.getBoundingClientRect()
     onMenu({
       x: e.clientX, y: e.clientY, kind: 'clip',
-      clipId: clip.id, linked: !!clip.linkId, trackKind: track.kind
+      clipId: clip.id, linked: !!clip.linkId, trackKind: track.kind,
+      at: clip.start + (e.clientX - r.left) * clip.duration / Math.max(1, r.width)
     })
   }
   if (tiny) {
@@ -2963,6 +3015,24 @@ const ClipView = memo(function ClipView({
       )}
       {fadeIn > 0 && <div className="fade-shade left" style={{ width: zpx(fadeIn) }} />}
       {fadeOut > 0 && <div className="fade-shade right" style={{ width: zpx(fadeOut) }} />}
+      {(clip.markers ?? []).map((m) => {
+        // L1: a clip marker sits on its SOURCE second, so it rides every move, trim and slip
+        const at = clipMarkerTime(clip, m.source)
+        if (at === null) return null
+        return (
+          <div key={m.id} className="clip-marker" data-clip-marker={m.id}
+            style={{ left: zpx(at - clip.start), ...markerTint(m.color) }}>
+            <span className="clip-marker-flag" title={m.note ? `${m.note}\n\n${t('clipMarkerTip')}` : t('clipMarkerTip')}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                openMarkerMenu({ id: m.id, clipId: clip.id }, e.clientX, e.clientY)
+              }}>
+              {m.label}
+            </span>
+          </div>
+        )
+      })}
       {loopMarks.map((x) => (
         <div key={x} className="loop-mark" style={{ left: zpx(x) }} title={t('loopMark')} />
       ))}

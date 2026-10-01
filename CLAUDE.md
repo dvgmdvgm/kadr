@@ -1231,9 +1231,17 @@ mixes audio and muxes/transcodes per preset.
 - `src/engine/chime.ts` — short WebAudio two-note signal when a render
   finishes (wired to export progress in `src/main.tsx`).
 - Timeline markers live in `project.markers` (`addMarker`/`moveMarker`/
-  `removeMarker`/`renameMarker` in the store, flags drawn by `Timeline.tsx`,
+  `removeMarker`/`updateMarker` in the store, flags drawn by `Timeline.tsx`,
   M key in the action registry): project-wide time labels, not bound to a track, and
-  part of `kadr_state` so the embedded Claude can read and place them.
+  part of `kadr_state` so the embedded Claude can read and place them. L1: a
+  marker carries an optional `note` and `color` (a label index, like a clip's);
+  CLIP MARKERS (`Clip.markers`, `addClipMarker` — the clip menu, Alt+M) are
+  stored at their SOURCE second, like the voice defects, so a move, trim, slip,
+  speed change or split never has to touch them; `shared/markers.ts` places
+  them (hidden when trimmed off), lists them with the user's own markers for the
+  side panel's «Маркеры» tab (`MarkersList.tsx`: click to jump, name and note
+  edited in place) and serves Shift+M / Ctrl+Shift+M (`goToMarker`).
+  Test: `node scripts/check-markers.mjs`.
   NEITHER A MARKER NOR A TRACK OF CLIPS GOES ON ONE CLICK: a marker's right-click
   opens Rename / Delete, and «Удалить дорожку» on a track with clips asks
   first (`trackDeleteAsks` in `discardGuard.ts`; `useSettings.confirmDelete`,

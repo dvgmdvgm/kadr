@@ -244,6 +244,8 @@ export interface Clip {
   label?: string
   /** colour label 1..LABEL_COLORS (`--label-N` in styles.css); absent = the track's, else the kind's */
   color?: number
+  /** L1: markers on the clip, in source seconds */
+  markers?: ClipMarker[]
   /** switched off: neither drawn nor heard, in preview or export (drawn hatched) */
   disabled?: boolean
   /** freeze frame: this SOURCE second is drawn for the whole clip, silent (preview and export alike) */
@@ -317,6 +319,23 @@ export interface TimelineMarker {
   /** sections: what part of the song, and its energy 0..1 */
   section?: MusicSectionLabel
   energy?: number
+  /** L1: the user's note on it, and a colour label 1..LABEL_COLORS (absent = the marker green) */
+  note?: string
+  color?: number
+}
+
+/**
+ * L1: a marker on a clip. `source` is a SOURCE second (like voice defects), so
+ * it stays on the same picture whatever the clip goes through — moved, trimmed,
+ * slipped, re-sped, split; shared/markers.ts places it on the timeline, and a
+ * marker the trim has taken off the clip is simply not shown.
+ */
+export interface ClipMarker {
+  id: string
+  source: number
+  label: string
+  note?: string
+  color?: number
 }
 
 /** markers the music analysis owns (replaced together on a new analysis) */

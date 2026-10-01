@@ -193,7 +193,9 @@ server.registerTool('kadr_eval', {
     'clip using them, one undo), setClipDuration(clipId, sec), setClipSpeed(clipId, speed, duration) ' +
     '(speed 0.02–100), addAsset(asset), ' +
     'addTrack(kind), select([ids]), setPlayhead(sec), setProject(project), splitAtPlayhead(), ' +
-    'addMarker(sec) (auto-numbered, returns id), moveMarker(id, sec), removeMarker(id), ' +
+    'addMarker(sec) (auto-numbered, returns id), moveMarker(id, sec), removeMarker(id[, clipId]), ' +
+    'addClipMarker(clipId, sec) (a marker on the clip, stored at its source second: clip.markers[].source), ' +
+    'updateMarker({id[, clipId]}, {label?, note?, color? 1-8}), goToMarker(1|-1), ' +
     'deleteSelection(), setTransition(clipId, type|null), setEdgeTransitions(...).\n' +
     '- window.kadrEditor.uid() → new id; .PRESETS → export presets; .projectDuration(project); ' +
     '.evalAnim(anim, t); await .reverseClip(clipId) — reverse a video/audio clip in place ' +

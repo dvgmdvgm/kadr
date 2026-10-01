@@ -53,6 +53,9 @@ interface Handler {
 }
 const hasSel = (s: EditorState) => s.selection.length > 0 || !!s.range
 const hasClips = (s: EditorState) => s.selection.length > 0
+/** L1: the selected clips the playhead is over — where Alt+M puts a clip marker */
+const selUnderPlayhead = (s: EditorState) => s.project.tracks.flatMap((t) => t.clips)
+  .filter((c) => s.selection.includes(c.id) && s.playhead >= c.start && s.playhead <= c.start + c.duration)
 /** the stop key (K) is down — see onEditorKey */
 let stopHeld = false
 
@@ -142,6 +145,13 @@ const HANDLERS: Record<ActionId, Handler> = {
   'view.zoomIn': { run: () => timelineView.zoomBy?.(1.5) },
   'view.zoomOut': { run: () => timelineView.zoomBy?.(1 / 1.5) },
   'marker.add': { run: (s) => s.addMarker(s.playhead) },
+  'marker.clip': {
+    enabled: (s) => selUnderPlayhead(s).length > 0, why: 'whyNoClipHere',
+    // the top one only: a linked pair would list the same moment twice
+    run: (s) => { s.addClipMarker(selUnderPlayhead(s)[0].id, s.playhead) }
+  },
+  'marker.next': { run: (s) => s.goToMarker(1) },
+  'marker.prev': { run: (s) => s.goToMarker(-1) },
   'playhead.prevFrame': { run: (s) => s.setPlayhead(s.playhead - 1 / s.project.fps) },
   'playhead.nextFrame': { run: (s) => s.setPlayhead(s.playhead + 1 / s.project.fps) },
   'playhead.back1s': { run: (s) => s.setPlayhead(s.playhead - 1) },

@@ -1730,7 +1730,8 @@ div.tr-error {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgb(var(--rgb-marker) / 0.55);
+  /* --mk: the marker's colour label (L1), set inline; absent = the marker green */
+  background: var(--mk, rgb(var(--rgb-marker) / 0.55));
   z-index: 2;
   pointer-events: none;
 }
@@ -1741,8 +1742,8 @@ div.tr-error {
   min-width: 14px;
   height: 15px;
   padding: 0 var(--s1);
-  background: var(--c-marker);
-  color: var(--c-on-marker);
+  background: var(--mk, var(--c-marker));
+  color: var(--mk-on, var(--c-on-marker));
   font-size: var(--fz-micro);
   font-weight: 700;
   line-height: 15px;
@@ -2148,6 +2149,34 @@ div.tr-error {
   right: 0;
   background: linear-gradient(to left, rgb(var(--rgb-shadow) / 0.55), transparent);
   border-left: 1px dashed rgb(var(--rgb-white) / 0.25);
+}
+
+/* L1: a clip marker — a line through the clip and a small flag at its foot;
+   it is inside the clip box, so it rides every move, trim and zoom */
+.clip-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--mk, var(--c-marker));
+  pointer-events: none;
+  z-index: 1;
+}
+.clip-marker-flag {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  min-width: 12px;
+  height: 13px;
+  padding: 0 var(--s1);
+  background: var(--mk, var(--c-marker));
+  color: var(--mk-on, var(--c-on-marker));
+  font-size: var(--fz-micro);
+  font-weight: 700;
+  line-height: 13px;
+  white-space: nowrap;
+  border-radius: 0 var(--r-full) var(--r-full) 0;
+  pointer-events: auto;
 }
 
 .loop-mark {
@@ -3613,3 +3642,57 @@ div.tr-error {
 .palette-empty { display: flex; align-items: center; gap: var(--s4); padding: var(--s6) var(--s5); font-size: var(--fz-sm); color: var(--c-text-2); }
 .palette-empty > span { flex-grow: 1; }
 .palette-foot { display: flex; gap: var(--s5); padding: var(--s3) var(--s5); border-top: 1px solid var(--c-line); font-size: var(--fz-label); color: var(--c-text-3); }
+
+/* L1: the markers list — a side-panel tab, one row per user or clip marker */
+.markers-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+.marker-row {
+  display: grid;
+  grid-template-columns: 4px auto 1fr;
+  grid-template-areas: 'sw time name' 'sw note note';
+  column-gap: var(--s2);
+  row-gap: 2px;
+  align-items: center;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r2);
+  cursor: pointer;
+}
+.marker-row:hover { background: var(--c-bg-3); }
+.marker-row.here { background: var(--c-bg-4); }
+.marker-row-sw {
+  grid-area: sw;
+  align-self: stretch;
+  border-radius: var(--r1);
+  background: var(--mk, var(--c-marker));
+}
+.marker-row-time {
+  grid-area: time;
+  font-size: var(--fz-label);
+  color: var(--c-text-2);
+  font-variant-numeric: tabular-nums;
+}
+.marker-row-name { grid-area: name; display: flex; gap: var(--s1); align-items: center; min-width: 0; }
+.marker-row-name input, .marker-row-note {
+  width: 100%;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r1);
+  color: var(--c-text);
+  font: inherit;
+  padding: 1px var(--s1);
+}
+.marker-row-name input:hover, .marker-row-note:hover { border-color: var(--c-line-2); }
+.marker-row-name input:focus, .marker-row-note:focus { border-color: var(--c-accent); outline: none; background: var(--c-bg-1); }
+.marker-row-note { grid-area: note; font-size: var(--fz-label); color: var(--c-text-2); }
+.marker-row-clip { font-size: var(--fz-micro); color: var(--c-text-3); white-space: nowrap; }
+.markers-empty { padding: var(--s3); color: var(--c-text-3); font-size: var(--fz-label); }
+.marker-edit { display: flex; flex-direction: column; gap: var(--s1); margin-bottom: var(--s2); }
+.marker-edit textarea { resize: vertical; font: inherit; }
