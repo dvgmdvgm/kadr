@@ -30,7 +30,8 @@ import { Modal } from './components/Modal'
 import { appCommands, loadKeymap, onEditorKey } from './engine/actions'
 import { needsConfirm } from './engine/discardGuard'
 import { rememberProject } from './engine/storage'
-import { usePopout, previewHost, setPreviewSlot, dockPreviewWindow } from './engine/popout'
+import { usePopout, previewHost } from './engine/popout'
+import { ViewerSlot } from './components/SourceViewer'
 import { useEditor, newProject } from './state/store'
 import { dropPayload, dropUsable, importDrop } from './engine/mediaImport'
 import { syncProjectFragments } from './engine/fragments'
@@ -440,16 +441,8 @@ export default function App() {
         <SidePanel width={sideW} />
         <div className="h-resizer" onPointerDown={startSideResize} title={t('resizeCols')} />
         <div className="center-col">
-          <div className={`preview-slot${popWin ? ' empty' : ''}`} ref={setPreviewSlot} />
-          {popWin && (
-            <div className="preview-detached">
-              <Icon name="popout" size={30} />
-              <span>{t('popoutHere')}</span>
-              <button onClick={() => dockPreviewWindow()} data-act="popin">
-                <Icon name="popin" /> {t('popoutBack')}
-              </button>
-            </div>
-          )}
+          {/* L5: the preview's slot, with the source viewer's tabs once a source is open */}
+          <ViewerSlot />
           <TransportBar />
         </div>
         <Inspector />

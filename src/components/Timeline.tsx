@@ -1,4 +1,5 @@
 import { type WaveBins, type FollowMode, waveColumns, trackOverlaps, formatTime, fitZoom, followLeft } from '@/engine/timelineMath'
+import { SourceChip } from './SourceViewer'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { flushSync, createPortal } from 'react-dom'
 import { create } from 'zustand'
@@ -1773,7 +1774,7 @@ function TrackRow({
               }}
             />
           ) : (
-            <span className="track-name" title={t('trackRenameHint')}>{track.name}</span>
+            <><SourceChip track={track} /><span className="track-name" title={t('trackRenameHint')}>{track.name}</span></>
           )}
           {track.kind === 'video' && (
             <button

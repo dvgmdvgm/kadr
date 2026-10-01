@@ -46,6 +46,9 @@ mixes audio and muxes/transcodes per preset.
   chain against the one pan law — static, keyframed, mono (K10: at its own
   level on each channel, preview = export, premix too), hard left silent
   in R — and master −6 dB lowering the export by 6 ± 0.1 dB);
+  `check-three-point.mjs` (L5: every three-point combination resolves the
+  fourth point, Insert and Overwrite edit exactly that span — Overwrite trims
+  what it covers, never overlaps it — patching to a track, a new one or none);
   `check-nesting.mjs` (L6: a compound clip draws and mixes like its contents
   laid out flat, loops are refused, an old project loads with every clip);
   `check-speed-ramp.mjs` (L3: source time is the integral of a speed ramp in
@@ -857,6 +860,17 @@ mixes audio and muxes/transcodes per preset.
   its reason (`why` beside `enabled` in actions.ts, `whyOff`); Enter on it
   does nothing. Test: `node scripts/check-palette-match.mjs` (also fails on an
   action without a ru and an en label).
+- THE SOURCE VIEWER (L5, `src/engine/source.ts`, `SourceViewer.tsx`,
+  `shared/threePoint.ts`, canvas L): a double click in the bin OPENS a file
+  there instead of dropping it at the playhead. It shares the preview's slot
+  as a tab (or «Рядом», ≥ 900 px) and is laid OVER the programme, whose host
+  div never moves for it; a plain `<video>` routed through the master, no
+  second GL context. Marks, position and the V/A targets are session VIEW
+  state, never in the project or the undo stack; I/O, Space, J/K/L, arrows and
+  Home/End act on it while the last click was inside it (`routeSourceKey`).
+  `,`/`.` run `threePointEdit`: Insert opens the gap with `openGap`, Overwrite
+  LIFTS the span on the target tracks only (`liftRange` with a track set) —
+  an overlap would play as a crossfade. One undo step each.
 - `src/engine/mediaImport.ts` — every media intake path: `importFiles`
   (probe → bin, deduped by path, optional timeline placement),
   `dropPayload` (reads dataTransfer SYNCHRONOUSLY: files → uri-list /

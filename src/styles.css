@@ -919,6 +919,54 @@ body.kadr-popout .preview {
   text-align: center;
   padding: var(--s5);
 }
+/* L5: the source viewer (canvas L). It shares the preview's slot: a head of
+   tabs above it, the viewer laid OVER the programme (which is never moved or
+   rebuilt — see popout.ts), or side by side with it under «Рядом». */
+.sv-area { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.sv-area.sv-split { flex-direction: row; gap: 1px; background: var(--c-line); }
+.sv-prog { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--c-bg-0); }
+.sv-stage { flex: 1; min-height: 0; min-width: 0; display: flex; position: relative; }
+.sv-stage > .sv-viewer { position: absolute; inset: 0; z-index: 3; }
+.sv-viewer { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--c-bg-0); position: relative; outline: none; }
+.sv-head { display: flex; align-items: center; gap: var(--s3); min-height: 30px; flex-shrink: 0; padding: 0 var(--s3) 0 var(--s2); background: var(--c-bg-1); border-bottom: 1px solid var(--c-line); }
+.sv-focus .sv-head, .sv-head.sv-focus { box-shadow: inset 0 0 0 1px var(--c-accent); }
+.sv-tabs { display: flex; align-items: stretch; align-self: stretch; }
+.sv-tab { display: inline-flex; align-items: center; gap: var(--s2); min-height: 30px; padding: 0 var(--s4); background: none; border: none; border-radius: 0; font-size: var(--fz-sm); color: var(--c-text-3); }
+.sv-tab:hover { color: var(--c-text); }
+.sv-tab.active { color: var(--c-text); box-shadow: inset 0 -2px 0 var(--c-accent); }
+.sv-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fz-sm); color: var(--c-text-2); }
+.sv-pic { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: var(--s3) var(--s5); }
+.sv-frame { display: block; max-width: 100%; max-height: 100%; min-width: 0; min-height: 0; box-shadow: 0 0 0 1px var(--c-line-2); }
+.sv-wave { display: flex; align-items: center; gap: 1px; width: 100%; height: 100%; padding: var(--s4); background: var(--c-bg-1); border: 1px solid var(--c-line); border-radius: var(--r2); }
+.sv-empty { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s4); padding: var(--s6); text-align: center; font-size: var(--fz-md); line-height: 1.5; color: var(--c-text-2); }
+.sv-empty .ico { color: var(--c-text-3); }
+.sv-jog { position: relative; height: 26px; flex-shrink: 0; margin: 0 var(--s5); background: var(--c-bg-1); border: 1px solid var(--c-line); border-radius: var(--r1); cursor: pointer; overflow: hidden; touch-action: none; }
+.sv-jog-wave { position: absolute; left: 0; right: 0; bottom: 0; height: 100%; display: flex; align-items: center; gap: 0; opacity: 0.55; pointer-events: none; }
+.sv-bars > span { flex: 1; min-width: 0; background: var(--c-wave-rms); border-radius: 1px; }
+.sv-jog-range { position: absolute; top: 0; bottom: 0; background: var(--c-accent-soft); border-left: 2px solid var(--c-accent); border-right: 2px solid var(--c-accent); cursor: ew-resize; }
+.sv-jog-head { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--c-playhead); pointer-events: none; }
+.sv-jog-tick { position: absolute; bottom: 1px; font-family: var(--font-mono); font-size: var(--fz-micro); line-height: 1; color: var(--c-text-3); pointer-events: none; }
+.sv-bar { display: flex; align-items: center; gap: var(--s2); min-height: 36px; flex-shrink: 0; padding: var(--s2) var(--s5); }
+.sv-mark { min-width: 28px; min-height: 26px; padding: 0 var(--s2); font-family: var(--font-mono); font-size: var(--fz-md); font-weight: 600; background: none; border: 1px solid transparent; color: var(--c-text-2); }
+.sv-mark:hover { background: var(--c-bg-4); color: var(--c-text); }
+.sv-mark.on { color: var(--c-accent); border-color: var(--c-line-2); }
+.sv-tc { margin-left: auto; font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fz-md); color: var(--c-text); white-space: nowrap; }
+.sv-dur { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: var(--fz-sm); color: var(--c-text-3); white-space: nowrap; }
+.sv-act { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3); min-height: 40px; flex-shrink: 0; padding: var(--s2) var(--s5) var(--s3); border-top: 1px solid var(--c-line); background: var(--c-bg-1); }
+.sv-patch { display: inline-flex; align-items: center; gap: var(--s2); min-height: 26px; padding: 0 var(--s3); font-size: var(--fz-sm); color: var(--c-text); background: var(--c-bg-2); border: 1px solid var(--c-line-2); border-radius: var(--r1); }
+.sv-patch:hover:not(:disabled) { border-color: var(--c-line-hover); }
+.sv-patch-k { font-family: var(--font-mono); font-size: var(--fz-label); font-weight: 600; color: var(--c-accent); }
+.sv-patch.sv-patch-off { color: var(--c-text-off); background: none; border-style: dashed; }
+.sv-patch.sv-patch-off .sv-patch-k { color: var(--c-text-off); }
+.sv-why { flex-basis: 100%; font-size: var(--fz-label); color: var(--c-warn); }
+.sv-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--c-bg-0); }
+.sv-pane-label { padding-left: var(--s3); font-size: var(--fz-micro); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-text-3); }
+/* the targets in the track heads: filled where the source lands, an empty
+   place on the other tracks of that kind (a click moves the target there) */
+.track-head .sv-chip { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 16px; min-height: 0; flex-shrink: 0; padding: 0; font-family: var(--font-mono); font-size: var(--fz-micro); font-weight: 700; border: 1px dashed transparent; border-radius: var(--r1); background: none; cursor: pointer; }
+.track-head .sv-chip:hover { border-color: var(--c-line-hover); }
+.track-head .sv-chip.sv-chip-v { color: var(--c-on-solid); background: var(--c-accent-solid); border-style: solid; border-color: var(--c-accent-solid); }
+.track-head .sv-chip.sv-chip-a { color: var(--c-bg-0); background: var(--c-ok); border-style: solid; border-color: var(--c-ok); }
 .preview {
   flex: 1;
   display: flex;

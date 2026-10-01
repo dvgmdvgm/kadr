@@ -74,6 +74,15 @@ export const ACTIONS = [
   { id: 'range.in', labelKey: 'actMarkIn', context: g, defaultKeys: [k('KeyI')] },
   { id: 'range.out', labelKey: 'actMarkOut', context: g, defaultKeys: [k('KeyO')] },
   { id: 'range.clip', labelKey: 'actMarkClip', context: g, defaultKeys: [k('KeyX')] },
+  // L5: the source viewer. I/O, Space, J/K/L, arrows and Home/End reach the
+  // viewer while it has focus (src/engine/source.ts routes them), not by keys of their own
+  { id: 'source.insert', labelKey: 'actSrcInsert', context: g, defaultKeys: [k('Comma')], prevent: true },
+  { id: 'source.overwrite', labelKey: 'actSrcOverwrite', context: g, defaultKeys: [k('Period')], prevent: true },
+  { id: 'source.clearMarks', labelKey: 'actSrcClear', context: g, defaultKeys: [k('KeyX', { alt: true })], prevent: true },
+  { id: 'source.goIn', labelKey: 'actSrcGoIn', context: g, defaultKeys: [k('KeyI', { shift: true })] },
+  { id: 'source.goOut', labelKey: 'actSrcGoOut', context: g, defaultKeys: [k('KeyO', { shift: true })] },
+  { id: 'viewer.source', labelKey: 'actViewSource', context: g, defaultKeys: [k('Digit2', { shift: true })] },
+  { id: 'viewer.program', labelKey: 'actViewProgram', context: g, defaultKeys: [k('Digit3', { shift: true })] },
   { id: 'edit.selectAll', labelKey: 'actSelectAll', context: g, defaultKeys: [k('KeyA', ctrl)], prevent: true },
   { id: 'edit.deselect', labelKey: 'actDeselect', context: g, defaultKeys: [k('KeyA', { ctrl: true, shift: true })], prevent: true },
   { id: 'edit.escape', labelKey: 'actEscape', context: g, defaultKeys: [k('Escape')] },

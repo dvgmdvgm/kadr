@@ -3,6 +3,7 @@ import { useEditor } from '@/state/store'
 import { allTracks } from '@shared/timelines'
 import { useProxyProgress, wantsProxy, rebuildProxy } from '@/engine/proxy'
 import { useOffline, openRelink } from '@/engine/offline'
+import { openSource, sourceEdit, sourcePlan, useSource } from '@/engine/source'
 import { importFiles, dropPayload, dragHasMedia, dropUsable, importDrop, useImportUi } from '@/engine/mediaImport'
 import { useTextUi } from './TextTools'
 import { useTtsUi } from './TtsDialog'
@@ -276,10 +277,8 @@ export function MediaBin() {
       e.preventDefault()
       setMenu({ x: e.clientX, y: e.clientY, id: a.id })
     },
-    onDoubleClick: () => {
-      const s = useEditor.getState()
-      s.insertClipFromAsset(a.id, null, s.playhead)
-    }
+    // L5: a double click opens the file in the source viewer (dragging stays the direct path)
+    onDoubleClick: () => openSource(a.id)
   })
   const itemClass = (base: string, a: MediaAsset) =>
     `${base}${sel.includes(a.id) ? ' selected' : ''}${offline.has(a.id) ? ' offline' : ''}`
@@ -446,6 +445,9 @@ export function MediaBin() {
     const a = menu && assets.find((x) => x.id === menu.id)
     if (!menu || !a) return null
     const close = () => setMenu(null)
+    const srcId = useSource.getState().assetId
+    const srcPlan = srcId === a.id ? sourcePlan() : null
+    const srcCan = !!srcPlan && !srcPlan.why && srcPlan.len > 0
     const targets = (shownSel.length > 1 && shownSel.includes(a.id) ? shownSel : [a.id])
       .map((id) => assets.find((x) => x.id === id))
       .filter((x): x is MediaAsset => x?.kind === 'video')
@@ -462,6 +464,15 @@ export function MediaBin() {
     const undecodable = !chromiumCanDecode(a)
     return (
       <CtxMenu x={menu.x} y={menu.y} className="bin-menu">
+        <button data-act="bin-menu-open-source" onClick={() => { close(); openSource(a.id) }}>{t('binOpenInSource')}</button>
+        {srcId === a.id && <>
+          <button data-act="bin-menu-src-insert" disabled={!srcCan} onClick={() => { close(); sourceEdit('insert') }}>
+            {t('svInsert')} <span className="keycap">,</span>
+          </button>
+          <button data-act="bin-menu-src-overwrite" disabled={!srcCan} onClick={() => { close(); sourceEdit('overwrite') }}>
+            {t('svOverwrite')} <span className="keycap">.</span>
+          </button>
+        </>}
         {a.hasAudio && (
           <button data-act="bin-menu-transcribe" onClick={() => {
             close()

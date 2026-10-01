@@ -28,6 +28,7 @@ import { defaultTextStyle } from '@/engine/text'
 import { exactFps } from '@shared/projectFormat'
 import { healBins, moveInto, dissolveBin } from '@shared/bins'
 import { nextMarkerTime } from '@shared/markers'
+import { resolveThreePoint } from '@shared/threePoint'
 import { activeTimelineId, allTracks, healTimelines, isCompound, nestsInto, timelineDuration, timelineTracks, timelinesOf } from '@shared/timelines'
 import { sourceOffset, relAtOffset, scaleRampValues, rampAnim, rampMean, type RampPreset } from '@shared/speedRamp'
 import { layoutSpeeds, type SpeedItem } from '../engine/speedLayout'
@@ -589,10 +590,10 @@ function copyClips(p: Project, ids: string[], dt: number): string[] {
   return out
 }
 
-function liftRange(p: Project, r: { start: number; end: number }) {
+function liftRange(p: Project, r: { start: number; end: number }, only?: Set<string>) {
   const rightLinks = new Map<string, string>()
   for (const tr of p.tracks) {
-    if (tr.locked) continue
+    if (tr.locked || (only && !only.has(tr.id))) continue
     const out: Clip[] = []
     for (const c of [...tr.clips]) {
       const end = c.start + c.duration
@@ -1087,6 +1088,16 @@ interface EditorState {
       (a Shift-drop) inserts: what is right of `at` on the receiving tracks and
       their twins' moves right by the inserted length, a clip across `at` is split. */
   insertClipsFromAssets(assetIds: string[], trackId: string | null, at: number, ripple?: boolean): void
+  /** L5: a three-point edit from the source viewer. The fourth point comes from
+      shared/threePoint (source marks, the timeline range or the playhead).
+      `insert` opens the gap on the target tracks (and their twins'); `overwrite`
+      LIFTS what the span covers on the target tracks — never an overlap, which
+      would play as a crossfade. A target is a track id, 'new', or null = not
+      taken. One undo step; the playhead goes to the edit's end and the range is
+      cleared. Returns the new clip ids ([] = refused: a locked or missing target,
+      nothing taken, nothing to take). */
+  threePointEdit(mode: 'insert' | 'overwrite', src: { assetId: string; in?: number | null; out?: number | null },
+    targets: { video: string | null; audio: string | null }): string[]
   insertTextClip(at: number): void
   /** Add a track-independent timeline marker (auto-numbered unless `opts.label`); returns id.
       `opts.kind`/`end` make a music marker (the agent's kadr_marker). One undo step. */
@@ -2219,6 +2230,66 @@ export const useEditor = create<EditorState>((set, get) => ({
       }
       return { project: p, selection: ids }
     })
+  },
+
+  threePointEdit: (mode, src, targets) => {
+    const s = get()
+    const asset = s.project.assets.find((a) => a.id === src.assetId)
+    if (!asset) return []
+    // what the file has: a picture (video, image) and/or a sound (audio, video with sound)
+    const want = {
+      video: asset.kind !== 'audio' ? targets.video : null,
+      audio: asset.kind === 'audio' || (asset.kind === 'video' && asset.hasAudio) ? targets.audio : null
+    }
+    const kinds = (['video', 'audio'] as const).filter((k) => want[k] !== null)
+    if (!kinds.length) return []
+    for (const k of kinds) {
+      if (want[k] === 'new') continue
+      const t = s.project.tracks.find((x) => x.id === want[k])
+      if (!t || t.locked || t.kind !== k) return []
+    }
+    const fps = s.project.fps
+    const still = asset.kind === 'image'
+    const r = resolveThreePoint({
+      srcDur: still ? setting<number>('editing.stillDuration') : asset.duration,
+      srcIn: still ? null : src.in, srcOut: still ? null : src.out,
+      playhead: s.playhead, range: s.range
+    })
+    const at = Math.max(0, toFrame(r.at, fps))
+    // round the length to frames, never past the source's last whole frame
+    let len = frameEnd(fps, at, at + r.len) - at
+    if (!still && r.srcIn + len > asset.duration + 1e-9) len = frameEnd(fps, at, at + asset.duration - r.srcIn, Math.floor) - at
+    if (!(len > 0)) return []
+    s.pushHistory(mode === 'insert' ? 'hSrcInsert' : 'hSrcOverwrite')
+    const ids: string[] = []
+    set((st) => {
+      const p = cloneProject(st.project)
+      const dest: Partial<Record<TrackKind, Track>> = {}
+      for (const k of kinds) {
+        if (want[k] === 'new') {
+          const t = makeTrack(p, k)
+          p.tracks.splice(k === 'video' ? 0 : p.tracks.length, 0, t)
+          dest[k] = t
+        } else dest[k] = p.tracks.find((x) => x.id === want[k])!
+      }
+      const trackIds = kinds.map((k) => dest[k]!.id)
+      if (mode === 'insert') openGap(p, at, len, trackIds, new Set())
+      else liftRange(p, { start: at, end: at + len }, new Set(trackIds))
+      const linkId = kinds.length === 2 ? uid() : undefined
+      for (const k of kinds) {
+        const clip: Clip = {
+          id: uid(), assetId: asset.id, kind: 'media', start: at, duration: len, inPoint: still ? 0 : r.srcIn,
+          label: asset.name, ...newClipDefaults(), ...(k === 'audio' ? audioFade() : {}),
+          ...(linkId ? { linkId } : {}),
+          // a pair's sound comes from its audio twin
+          ...(linkId && k === 'video' ? { muted: true } : {})
+        }
+        dest[k]!.clips.push(clip)
+        ids.push(clip.id)
+      }
+      return { project: p, selection: [...ids], playhead: at + len, range: null }
+    })
+    return ids
   },
 
   setClipSpeed: (clipId, speed, duration, start) =>

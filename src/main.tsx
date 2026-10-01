@@ -29,6 +29,7 @@ import { scrubStats } from './engine/scrubAudio'
 import limiterUrl from './engine/limiter.worklet.ts?worker&url'
 import { previewPoolStats } from './engine/player'
 import { usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow } from './engine/popout'
+import { useSource, openSource, closeSource, sourceEdit, sourcePlan } from './engine/source'
 import { wireExportChime } from './engine/chime'
 import { wireOffline, useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink } from './engine/offline'
 import { normalizeClip } from './engine/normalize'
@@ -116,6 +117,8 @@ wireFonts()
   useFragmentParams, setParam, resetParams, flushParamSaves, useOnion, setOnion, toggleOnion,
   audioStats, silencePreview, previewPoolStats, loudness, resetLoudness, scrubStats,
   usePopout, openPreviewWindow, dockPreviewWindow, togglePreviewWindow,
+  // L5: the source viewer (view state) and its three-point edit
+  useSource, openSource, closeSource, sourceEdit, sourcePlan,
   neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS,
   speakText, useTtsSettings, ttsParams, ttsTempo, loadVoices, sanitizeTtsSettings, TTS_DEFAULTS,
   useTtsUi, useDefectsUi,

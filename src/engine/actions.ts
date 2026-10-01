@@ -11,6 +11,9 @@ import {
 import { importFiles } from './mediaImport'
 import { snapshotFrame } from './snapshot'
 import { togglePreviewWindow } from './popout'
+import {
+  sourceAsset, sourcePlan, sourceEdit, clearSourceMarks, goSourceMark, showTab, routeSourceKey, useSource
+} from './source'
 import { contextTargetOpen, sendContext } from './contextLine'
 import { applySilences, findSilencesHere, cuttable } from './silences'
 import { useBeatsUi } from './beats'
@@ -165,6 +168,13 @@ const HANDLERS: Record<ActionId, Handler> = {
   'range.in': { run: (s) => s.markIn() },
   'range.out': { run: (s) => s.markOut() },
   'range.clip': { run: (s) => s.markClip() },
+  'source.insert': { enabled: () => !sourcePlan()?.why && !!sourcePlan(), why: 'whyNoSource', run: () => { sourceEdit('insert') } },
+  'source.overwrite': { enabled: () => !sourcePlan()?.why && !!sourcePlan(), why: 'whyNoSource', run: () => { sourceEdit('overwrite') } },
+  'source.clearMarks': { enabled: () => !!sourceAsset(), why: 'whyNoSource', run: () => clearSourceMarks() },
+  'source.goIn': { enabled: () => !!sourceAsset(), why: 'whyNoSource', run: () => goSourceMark('in') },
+  'source.goOut': { enabled: () => !!sourceAsset(), why: 'whyNoSource', run: () => goSourceMark('out') },
+  'viewer.source': { run: () => showTab('source') },
+  'viewer.program': { run: () => showTab('program') },
   'edit.selectAll': { run: (s) => s.selectAll() },
   'edit.deselect': { run: (s) => s.select([]) },
   'edit.escape': { run: (s) => { if (s.animClipId) s.setAnimClip(null); else s.setRange(null) } },
@@ -259,5 +269,9 @@ export function onEditorKey(e: KeyboardEvent) {
     win?.addEventListener('keyup', off)
     win?.addEventListener('blur', off)
   }
+  // L5: with the source viewer focused, the transport and I/O keys are its own
+  if (routeSourceKey(a.id, stopHeld)) return
+  // the programme's transport brings the programme forward (RULES 3)
+  if (a.id.startsWith('transport.') && useSource.getState().tab === 'source') showTab('program')
   runAction(a.id)
 }
