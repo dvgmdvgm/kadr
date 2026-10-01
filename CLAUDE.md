@@ -52,6 +52,12 @@ mixes audio and muxes/transcodes per preset.
   value, the taper table, one undo step per gesture, keyed edits as keys);
   `check-record-place.mjs` (K8: a microphone take started at t with a
   pre-roll lands at t, latency compensated, ends where recording stopped);
+  `check-audio-fx.mjs` wants ffmpeg (K9: the real `kadr-fx` worklet in
+  128-frame quanta and the export's form within −60 dB, the EQ against
+  ffmpeg's biquads, the compressor on its static curve, the de-esser's split
+  band, clip effects before the gain and track effects on the sum in the
+  graph and the premix, denoise of the same length with no shift and less
+  hiss, a range entering a fade part-way, the bake hash and the up-mix);
   `check-eta.mjs` (G8: the export's fps / time left from
   a 5 s moving average, the bitrate × duration size, the PNG-sequence matcher
   a cancel deletes by);
@@ -282,6 +288,11 @@ mixes audio and muxes/transcodes per preset.
   clip like the default transition, so new overlaps hold their loudness where
   a linear pair dips ~3 dB. The curve is picked from the fade handle's
   right-click menu. Test: `node scripts/check-fade-curves.mjs`.
+  A segment carries the WHOLE fade window and where it stands in it
+  (`fadeInFrom`, `fadeOutPast`): a range export or a source loop that starts
+  inside a fade used to restart it from zero. afade takes no negative start,
+  so `fadeChain` pads the segment with that much silence, fades, and trims
+  the padding off (test: `check-audio-fx.mjs`).
   PAN AND THE MASTER FADER (K4, `shared/pan.ts`): `Clip.pan` (clip-local keys)
   plus `Track.pan` (project-time keys), −1…1 as Anims, summed and clamped
   (`panAt`); absent = centre and no filter at all, so an old project mixes
@@ -645,6 +656,36 @@ mixes audio and muxes/transcodes per preset.
   frame and only audio — fragment iframes run in the same webContents and get
   nothing; other permissions keep Electron's grant-all default.
   Test: `node scripts/check-record-place.mjs`.
+  AUDIO EFFECTS (K9, `shared/audioFx.ts`): EQ (RBJ biquads: low cut, low
+  shelf, peak, high shelf), compressor (feed-forward, stereo-linked peak,
+  Giannoulis-Massberg-Reiss soft knee, gain smoothed in dB) and de-esser (a
+  high-pass detects, x − lowpass(x) is turned down — in phase, and the input
+  comes back exactly when nothing is reduced) are ONE DSP: the preview runs
+  it in the `kadr-fx` processor of the limiter's worklet module, the export
+  runs the same code in main. `Clip.audioFx` sits between the element and its
+  gain, `Track.audioFx` on the track's bus (bus → fx → the strip's tap), as
+  in Premiere/Resolve; parameters are Hz/dB/ms, so the 44.1 kHz preview and
+  the 48 kHz export compute their own coefficients. A new list re-parameterises
+  the running node, which keeps its filter and detector state (no click on a
+  slider). The export does NOT force the premix: `applyAudioFx` runs before
+  any mixing — a clip's segment is decoded up to its atempo, processed and
+  becomes a temp WAV at speed 1 (its gain, keys, fades and pan then apply as
+  before); a track's segments are summed with `mixInto`, processed and become
+  one segment (≈23 MB per minute of timeline per track, in memory: a
+  10-minute track mixed in 1.9 s, +250 MB peak). DENOISE is a file: ffmpeg
+  `afftdn` over the whole source at a noise floor MEASURED per file (10th
+  percentile of 50 ms RMS at 48 kHz, told 6 dB above — at the default −50 a
+  −35 dB hiss went through untouched, and `tn=1` measured worse), 24-bit
+  FLAC in `cacheDir('denoised')` as `<mediaCacheKey(src, ':dn')>-<nr>.flac`
+  (REBUILDABLE, `.part` sidecar, one at a time; `audio:denoise`). The preview
+  plays it through the pool's source override (audio-track clips only — a
+  video clip's element is its picture), the export's `configureDenoiser` hook
+  swaps the segment's path. Analysis mixdowns go through the same muxer, so
+  they hear the effects too. Not in the chain: the scrub's grains and
+  fragment audio. Live (sandbox, dialogue clip with EQ + compressor + denoise
+  and a de-esser on its track, capture of the preview's master vs a WAV
+  export): 44 windows of 0.2 s, worst 0.45 dB, mean 0.11 dB; a 5.1 source
+  preview vs export 0.00 dB. Test: `node scripts/check-audio-fx.mjs`.
 - `electron/fragments.ts` — Remotion workspace (`~/kadr-fragments`):
   scaffold, vite dev server (watchdogged), fragment create/delete,
   `remotion render` once per content hash at near-lossless settings

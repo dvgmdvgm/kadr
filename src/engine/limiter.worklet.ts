@@ -4,6 +4,7 @@
 // `?worker&url`, so the shared modules are bundled in.
 import { createLimiter } from '@shared/previewLimiter'
 import { createLoudnessMeter } from '@shared/loudness'
+import { createFxChain, type AudioFx, type FxChain } from '@shared/audioFx'
 
 // the AudioWorkletGlobalScope, which lib.dom does not describe
 declare const sampleRate: number
@@ -91,3 +92,29 @@ class KadrCapture extends AudioWorkletProcessor {
 }
 
 registerProcessor('kadr-capture', KadrCapture)
+
+/** K9: a clip's or a track's audio effects (shared/audioFx.ts — the export runs
+ *  the same code in main). Stereo in, stereo out; takes `{ fx }` — a new list
+ *  keeps the running filters and detectors where the chain's shape allows. */
+class KadrFx extends AudioWorkletProcessor {
+  private chain: FxChain | null = null
+  constructor() {
+    super()
+    this.port.onmessage = (e: MessageEvent) => {
+      const list = (e.data as { fx?: AudioFx[] })?.fx
+      if (list) this.chain = createFxChain(list, sampleRate, 2, this.chain)
+    }
+  }
+  process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
+    const out = outputs[0], inp = inputs[0] ?? []
+    if (!out.length) return true
+    for (let c = 0; c < out.length; c++) {
+      const src = inp[c] ?? inp[0]
+      if (src) out[c].set(src); else out[c].fill(0)
+    }
+    this.chain?.process(out, out[0].length)
+    return true
+  }
+}
+
+registerProcessor('kadr-fx', KadrFx)

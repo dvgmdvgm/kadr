@@ -15,6 +15,9 @@ import {
 import { trackPeaks, masterPeaks, loudness, resetLoudness, limiterInfo } from '@/engine/audio'
 import { trackHeard } from '@/engine/player'
 import { useRecord, toggleArm, setInput, inputPeaks, isArmed, useAudioInputs } from '@/engine/record'
+import { FX_NAME, FxBlock, FxAddMenu, addFx, removeFx, toggleFx } from './AudioFxPanel'
+import { CtxMenu } from './CtxMenu'
+import type { AudioFxType } from '@shared/audioFx'
 
 // ---- the peak meter: −60…0 dBFS linear in dB, a hold line for 2 s, then it falls
 const FALL_DB_S = 24
@@ -226,6 +229,97 @@ function InputLine({ trackId }: { trackId: string }) {
   )
 }
 
+const TRACK_FX: AudioFxType[] = ['eq', 'comp', 'deess']
+
+/**
+ * K9 (canvas K, RULES 12): the track's effects — they process the track's SUM.
+ * Two slots show; a third and more collapse into «Ещё N: …». A click opens the
+ * track's chain in a popover (every block, and adding more); right-click
+ * bypasses or removes; a bypassed one is struck through. An empty strip shows
+ * one dashed «+ Эффект»; a narrow one has one button «Эфф. · N».
+ */
+function Slots({ track, narrow }: { track: Track; narrow: boolean }) {
+  const t = useT()
+  const list = track.audioFx ?? []
+  const [pop, setPop] = useState<{ x: number; y: number } | null>(null)
+  const [add, setAdd] = useState<{ x: number; y: number } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  useEffect(() => {
+    if (!pop && !menu) return
+    const close = () => { setPop(null); setMenu(null) }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [pop, menu])
+  const owner = { track }
+  const at = (e: React.MouseEvent) => { const r = e.currentTarget.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 } }
+  const open = (e: React.MouseEvent) => setPop(at(e))
+  const stop = (e: React.PointerEvent) => e.stopPropagation()
+  const names = list.map((f) => t(FX_NAME[f.type]))
+  const slots = narrow ? (
+    <button className={`mx-slot${list.length ? '' : ' mx-add'}`} data-act="mx-fx" onPointerDown={stop}
+            title={list.length ? trf('mxFxList', { names: names.join(', ') }) : t('mxFxAddTitle')}
+            onClick={(e) => (list.length ? open(e) : setAdd(at(e)))}>
+      {list.length ? trf('mxFxNarrow', { n: list.length }) : t('mxFxAddNarrow')}
+    </button>
+  ) : (
+    <>
+      {list.slice(0, list.length > 2 ? 1 : 2).map((f, i) => (
+        <button key={f.id} className={`mx-slot${f.enabled ? '' : ' mx-off'}`} data-act="mx-fx" data-afx={f.type} onPointerDown={stop}
+                title={trf(f.enabled ? 'mxFxSlot' : 'mxFxOff', { name: names[i] })}
+                onClick={open}
+                onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, id: f.id }) }}>
+          {names[i]}
+        </button>
+      ))}
+      {list.length > 2 && (
+        <button className="mx-slot" data-act="mx-fx-more" onPointerDown={stop} onClick={open}
+                title={trf('mxFxList', { names: names.join(', ') })}>
+          {trf('mxFxMore', { n: list.length - 1, names: names.slice(1).join(', ') })}
+        </button>
+      )}
+      {list.length < 2 && (
+        <button className="mx-slot mx-add" data-act="mx-fx-add" onPointerDown={stop} title={t('mxFxAddTitle')}
+                onClick={(e) => setAdd(at(e))}>
+          {t('mxFxAdd')}
+        </button>
+      )}
+    </>
+  )
+  const target = menu && list.find((f) => f.id === menu.id)
+  return (
+    <div className="mx-slots">
+      {slots}
+      {pop && (
+        <CtxMenu x={pop.x} y={pop.y} className="afx-pop">
+          <div className="ctx-title">{trf('mxFxTitle', { track: track.name })}</div>
+          {list.map((f) => <FxBlock key={f.id} owner={owner} fx={f} />)}
+          <div className="afx-add-row">
+            {TRACK_FX.map((ty) => (
+              <button key={ty} className="fx-add" data-afx-add={ty} onClick={() => addFx(owner, ty)}>
+                <Icon name="plus" size={12} /> {t(FX_NAME[ty])}
+              </button>
+            ))}
+          </div>
+        </CtxMenu>
+      )}
+      {add && (
+        <FxAddMenu x={add.x} y={add.y} types={TRACK_FX} onClose={() => setAdd(null)}
+                   onPick={(ty) => { addFx(owner, ty); setPop({ x: add.x, y: add.y }) }} />
+      )}
+      {menu && target && (
+        <CtxMenu x={menu.x} y={menu.y}>
+          <button data-act="mx-fx-bypass" onClick={() => { toggleFx(owner, target.id); setMenu(null) }}>
+            {t(target.enabled ? 'mxFxBypass' : 'mxFxEnable')}
+          </button>
+          <button className="danger" data-act="mx-fx-remove" onClick={() => { removeFx(owner, target.id); setMenu(null) }}>
+            {t('mxFxRemove')}
+          </button>
+        </CtxMenu>
+      )}
+    </div>
+  )
+}
+
 function Strip({ track, quiet, narrow, reg }: { track: Track; quiet: boolean; narrow: boolean; reg: Reg }) {
   const t = useT()
   return (
@@ -236,6 +330,7 @@ function Strip({ track, quiet, narrow, reg }: { track: Track; quiet: boolean; na
     >
       <div className="mx-name" title={track.name}>{track.name}</div>
       <InputLine trackId={track.id} />
+      <Slots track={track} narrow={narrow} />
       <Pan track={track} />
       <div className="mx-btns">
         <button className={`mx-btn mx-mute${track.muted ? ' on' : ''}`} data-act="mx-mute" aria-pressed={track.muted}

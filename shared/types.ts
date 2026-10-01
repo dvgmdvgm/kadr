@@ -9,6 +9,7 @@ import type { MediaScan, SeqRun } from './sequences'
 import type { CollectPlan } from './projectPaths'
 import type { GainKey } from './gainKeys'
 import type { FadeCurve } from './fadeCurves'
+import type { AudioFx } from './audioFx'
 import type { SettingsSnapshot, SettingValue } from './settings'
 import type { RawEncodeOpts } from './rawEncode'
 
@@ -216,6 +217,8 @@ export interface Clip {
   gain: Anim // audio gain 0..2
   /** K4: stereo pan −1 (left) … 1 (right), added to the track's (shared/pan.ts); absent = centre */
   pan?: Anim
+  /** K9: the clip's audio effects in order (shared/audioFx.ts) — after its element, before its gain; absent = none */
+  audioFx?: AudioFx[]
   muted: boolean
   transform: ClipTransform
   /** absent = contain (preview and export alike) */
@@ -284,6 +287,8 @@ export interface Track {
   gain: number
   /** K4: stereo pan −1…1, keys in project seconds, added to each clip's; absent = centre */
   pan?: Anim
+  /** K9: audio effects on the track's sum (its bus), in order; absent = none */
+  audioFx?: AudioFx[]
   /** video tracks: animated whole-track transform */
   motion?: Transform3D
   clips: Clip[]
@@ -1113,14 +1118,25 @@ export interface AudioSegment {
   /** K4: a pan that moves, as points like gainKeys (unclamped; the filter clamps) */
   panKeys?: GainKey[]
   speed: number
-  /** local fade windows in timeline seconds */
+  /** fade windows in timeline seconds — the WHOLE window, which may begin
+      before the segment (`fadeInFrom`) or end after it (`fadeOutPast`) */
   fadeIn: number
   fadeOut: number
+  /** K2/K9: seconds of the fade-in already gone at the segment's first sample (a range or a loop entering it) */
+  fadeInFrom?: number
+  /** …and seconds of the fade-out that lie after the segment's last sample */
+  fadeOutPast?: number
   /** absent = linear */
   fadeInCurve?: FadeCurve
   fadeOutCurve?: FadeCurve
   /** K10: the source's channel count (the asset's; main asks ffprobe when absent) — 1 is upmixed at unity */
   channels?: number
+  /** K9: the clip's enabled DSP effects — run on the sound before `gain` */
+  fx?: AudioFx[]
+  /** K9: the clip's denoise (afftdn reduction, dB) — the source is replaced by its cached denoised file */
+  denoise?: number
+  /** K9: the track's bus when it carries effects: its segments are summed, then run through `fx` */
+  bus?: { id: string; fx: AudioFx[] }
 }
 
 export interface ExportProgress {
@@ -1154,7 +1170,7 @@ export interface BackupOffer {
 }
 
 export type StorageGroupId =
-  | 'proxies' | 'decoded' | 'fragments' | 'ttsqcCache'
+  | 'proxies' | 'decoded' | 'fragments' | 'denoised' | 'ttsqcCache'
   | 'reversed' | 'imported' | 'recordings' | 'voiceRuns' | 'backups' | 'templates'
 
 /** A project, reduced to what identifies the files it owns on disk. */
@@ -1396,6 +1412,8 @@ export interface KadrApi {
   meanVolume(path: string, start: number, duration: number): Promise<{ mean: number; max: number }>
   /** Hard cuts (ffmpeg scdet, score 0..100) in a source range, source seconds. */
   detectScenes(path: string, start: number, duration: number, threshold?: number): Promise<number[]>
+  /** K9: the cached denoised copy of a source (afftdn at `nr` dB), built once — the preview plays it, the export mixes it */
+  audioDenoise(path: string, nr: number): Promise<string>
   /** Blender-compatible loudness envelope of a mixed range, one value per frame (see shared/envelope.ts). */
   audioEnvelope(req: EnvelopeRequest): Promise<number[]>
   /** Tempo, beat grid and band energies of a mixed range (see shared/audioAnalysis.ts). */

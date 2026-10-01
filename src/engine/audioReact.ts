@@ -82,7 +82,11 @@ export function bakePlan(project: Project, clip: Clip, source = 'mix'): BakePlan
     .filter((m) => (m.kind === 'beat' || m.kind === 'section' || m.kind === 'pause') &&
       (m.end ?? m.time) >= t0 - 1 && m.time <= end + 1)
     .map((m) => [m.kind, +m.time.toFixed(4), m.end ?? 0, m.bar ?? 0, m.beatInBar ?? 0, m.section ?? ''])
-  const hash = fnv(JSON.stringify({ fps, frames, t0: +t0.toFixed(6), speed, source, segments, music }))
+  // K10 moved a MONO source's export level by +3 dB, and a segment of an asset
+  // probed before K10 does not say how many channels it has — such a bake may
+  // have heard the old level, so it goes stale once (a bake over known counts keeps its hash)
+  const upmix = segments.some((s) => !s.channels) ? 1 : undefined
+  const hash = fnv(JSON.stringify({ fps, frames, t0: +t0.toFixed(6), speed, source, segments, music, upmix }))
   return { fps, frames, t0, step, range, segments, audible, source, hash }
 }
 

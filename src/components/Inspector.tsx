@@ -6,6 +6,7 @@ import { useT } from '@/i18n'
 import { bakeAudio, bakeState, bakePlan } from '@/engine/audioReact'
 import { audibleTracksInRange } from '@/engine/subtitles'
 import { useFragmentParams, paramValues, setParam, resetParams, rememberParamValues } from '@/engine/fragmentParams'
+import { ClipFxSection } from './AudioFxPanel'
 import { CtxMenu } from './CtxMenu'
 import { Icon, Spinner } from './icons'
 import { fontChoices } from '@/engine/fonts'
@@ -268,6 +269,7 @@ function ClipProps({ clip }: { clip: Clip }) {
   const visual = useEditor((s) => clip.kind !== 'media' || s.project.assets.some((a) => a.id === clip.assetId && a.kind !== 'audio'))
   const project = useEditor((s) => s.project)
   const twin = useMemo(() => audioTwin(project, clip), [project, clip])
+  const hasAudio = clip.kind === 'media' && project.assets.some((a) => a.id === clip.assetId && a.hasAudio)
   const setAnim = (key: keyof Clip['transform'], v: number) =>
     update({ transform: { ...clip.transform, [key]: { ...clip.transform[key], value: v } } })
   const setStyle = (patch: Partial<TextStyle>) =>
@@ -363,6 +365,8 @@ function ClipProps({ clip }: { clip: Clip }) {
           </label>
         </>
       )}
+      {/* K9 (canvas K, RULES 22): the clip's own sound — not the picture of an AV pair, whose sound is its twin's */}
+      {hasAudio && !(twin && clip.muted) && <ClipFxSection clip={clip} />}
       {clip.kind === 'remotion' && <FragmentParamsSection clip={clip} />}
       {clip.kind === 'remotion' && <AudioReactSection clip={clip} />}
       {visual && <EffectsSection clip={clip} />}

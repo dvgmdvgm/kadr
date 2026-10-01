@@ -1,7 +1,7 @@
 // Shared WebAudio graph for the live preview: every media element is routed
-// element → per-clip gain (allows >100% volume) → pan (K4, shared/pan.ts) →
-// its audio track's bus (K6, a unity gain the mixer strip meters) →
-// master (the project's fader) → limiter → analyser
+// element → [its clip's effects, K9] → per-clip gain (allows >100% volume) →
+// pan (K4, shared/pan.ts) → its audio track's bus (K6, a unity gain) →
+// [the track's effects, K9] → the strip's tap → master (the project's fader) → limiter → analyser
 // → output, and the analyser also feeds the loudness meter (K3,
 // shared/loudness.ts: LUFS M/S/I and true peak of what reaches the speakers). The limiter is the export's own (shared/previewLimiter.ts, an
 // AudioWorklet), so a hot mix clips in neither; `useSettings.previewLimiter`
@@ -11,6 +11,7 @@ import { logWarn } from './log'
 import { tr } from '../i18n'
 import type { Loudness } from '@shared/loudness'
 import { PANNER_OPTIONS, clampPan } from '@shared/pan'
+import { dspFx, fxSignature, type AudioFx } from '@shared/audioFx'
 
 let ctx: AudioContext | null = null
 let master: GainNode | null = null
@@ -45,7 +46,7 @@ export function workletReady(): Promise<void> {
   ensureAudio()
   return workletModule!
 }
-const buses = new Map<string, { bus: GainNode; tap: Tap }>()
+const buses = new Map<string, { bus: GainNode; post: GainNode; tap: Tap; fx: FxSlot | null }>()
 /** where each element's pan goes now: a track id, or '' = straight to the master */
 const routedTo = new WeakMap<HTMLMediaElement, string>()
 let limiterReduction = 0
@@ -63,17 +64,76 @@ export function tap(c: AudioContext, from: AudioNode): Tap {
   return t
 }
 
-function busFor(trackId: string): GainNode {
+function busFor(trackId: string) {
   let b = buses.get(trackId)
   if (!b) {
     const c = ensureAudio()
     const bus = c.createGain()
-    bus.connect(master!)
-    // ponytail: a deleted track's bus stays (a GainNode and two analysers, silent); prune if projects churn tracks
-    b = { bus, tap: tap(c, bus) }
+    // bus → [the track's effects] → post: the strip meters what the track sounds like
+    const post = c.createGain()
+    bus.connect(post)
+    post.connect(master!)
+    // ponytail: a deleted track's bus stays (two GainNodes and two analysers, silent); prune if projects churn tracks
+    b = { bus, post, tap: tap(c, post), fx: null }
     buses.set(trackId, b)
   }
-  return b.bus
+  return b
+}
+
+// ---- K9: effects (shared/audioFx.ts), one `kadr-fx` worklet node per clip
+// element or track bus that has any, put in and taken out as the list changes
+interface FxSlot { node: AudioWorkletNode; sig: string }
+let fxReady = false
+const elementFx = new WeakMap<HTMLMediaElement, FxSlot>()
+const sigs = new WeakMap<AudioFx[], string>()
+const sigOf = (list: AudioFx[] | undefined) => {
+  if (!list) return '[]'
+  let s = sigs.get(list)
+  if (s === undefined) sigs.set(list, (s = fxSignature(list)))
+  return s
+}
+const fxNode = (c: AudioContext, list: AudioFx[]) => {
+  const node = new AudioWorkletNode(c, 'kadr-fx', { outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' })
+  node.port.postMessage({ fx: dspFx(list) })
+  return node
+}
+
+/**
+ * Re-wire `from → [fx] → to` for a list: a slot is made when effects appear,
+ * re-parameterised in place when they change (the worklet keeps its running
+ * state — no click), and taken out when none are left. Until the worklet
+ * module has loaded the sound passes dry; the caller asks again every frame.
+ */
+function wireFx(from: AudioNode, to: AudioNode, cur: FxSlot | null, list: AudioFx[] | undefined): FxSlot | null {
+  const sig = sigOf(list)
+  if ((cur?.sig ?? '[]') === sig || !fxReady) return cur
+  if (cur && sig !== '[]') {
+    cur.node.port.postMessage({ fx: dspFx(list) })
+    return { ...cur, sig }
+  }
+  try { from.disconnect() } catch { /* not yet */ }
+  if (cur) { try { cur.node.disconnect() } catch { /* already */ } }
+  if (sig === '[]') { from.connect(to); return null }
+  const node = fxNode(ctx!, list!)
+  from.connect(node).connect(to)
+  return { node, sig }
+}
+
+/** K9: a clip's effects, between its element and its gain */
+export function setElementFx(el: HTMLMediaElement, list: AudioFx[] | undefined) {
+  const src = sources.get(el), g = gains.get(el)
+  if (!src || !g) return
+  const cur = elementFx.get(el) ?? null
+  const next = wireFx(src, g, cur, list)
+  if (next === cur) return
+  if (next) elementFx.set(el, next); else elementFx.delete(el)
+}
+
+/** K9: a track's effects, on its bus (the sum of its clips after their gain and pan) */
+export function setTrackFx(trackId: string, list: AudioFx[] | undefined) {
+  if (!ctx || (!buses.has(trackId) && sigOf(list) === '[]')) return
+  const b = busFor(trackId)
+  b.fx = wireFx(b.bus, b.post, b.fx, list)
 }
 
 /** K6: send an element into its audio track's bus ('' or a video track: straight to the master) */
@@ -81,7 +141,7 @@ export function setElementTrack(el: HTMLMediaElement, trackId: string) {
   const p = pans.get(el)
   if (!p || routedTo.get(el) === trackId) return
   try { p.disconnect() } catch { /* not yet */ }
-  p.connect(trackId ? busFor(trackId) : master!)
+  p.connect(trackId ? busFor(trackId).bus : master!)
   routedTo.set(el, trackId)
 }
 
@@ -126,6 +186,7 @@ export function ensureAudio(): AudioContext {
       })
       limiter.connect(analyser!)
       limiterState = 'ready'
+      fxReady = true
       // a worklet is only pulled while it reaches the destination: it outputs silence there
       meter = new AudioWorkletNode(c, 'kadr-loudness', {
         numberOfOutputs: 1, outputChannelCount: [1], channelCount: 2, channelCountMode: 'explicit'
@@ -227,6 +288,8 @@ export function detachAudio(el: HTMLMediaElement) {
   try { sources.get(el)?.disconnect() } catch { /* already */ }
   try { g.disconnect() } catch { /* already */ }
   try { pans.get(el)?.disconnect() } catch { /* already */ }
+  try { elementFx.get(el)?.node.disconnect() } catch { /* already */ }
+  elementFx.delete(el)
   gains.delete(el)
   pans.delete(el)
   routedTo.delete(el)

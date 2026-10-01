@@ -6,12 +6,12 @@ import { execFile } from 'child_process'
 import {
   probeMedia, makeProxy, makeDecoded, makeReversed, measureLoudness, packedAlphaPlan, probeColorTags,
   ExportMuxer, RawVideoEncoder, meanVolume, detectScenes, probeBasic, configureFfmpeg, detectEncoders,
-  makeSequence, sequenceHasAlpha
+  makeSequence, sequenceHasAlpha, makeDenoised, configureDenoiser
 } from './ffmpeg'
 import { scanMedia } from './mediaScan'
 import { frameOf } from '@shared/sequences'
 import { rawCodec, rawTempExt, seqPattern, isSeqFrame } from '@shared/rawEncode'
-import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix } from './cacheKeys'
+import { mediaCacheKey, proxySuffix, decodedSuffix, reverseSuffix, DENOISE_SUFFIX, denoiseName } from './cacheKeys'
 import { registerStorageIpc } from './storage'
 import { registerMediaStatIpc } from './mediaStat'
 import { registerClaudeIpc, sweepStaleSessions } from './claude'
@@ -543,6 +543,44 @@ async function requestDecoded(
   return out
 }
 
+// K9: denoised copies of sources (afftdn, electron/ffmpeg.ts makeDenoised) — the
+// preview plays one in place of the source and the export mixes the same file.
+// REBUILDABLE like a proxy: named after the source and the strength, built into
+// a `.part` sidecar, one at a time.
+const denoisedDir = () => cacheDir('denoised')
+let denoiseChain: Promise<unknown> = Promise.resolve()
+const denoiseJobs = new Map<string, Promise<string>>()
+
+function ensureDenoised(srcPath: string, nr: number): Promise<string> {
+  const stat = statSync(srcPath)
+  const key = denoiseName(mediaCacheKey(srcPath, stat.size, stat.mtimeMs, DENOISE_SUFFIX), nr)
+  const out = join(denoisedDir(), `${key}.flac`)
+  let job = denoiseJobs.get(out)
+  if (job) return job
+  job = (async () => {
+    try {
+      if ((await fs.stat(out)).size > 0) return out
+    } catch { /* not built yet */ }
+    await fs.mkdir(denoisedDir(), { recursive: true })
+    const run = denoiseChain.then(async () => {
+      const tmp = join(denoisedDir(), `${key}.part.flac`)
+      try {
+        await makeDenoised(srcPath, tmp, nr)
+        await fs.rename(tmp, out)
+      } catch (err) {
+        fs.unlink(tmp).catch(() => { /* nothing to clean */ })
+        throw err
+      }
+    })
+    denoiseChain = run.catch(() => { /* keep the queue alive */ })
+    await run
+    return out
+  })().finally(() => denoiseJobs.delete(out))
+  denoiseJobs.set(out, job)
+  return job
+}
+configureDenoiser(ensureDenoised)
+
 /**
  * Keep the decode cache from eating the disk. A lossless colour+matte
  * intermediate costs ~250 MB per minute of 1080p60 and every edit of a
@@ -582,7 +620,7 @@ async function pruneDecodedCache(): Promise<void> {
  * Directories (the reverse worker's scratch `.tmp` dir) are left alone.
  */
 async function sweepPartFiles(): Promise<void> {
-  const dirs = [...['decoded', 'proxies', 'fragment-renders'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
+  const dirs = [...['decoded', 'proxies', 'fragment-renders', 'denoised'].map(cacheDir), join(app.getPath('userData'), 'reversed')]
   let dropped = 0
   for (const dir of dirs) {
     let names: string[]
@@ -686,6 +724,8 @@ function registerIpc() {
   ipcMain.handle('media:loudness', (_e, srcPath: string, start: number, duration: number) =>
     measureLoudness(srcPath, start, duration)
   )
+
+  ipcMain.handle('audio:denoise', (_e, srcPath: string, nr: number) => ensureDenoised(String(srcPath), Number(nr)))
 
   ipcMain.handle('media:mean-volume', (_e, srcPath: string, start: number, duration: number) =>
     meanVolume(srcPath, start, duration)

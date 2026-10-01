@@ -33,6 +33,7 @@ import { GRADE_KEYS, type ClipGrade } from '@shared/colour'
 import { blendOf } from '@shared/blend'
 import { hexRgb } from '@shared/key'
 import type { FadeCurve } from '@shared/fadeCurves'
+import { cleanFx } from '@shared/audioFx'
 export { defaultTextStyle }
 
 export const newClipDefaults = (): Pick<
@@ -213,6 +214,8 @@ export function sanitizeProject(p: Project): Project {
     if (!Number.isFinite(track.gain)) track.gain = 1
     // K4: centre is the implicit default; a pan that is there is an Anim
     if (track.pan !== undefined) track.pan = anim(track.pan, 0)
+    // K9: well-formed effects or none
+    if (track.audioFx !== undefined) { const fx = cleanFx(track.audioFx); if (fx) track.audioFx = fx; else delete track.audioFx }
     label(track)
     if (track.solo !== undefined) track.solo = !!track.solo
     for (const c of track.clips) {
@@ -228,6 +231,7 @@ export function sanitizeProject(p: Project): Project {
       c.transform = { ...newClipDefaults().transform, ...(c.transform ?? {}) }
       c.gain = anim(c.gain, 1)
       c.effects ??= []
+      if (c.audioFx !== undefined) { const fx = cleanFx(c.audioFx); if (fx) c.audioFx = fx; else delete c.audioFx }
       // J1: a grade that is there has every control; one that is not stays absent
       if (c.grade !== undefined) {
         if (!c.grade || typeof c.grade !== 'object') delete c.grade
