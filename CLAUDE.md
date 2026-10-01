@@ -746,7 +746,9 @@ mixes audio and muxes/transcodes per preset.
   slider). The export does NOT force the premix: `applyAudioFx` runs before
   any mixing — a clip's segment is decoded up to its atempo, processed and
   becomes a temp WAV at speed 1 (its gain, keys, fades and pan then apply as
-  before); a track's segments are summed with `mixInto`, processed and become
+  before; consecutive pieces of one clip — a speed ramp's 0.1 s chunks, a
+  source loop — run through ONE chain, whose state carries over as the
+  preview's node does: restarted per chunk, a compressor pumped 10× a second); a track's segments are summed with `mixInto`, processed and become
   one segment (≈23 MB per minute of timeline per track, in memory: a
   10-minute track mixed in 1.9 s, +250 MB peak). DENOISE is a file: ffmpeg
   `afftdn` over the whole source at a noise floor MEASURED per file (10th

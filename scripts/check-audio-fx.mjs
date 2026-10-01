@@ -220,6 +220,14 @@ try {
     await FF.mixdownWav(many, 5, c)
     const e3 = relErr(got, pcmOf(c))
     check('…in the premix path too', e3 <= -50, `${e3.toFixed(1)} dB`)
+
+    // L3: a speed ramp reaches the mix as 0.1 s chunks of one clip; its effects
+    // must run through them as through one sound (the preview's node keeps its state)
+    const chunks = Array.from({ length: 40 }, (_, i) => seg({ gain: 0.5, fx: comp, inPoint: 0.5 + i * 0.1, duration: 0.1, start: 0.5 + i * 0.1 }))
+    const d = join(dir, 'd.wav')
+    await FF.mixdownWav(chunks, 5, d)
+    const e4 = relErr(got, pcmOf(d))
+    check('…and through a ramp\'s chunks as through one clip (L3)', e4 <= -50, `${e4.toFixed(1)} dB`)
   })
 
   await safe('export track fx', async () => {

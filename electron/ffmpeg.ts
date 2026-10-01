@@ -11,7 +11,7 @@ import { rawEncodeArgs, parseEncoders, probeEncodeArgs, ALPHA_MODE_HELP, knowsAl
 import { AUDIO_SPEED_MIN, AUDIO_SPEED_MAX } from '@shared/audioSpeed'
 import { gainExpr } from '@shared/gainKeys'
 import { AFADE_CURVE } from '@shared/fadeCurves'
-import { createFxChain, type AudioFx } from '@shared/audioFx'
+import { createFxChain, type AudioFx, type FxChain } from '@shared/audioFx'
 import { proxyColourArgs, PACK_GAP, type FfColour } from '@shared/streamColour'
 import { ffmetadata, cuesToSrt, cuesToVtt, embedsSubs } from '@shared/exportExtras'
 
@@ -1135,6 +1135,9 @@ async function applyAudioFx(segs: AudioSegment[], duration: number, temps: strin
     return f
   }
   const out: AudioSegment[] = []
+  // L3: a ramp (or a source loop) reaches here as consecutive pieces of one clip;
+  // the preview's node runs through them, so the chain's state carries over
+  let last: { path: string; fx: string; end: number; chain: FxChain } | null = null
   for (let s of segs) {
     if (isCancelled()) throw new Error('cancelled')
     if (s.denoise && denoiser) s = { ...s, path: await denoiser(s.path, s.denoise) }
@@ -1145,7 +1148,10 @@ async function applyAudioFx(segs: AudioSegment[], duration: number, temps: strin
         'aformat=sample_fmts=flt:sample_rates=48000:channel_layouts=stereo',
         ...(retimed(s) ? [...atempoChain(speed), `atrim=end_sample=${Math.round(outDur * 48000)}`] : [])
       ]
-      const chain = createFxChain(s.fx, MIX_RATE, MIX_CH)!
+      const key = JSON.stringify(s.fx)
+      const goesOn: boolean = !!last && last.path === s.path && last.fx === key && Math.abs(last.end - s.start) < 1e-6
+      const chain: FxChain = goesOn ? last!.chain : createFxChain(s.fx, MIX_RATE, MIX_CH)!
+      last = { path: s.path, fx: key, end: s.start + outDur, chain }
       const file = tmp()
       const fh = await fsp.open(file, 'w')
       let bytes = 0
