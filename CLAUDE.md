@@ -151,6 +151,9 @@ mixes audio and muxes/transcodes per preset.
   through its points with no overshoot, neutral wheels and curves bake
   nothing, the baked table follows the exact function, and the REAL
   Compositor matches the reference within 1/255);
+  `check-scope-bins.mjs` (J8: the scopes' counting in `shared/scopes.ts` on
+  75 % colour bars — histogram spikes at 0 and 191 with the bars' shares,
+  every bar on its BT.709 luma level and on its vectorscope target);
   `check-models.mjs` (3MF build items/components/units, STL, OBJ, GLB,
   decimation) and `check-timeline.mjs` (the timeline's waveform columns and
   overlap zones must EQUAL the slow code they replaced); plus
@@ -930,6 +933,17 @@ mixes audio and muxes/transcodes per preset.
   `drawFrame`, snapshots (`drawNow`) and the export never see it. The key's
   pipette draws that clip ALONE without its colour, reads the 5×5 mean
   (`meanAt`) and draws the preview again in the same task.
+  SCOPES (J8, `src/components/ScopesPanel.tsx`, the side panel's «Скопы» tab
+  or a window of their own — `scopesPopout`, the same `makePopout` as the
+  preview's, one host moved, nothing rebuilt): while a panel is shown
+  (`subscribeScopes`) the Player blits each finished frame — BEFORE the «До и
+  после» pass, so they show the result — into a 320-wide FBO and reads it into
+  a PBO with a fence (`scopeRead`/`scopeFetch`): no stall, fetched a tick
+  later. Every draw while paused, ≤ 15 a second while playing; measured on a
+  1080p60 clip: no fps change, no dropped frame. `shared/scopes.ts` counts
+  them (BT.709 full range: luma 0–255 = 0–100 %, full Cb/Cr at 90 % of the
+  radius). They read the GL frame only: a fragment shown as an iframe is not in
+  it, and the panel says so.
   `holdSources`
   keeps a dynamic texture from re-uploading once per motion-blur
   sub-sample.

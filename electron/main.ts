@@ -124,8 +124,8 @@ let unresponsive = false
 let quitAfterClose = false
 const mustAsk = () => !!win && !win.isDestroyed() && !closeAllowed && closeGuard &&
   !unresponsive && !win.webContents.isCrashed()
-/** window.open name of the detached preview — see src/engine/popout.ts */
-const PREVIEW_WIN = 'kadr-preview'
+/** window.open names of the detached preview and scopes (J8) — see src/engine/popout.ts */
+const POPUP_WINS = new Set(['kadr-preview', 'kadr-scopes'])
 
 function createWindow() {
   win = new BrowserWindow({
@@ -171,7 +171,7 @@ function createWindow() {
   // run inside this webContents too, and nothing they contain has any business
   // opening an OS window.
   win.webContents.setWindowOpenHandler(({ frameName }) => {
-    if (frameName !== PREVIEW_WIN) return { action: 'deny' }
+    if (!POPUP_WINS.has(frameName)) return { action: 'deny' }
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
@@ -185,7 +185,7 @@ function createWindow() {
     }
   })
   win.webContents.on('did-create-window', (child, { frameName }) => {
-    if (frameName !== PREVIEW_WIN) return
+    if (!POPUP_WINS.has(frameName)) return
     child.setMenuBarVisibility(false)
     child.removeMenu()
     // closing the editor must not leave the preview window behind: while one

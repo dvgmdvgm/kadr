@@ -11,6 +11,7 @@ import { LUT_GLSL, type CubeLut } from '@shared/lut'
 import { BLEND_FS, blendIndex, type BlendMode } from '@shared/blend'
 import { KEY_GLSL, type KeyDraw } from '@shared/key'
 import { CURVE_GLSL } from '@shared/curves'
+import { scopeSize } from '@shared/scopes'
 import { trf, tr } from '../i18n'
 
 const VS = `#version 300 es
@@ -522,6 +523,56 @@ export class Compositor {
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbos[slot])
     gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, out)
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+  }
+
+  // J8 scopes: the finished frame downscaled by a blit into a small FBO and read
+  // into a PBO without waiting; scopeFetch() takes it once the GPU is done (a
+  // fence), a tick or more later — the preview never stalls on the readback.
+  private scope: { fbo: WebGLFramebuffer; rb: WebGLRenderbuffer; pbo: WebGLBuffer; w: number; h: number; fence: WebGLSync | null } | null = null
+
+  /** false while the previous read is still on its way */
+  scopeRead(): boolean {
+    const gl = this.gl
+    const [w, h] = scopeSize(this.pw, this.ph)
+    let s = this.scope
+    if (s?.fence) return false
+    if (!s || s.w !== w || s.h !== h) {
+      if (s) { gl.deleteFramebuffer(s.fbo); gl.deleteRenderbuffer(s.rb); gl.deleteBuffer(s.pbo) }
+      const rb = gl.createRenderbuffer()!, fbo = gl.createFramebuffer()!, pbo = gl.createBuffer()!
+      gl.bindRenderbuffer(gl.RENDERBUFFER, rb)
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.RGBA8, w, h)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo)
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.RENDERBUFFER, rb)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo)
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, w * h * 4, gl.STREAM_READ)
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+      s = this.scope = { fbo, rb, pbo, w, h, fence: null }
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null)
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, s.fbo)
+    gl.blitFramebuffer(0, 0, this.pw, this.ph, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.LINEAR)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, s.fbo)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, 0)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+    s.fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+    gl.flush()
+    return true
+  }
+
+  /** the pixels of the last scopeRead once they have arrived, else null */
+  scopeFetch(): { px: Uint8Array; w: number; h: number } | null {
+    const gl = this.gl, s = this.scope
+    if (!s?.fence) return null
+    if (gl.clientWaitSync(s.fence, 0, 0) === gl.TIMEOUT_EXPIRED) return null
+    gl.deleteSync(s.fence)
+    s.fence = null
+    const px = new Uint8Array(s.w * s.h * 4)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, s.pbo)
+    gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, px)
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    return { px, w: s.w, h: s.h }
   }
 
   begin(background: string) {

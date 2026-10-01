@@ -233,6 +233,25 @@ export type PreviewQuality = keyof typeof PREVIEW_SCALE
     `scale` — the preview's quality (Preview.tsx keeps it in step) */
 export const previewPrefs = { proxies: true, scale: 1 as number }
 
+/** J8: the scopes' feed. A shown scopes panel holds `want` up; the player then
+    reads a small downscale of each finished frame (before «До и после» draws
+    over it, so the scopes follow the result) — every draw while paused, at most
+    15 a second while playing — and hands it to the listeners when it arrives. */
+export const scopeTap = {
+  want: 0,
+  /** a new subscriber or a read that could not start: redraw and read again */
+  stale: true,
+  frame: null as { px: Uint8Array; w: number; h: number; t: number } | null,
+  listeners: new Set<() => void>()
+}
+export function subscribeScopes(fn: () => void): () => void {
+  scopeTap.want++
+  scopeTap.stale = true
+  scopeTap.listeners.add(fn)
+  return () => { scopeTap.want--; scopeTap.listeners.delete(fn) }
+}
+const SCOPE_MS = 1000 / 15
+
 export class MediaPool {
   private items = new Map<string, HTMLVideoElement | HTMLImageElement>()
   private srcs = new Map<string, string>()
@@ -757,6 +776,8 @@ export class Player {
   private lastDrawnProject: Project | null = null
   private lastDrawnT = -1
   private lastUi: unknown = null
+  private scopeAt = -Infinity
+  private scopeT = 0
   private stableTicks = 0
   /** playback clock anchor — see tick() */
   private anchor: ClockAnchor | null = null
@@ -929,14 +950,27 @@ export class Player {
     // late-arriving seeks still show up within a quarter second
     const scale = this.renderScale()
     const ui = useColourUi.getState()
+    const scopes = scopeTap.want > 0
+    if (scopes && this.comp) {
+      const f = this.comp.scopeFetch()
+      if (f) {
+        scopeTap.frame = { ...f, t: this.scopeT }
+        for (const fn of scopeTap.listeners) fn()
+      }
+    }
     const dirty = playing || project !== this.lastDrawnProject || t !== this.lastDrawnT || scale !== this.comp?.scale ||
-      ui !== this.lastUi
+      ui !== this.lastUi || (scopes && scopeTap.stale)
     if (dirty) this.stableTicks = 0
     else this.stableTicks++
     const skipDraw = !dirty && this.stableTicks > 20 && this.stableTicks % 15 !== 0
     if (this.comp && !skipDraw) {
       this.comp.scale = scale
       drawFrame(this.comp, project, t, this.pool)
+      if (scopes && (!playing || ts - this.scopeAt >= SCOPE_MS)) {
+        const started = this.comp.scopeRead()
+        scopeTap.stale = !started
+        if (started) { this.scopeAt = ts; this.scopeT = t }
+      }
       // J6 «До и после»: the left of the divider again, the selected clip without its colour
       const before = compareProject(project)
       if (before) {

@@ -1592,6 +1592,22 @@ div.tr-error {
 .ba-knob { position: absolute; top: 50%; width: 26px; height: 26px; min-height: 26px; margin: -13px 0 0 -13px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-full); background: var(--c-float); border: 1px solid var(--c-line-2); color: var(--c-text); cursor: ew-resize; pointer-events: auto; }
 .ba-knob:hover { background: var(--c-bg-4); }
 .ba-label { position: absolute; top: var(--s4); padding: 1px var(--s3); border-radius: var(--r1); background: var(--c-float); font-size: var(--fz-label); color: var(--c-text); }
+/* J8: the scopes (RULES 2–3, 18–22) — a tab of the side panel or a window of
+   their own; one host moves between the two (src/engine/popout.ts) */
+.sc-slot, .sc-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sc-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--c-bg-1); }
+.sc-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--c-line); }
+.sc-tools > button { min-height: 24px; padding: 0 var(--s3); font-size: var(--fz-sm); }
+.sc-stack { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s4); container-type: size; }
+/* below ~200 px only the first chosen scope (RULES 22, the Min board) */
+@container (max-height: 200px) { .sc-stack > .sc-box + .sc-box { display: none; } }
+.sc-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: var(--s3); padding: var(--s3) var(--s4); }
+.sc-box { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--c-meter-bg); border: 1px solid var(--c-line); border-radius: var(--r1); }
+.sc-box > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sc-label { position: absolute; top: var(--s2); left: var(--s3); font-size: var(--fz-micro); color: var(--c-text-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.sc-tick { position: absolute; font-family: var(--font-mono); font-size: var(--fz-micro); line-height: 1; color: var(--c-text-3); }
+.sc-foot { padding: var(--s2) var(--s4); border-top: 1px solid var(--c-line); font-size: var(--fz-label); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.sc-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s3); padding: var(--s7) var(--s6); font-size: var(--fz-sm); line-height: 1.5; color: var(--c-text-2); }
 
 /* ===========================================================================
    Timeline
