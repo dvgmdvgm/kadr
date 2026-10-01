@@ -21,7 +21,7 @@ import { collectRangeAudio } from './subtitles'
 import { placeWords } from './words'
 import { toFrame } from './timelineMath'
 import { logError } from './log'
-import { tr } from '@/i18n'
+import { tr, trf } from '@/i18n'
 
 export interface SilenceOpts {
   /** dB below the loudest point of the analysed audio (default −35) */
@@ -105,6 +105,19 @@ export async function findSilencesHere(): Promise<void> {
 useEditor.subscribe((s, prev) => {
   if (s.project.tracks !== prev.project.tracks && useSilences.getState().items.length) clearSilences()
 })
+
+/** A flag's (and a transcript chip's) tooltip: the agent's reason, else the pause's length, and the gestures. */
+export function proposalTip(x: Silence): string {
+  const len = (x.end - x.start).toFixed(2)
+  return x.reason ? trf(x.kind === 'short' ? 'shortTip' : 'propTip', { reason: x.reason, len }) : trf('silTip', { len })
+}
+
+/** Double click on a flag or a chip: play it with a second either side. */
+export function playAround(x: Silence) {
+  const s = useEditor.getState()
+  s.setRange({ start: Math.max(0, x.start - 1), end: x.end + 1 })
+  s.playInOut()
+}
 
 export function setSilenceState(id: string, state: Silence['state']) {
   useSilences.setState((u) => ({ items: u.items.map((x) => x.id === id ? { ...x, state } : x) }))

@@ -15,6 +15,7 @@ import { contextTargetOpen, sendContext } from './contextLine'
 import { applySilences, findSilencesHere, cuttable } from './silences'
 import { useBeatsUi } from './beats'
 import { findScenesHere } from './scenes'
+import { useSideTab } from './transcript'
 import { duckHere, duckTargets } from './duck'
 import { useChecksUi } from './checks'
 import { useSoundsUi } from '../components/SoundsDialog'
@@ -158,6 +159,7 @@ const HANDLERS: Record<ActionId, Handler> = {
   'edit.escape': { run: (s) => { if (s.animClipId) s.setAnimClip(null); else s.setRange(null) } },
   'app.settings': { run: () => useSettingsUi.getState().setOpen(true) },
   'app.palette': { run: () => usePaletteUi.setState({ open: true }) },
+  'view.transcript': { run: () => useSideTab.setState({ tab: 'transcript' }) },
   'file.new': { run: () => appCommands.newProject() },
   'file.open': { run: () => appCommands.openProject() },
   'file.export': { run: (s) => s.setExportOpen(true) },

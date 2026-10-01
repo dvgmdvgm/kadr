@@ -16,7 +16,7 @@ const speedModifier = (e: { ctrlKey: boolean; altKey: boolean }) => {
 const snapRadius = (zoom: number) => setting<number>('editing.snapRadius') / zoom
 import { useT, tr, trf, type TKey } from '@/i18n'
 import { duckHere, duckTargets } from '@/engine/duck'
-import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, type Silence } from '@/engine/silences'
+import { useSilences, setSilenceState, applySilences, clearSilences, confirmAllSilences, findSilencesHere, proposalTip, playAround, type Silence } from '@/engine/silences'
 import { TRANSITIONS } from '@/gl/transitions'
 import { EDGE_TRANSITIONS } from '@/gl/edges'
 import { CtxMenu } from './CtxMenu'
@@ -1869,10 +1869,7 @@ function SilenceFlags() {
   if (!items.length) return null
   const cls = (x: Silence) => (x.state === 'proposed' ? '' : ` ${x.state}`)
   // the agent's proposals (kadr_propose, card I8) ride the same flags, with their reason
-  const tip = (x: Silence) => {
-    const len = (x.end - x.start).toFixed(2)
-    return x.reason ? trf(x.kind === 'short' ? 'shortTip' : 'propTip', { reason: x.reason, len }) : trf('silTip', { len })
-  }
+  const tip = proposalTip
   return (
     <>
       {items.map((x) => (
@@ -1888,12 +1885,7 @@ function SilenceFlags() {
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => { e.stopPropagation(); setSilenceState(x.id, e.altKey ? 'proposed' : 'confirmed') }}
             onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setSilenceState(x.id, 'rejected') }}
-            onDoubleClick={(e) => {
-              e.stopPropagation()
-              const s = useEditor.getState()
-              s.setRange({ start: Math.max(0, x.start - 1), end: x.end + 1 })
-              s.playInOut()
-            }}
+            onDoubleClick={(e) => { e.stopPropagation(); playAround(x) }}
           >
             {x.state === 'confirmed' ? <Icon name="check" size={10} strokeWidth={3} /> : <Icon name={x.reason ? 'bot' : 'mute'} size={10} strokeWidth={2.5} />}
           </button>

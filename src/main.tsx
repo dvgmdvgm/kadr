@@ -32,6 +32,8 @@ import { wireExportChime } from './engine/chime'
 import { wireOffline, useOffline, refreshOffline, relinkTo, relinkFromFolder, openRelink } from './engine/offline'
 import { normalizeClip } from './engine/normalize'
 import * as agentEdit from './engine/agentEdits'
+import { useSilences } from './engine/silences'
+import { cutWords, useWordCuts } from './engine/transcript'
 import { sliceState } from './engine/agentState'
 import { wireFonts } from './engine/fonts'
 import { neonWave, neonWaveTsx, NEON_WAVE_DEFAULTS } from './engine/neonWave'
@@ -99,6 +101,8 @@ wireFonts()
   agentTurn: () => { useEditor.getState().agentCheckpoint(); void autosaveNow() },
   // the agent's semantic edits (kadr_cut, kadr_move…): one store action, one undo step each
   agentEdit,
+  // the proposals the timeline flags draw (I5/I8/I11), and the transcript panel's word cut (I10)
+  useSilences, cutWords, useWordCuts,
   // kadr_state: a summary, or exact slices that are never cut (card I3)
   sliceState,
   // offline media: the runtime set, and relink by map or by folder (one undo)

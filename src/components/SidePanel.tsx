@@ -1,22 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { MediaBin } from './MediaBin'
 import { AnimEditor } from './AnimEditor'
 import { TrackMotionEditor } from './TrackMotionEditor'
+import { TranscriptPanel } from './TranscriptPanel'
+import { useSideTab } from '@/engine/transcript'
 import { useEditor } from '@/state/store'
 import { useT } from '@/i18n'
 import { Icon } from './icons'
-
-type Tab = 'media' | 'anim' | 'motion'
 
 export function SidePanel({ width }: { width: number }) {
   const t = useT()
   const animClipId = useEditor((s) => s.animClipId)
   const motionTrackId = useEditor((s) => s.motionTrackId)
-  const [tab, setTab] = useState<Tab>('media')
+  const tab = useSideTab((s) => s.tab)
+  const setTab = (tab: ReturnType<typeof useSideTab.getState>['tab']) => useSideTab.setState({ tab })
 
   // opening an editor switches to its tab; closing falls back to media
   useEffect(() => {
-    setTab(animClipId ? 'anim' : motionTrackId ? 'motion' : 'media')
+    useSideTab.setState({ tab: animClipId ? 'anim' : motionTrackId ? 'motion' : 'media' })
   }, [animClipId, motionTrackId])
 
   return (
@@ -24,6 +25,9 @@ export function SidePanel({ width }: { width: number }) {
       <div className="side-tabs">
         <button className={tab === 'media' ? 'active' : ''} onClick={() => setTab('media')}>
           {t('media')}
+        </button>
+        <button className={tab === 'transcript' ? 'active' : ''} onClick={() => setTab('transcript')}>
+          {t('txTab')}
         </button>
         {animClipId && (
           <button className={tab === 'anim' ? 'active' : ''} onClick={() => setTab('anim')}>
@@ -64,6 +68,8 @@ export function SidePanel({ width }: { width: number }) {
         <AnimEditor width={width} />
       ) : tab === 'motion' && motionTrackId ? (
         <TrackMotionEditor width={width} />
+      ) : tab === 'transcript' ? (
+        <TranscriptPanel />
       ) : (
         <MediaBin />
       )}
