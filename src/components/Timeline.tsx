@@ -1759,7 +1759,12 @@ function TrackRow({
             title={t('mute')}
             aria-label={t('mute')}
             aria-pressed={track.muted}
-            onClick={() => useEditor.getState().updateTrack(track.id, { muted: !track.muted })}
+            onClick={() => {
+              // an edit like solo, name and colour (E9): it is in the undo history (L2)
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(track.id, { muted: !track.muted })
+            }}
           >
             <Icon name={track.muted ? 'mute' : 'volume'} size={13} />
           </button>
@@ -1783,7 +1788,12 @@ function TrackRow({
             title={t('lock')}
             aria-label={t('lock')}
             aria-pressed={track.locked}
-            onClick={() => useEditor.getState().updateTrack(track.id, { locked: !track.locked })}
+            onClick={() => {
+              // an edit like solo, name and colour (E9): it is in the undo history (L2)
+              const st = useEditor.getState()
+              st.pushHistory('hTrack')
+              st.updateTrack(track.id, { locked: !track.locked })
+            }}
           >
             <Icon name={track.locked ? 'lock' : 'unlock'} size={13} />
           </button>

@@ -2298,6 +2298,18 @@ div.tr-error {
   border-color: var(--c-accent-solid);
 }
 .trans-menu { max-height: 70vh; overflow-y: auto; }
+/* L2: the undo history list — redo side dimmed above «now», undo side below */
+.transport .hist-btn { width: 16px; min-width: 16px; }
+.history-menu { max-height: 70vh; overflow-y: auto; }
+.history-menu .hist-group { display: flex; flex-direction: column; }
+.ctx-menu button.hist-redo { color: var(--c-text-3); }
+.hist-now {
+  margin: var(--s2) 0;
+  padding: var(--s1) var(--s4);
+  border-top: 1px solid var(--c-sel);
+  font-size: var(--fz-micro);
+  color: var(--c-sel);
+}
 
 /* recent projects (H1): «Открыть»'s dropdown and the empty bin */
 .recent-menu { max-height: 70vh; overflow-y: auto; max-width: min(480px, 90vw); }

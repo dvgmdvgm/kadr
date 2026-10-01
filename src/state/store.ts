@@ -908,10 +908,15 @@ interface ClipboardItem {
 }
 
 /** A history entry remembers the state before the action plus its name (i18n key). */
-interface HistEntry {
+export interface HistEntry {
   project: Project
   label: string
+  /** pushed by the embedded Claude (inside an /eval): when its turn began (card B8) — the list marks it */
+  turn?: number
 }
+
+/** /evals of the embedded Claude in flight (electron/claude.ts brackets each one) */
+let agentEvals = 0
 
 /** the project as it was when an agent turn began (card B8) */
 export interface AgentCheckpoint {
@@ -959,6 +964,8 @@ interface EditorState {
   /** ring of pre-turn snapshots of the embedded Claude, OUTSIDE the undo stack:
       a turn of more than 50 edits pushes its own start out of undo */
   agentCheckpoints: AgentCheckpoint[]
+  /** when the agent's current (or last) turn began; 0 before any */
+  agentTurnAt: number
 
   setProject(p: Project, path?: string | null): void
   setProjectPath(path: string | null): void
@@ -970,6 +977,10 @@ interface EditorState {
   pushHistory(label: string): void
   undo(): void
   redo(): void
+  /** the history list (L2): n > 0 is n undos, n < 0 is −n redos — exactly that, clamped to the stacks */
+  jumpHistory(n: number): void
+  /** +1 / −1 around each agent /eval: history pushed in between carries the turn */
+  agentEval(d: 1 | -1): void
   /** an agent turn begins (main calls it before the turn's first /eval) */
   agentCheckpoint(): void
   /** restore the newest checkpoint as one undo entry and drop it; false when there is none */
@@ -1309,6 +1320,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   past: [],
   future: [],
   agentCheckpoints: [],
+  agentTurnAt: 0,
 
   setProject: (project, path = null) =>
     set({
@@ -1323,7 +1335,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   pushHistory: (label) =>
     set((s) => ({
-      past: [...s.past.slice(-49), { project: cloneProject(s.project), label }],
+      past: [...s.past.slice(-49), { project: cloneProject(s.project), label, ...(agentEvals > 0 && s.agentTurnAt ? { turn: s.agentTurnAt } : {}) }],
       future: []
     })),
   undo: () =>
@@ -1335,7 +1347,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         past,
         // chats are not an edit: undoing the clip before one must not drop it
         project: { ...entry.project, claudeChats: s.project.claudeChats },
-        future: [{ project: cloneProject(s.project), label: entry.label }, ...s.future],
+        future: [{ ...entry, project: cloneProject(s.project) }, ...s.future],
         // what is still there stays selected: the gizmo and the Inspector survive a Ctrl+Z
         selection: existingClips(entry.project, s.selection)
       }
@@ -1347,18 +1359,24 @@ export const useEditor = create<EditorState>((set, get) => ({
       return {
         future,
         project: { ...entry.project, claudeChats: s.project.claudeChats },
-        past: [...s.past, { project: cloneProject(s.project), label: entry.label }],
+        past: [...s.past, { ...entry, project: cloneProject(s.project) }],
         selection: existingClips(entry.project, s.selection)
       }
     }),
+  jumpHistory: (n) => {
+    for (let i = 0; i < n && get().past.length; i++) get().undo()
+    for (let i = 0; i > n && get().future.length; i--) get().redo()
+  },
+  agentEval: (d) => { agentEvals = Math.max(0, agentEvals + d) },
 
   agentCheckpoint: () =>
     set((s) => {
       // ponytail: "unchanged" is object identity — an in-place mutation between two
       // turns (off-convention) keeps the older checkpoint; a JSON compare costs ~250 ms on big projects
-      if (s.agentCheckpoints.at(-1)?.source === s.project) return s
-      const cp = { project: cloneProject(s.project), path: s.projectPath, at: Date.now(), source: s.project }
-      return { agentCheckpoints: [...s.agentCheckpoints.slice(1 - AGENT_CHECKPOINTS), cp] }
+      const at = Date.now()
+      if (s.agentCheckpoints.at(-1)?.source === s.project) return { agentTurnAt: at }
+      const cp = { project: cloneProject(s.project), path: s.projectPath, at, source: s.project }
+      return { agentTurnAt: at, agentCheckpoints: [...s.agentCheckpoints.slice(1 - AGENT_CHECKPOINTS), cp] }
     }),
   revertAgentTurn: () => {
     const cp = get().agentCheckpoints.at(-1)

@@ -98,6 +98,8 @@ wireFonts()
   // an embedded-Claude turn begins: main calls this before the turn's first /eval
   // (electron/claude.ts) — a checkpoint outside undo, and a backup on disk
   agentTurn: () => { useEditor.getState().agentCheckpoint(); void autosaveNow() },
+  // main brackets every /eval with ±1: history pushed in between is the agent's (the list marks it)
+  agentEval: (d: 1 | -1) => useEditor.getState().agentEval(d),
   // the agent's semantic edits (kadr_cut, kadr_move…): one store action, one undo step each
   agentEdit,
   // kadr_state: a summary, or exact slices that are never cut (card I3)

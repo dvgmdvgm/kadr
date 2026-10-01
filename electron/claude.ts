@@ -163,11 +163,16 @@ async function evalInPage(win: BrowserWindow, code: string, newTurn = false): Pr
   // a new agent turn: checkpoint the project (and write a backup) BEFORE its first code runs
   const wrapped = `(async () => {
     ${newTurn ? 'try { window.kadrEditor && window.kadrEditor.agentTurn && window.kadrEditor.agentTurn() } catch {}' : ''}
+    // undo entries pushed while this runs are the agent's: the history list marks them (L2)
+    const ke = window.kadrEditor
+    try { ke && ke.agentEval && ke.agentEval(1) } catch {}
     try {
       const r = await (async () => { ${code}\n })()
       return JSON.stringify({ ok: r === undefined ? null : r })
     } catch (e) {
       return JSON.stringify({ error: String((e && (e.stack || e.message)) || e) })
+    } finally {
+      try { ke && ke.agentEval && ke.agentEval(-1) } catch {}
     }
   })()`
   return win.webContents.executeJavaScript(wrapped, true)

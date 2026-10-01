@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useEditor, projectDuration } from '@/state/store'
+import { useEditor, projectDuration, type HistEntry } from '@/state/store'
 import { useSettings } from '@/state/store'
 import { snapshotFrame } from '@/engine/snapshot'
 import { usePopout, togglePreviewWindow } from '@/engine/popout'
@@ -49,6 +49,7 @@ export function TransportBar() {
         >
           <Icon name="redo" />
         </button>
+        <HistoryMenu />
       </span>
       <span className="sep" />
       <button className="icon-only" data-act="to-start" title={t('toStart')} aria-label={t('toStart')}
@@ -242,6 +243,74 @@ function OnionControls() {
         </>
       )}
     </span>
+  )
+}
+
+/** L2: the undo history as a list — the redo side above «now», the undo side below,
+ *  newest first; a click jumps there (exactly that many undos or redos). The
+ *  agent's entries (B8) carry a bot glyph, and each of its turns a heading. */
+function HistoryMenu() {
+  const t = useT()
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null)
+  const past = useEditor((s) => s.past)
+  const future = useEditor((s) => s.future)
+  useEffect(() => {
+    if (!at) return
+    const out = () => setAt(null)
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); setAt(null) } }
+    window.addEventListener('pointerdown', out)
+    window.addEventListener('keydown', key, true)
+    return () => {
+      window.removeEventListener('pointerdown', out)
+      window.removeEventListener('keydown', key, true)
+    }
+  }, [at])
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // a list of rows, top to bottom; `jump` is what a click hands jumpHistory
+  const list = (rows: { e: HistEntry; jump: number }[]) => rows.map(({ e, jump }, i) => (
+    <div key={jump} className="hist-group">
+      {e.turn && e.turn !== rows[i - 1]?.e.turn
+        ? <div className="ctx-title">{t('histAgent')} · {clock(e.turn)}</div> : null}
+      <button
+        data-act="hist-row"
+        data-jump={jump}
+        role="menuitem"
+        className={jump < 0 ? 'hist-redo' : ''}
+        onClick={() => { useEditor.getState().jumpHistory(jump); setAt(null) }}
+      >
+        <span className="ctx-check">{e.turn ? <Icon name="bot" size={13} /> : null}</span>
+        {t(e.label as TKey)}
+      </button>
+    </div>
+  ))
+  return (
+    <>
+      <button
+        className={`icon-only hist-btn${at ? ' active' : ''}`}
+        data-act="history"
+        title={t('histMenu')}
+        aria-label={t('histMenu')}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          if (at) { setAt(null); return }
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.left, y: r.bottom + 4 })
+        }}
+      >
+        <Icon name="chevronDown" size={13} />
+      </button>
+      {at && (
+        <CtxMenu x={at.x} y={at.y} className="history-menu">
+          <div className="ctx-title">{t('histMenu')}</div>
+          {!past.length && !future.length && <div className="ctx-empty dim">{t('histEmpty')}</div>}
+          {list(future.map((e, i) => ({ e, jump: -(i + 1) })).reverse())}
+          {(past.length > 0 || future.length > 0) && <div className="hist-now">{t('histNow')}</div>}
+          {list(past.map((e, i) => ({ e, jump: past.length - i })).reverse())}
+        </CtxMenu>
+      )}
+    </>
   )
 }
 

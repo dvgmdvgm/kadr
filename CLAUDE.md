@@ -384,7 +384,14 @@ mixes audio and muxes/transcodes per preset.
   header restores the newest checkpoint as ONE undo step (the user's own
   edits during the turn go too — the confirm says so) and drops it, so a
   second click walks back the turn before. Test:
-  `node scripts/check-agent-turns.mjs`.
+  `node scripts/check-agent-turns.mjs`. Every /eval is also bracketed by
+  `kadrEditor.agentEval(±1)`, and an undo entry pushed inside one carries
+  the turn's start (`HistEntry.turn`, kept through undo and redo): the
+  HISTORY LIST (L2, the ▾ beside undo/redo in the transport) marks those
+  rows with a bot glyph and a heading per turn; a click on a row is
+  `jumpHistory(n)` — exactly n undos (or −n redos), nothing cleverer. A
+  track's mute and lock are undo steps, like its solo, name and colour.
+  Test: `node scripts/check-history-jump.mjs`.
   On Windows there is no bash and no process groups: the command is found
   with `where` (npm's extensionless sh shim is skipped), claude runs directly
   in the pty, and a close kills its tree with `taskkill /t`.
